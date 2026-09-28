@@ -40,6 +40,16 @@ const SLICESIZE: usize = 1 << 16;
 /// Smallest number of slices a large output block is split into.
 const SLICES: usize = 64;
 
+/// Largest intermediate, in elements, of a term contracted whole; larger ones are contracted in
+/// slices over free indices so every intermediate stays in the cache.
+const SLICEDTERM: usize = 1 << 16;
+
+/// Data of every table-local block, and the group's shared product with its shape and use.
+type TermSources<'a> = (
+    &'a [&'a [f64]],
+    Option<(&'a [f64], &'a TensorShape, &'a Anchor)>,
+);
+
 /// Orbital-space block of one tensor kind: the kind id and the space of every slot, upper then
 /// lower.
 type BlockKey = (u8, Vec<u8>);
@@ -139,8 +149,8 @@ enum Source {
     Block(usize, usize),
     /// An intermediate buffer of the current term.
     Buffer(usize),
-    /// The product shared by the current term's group.
-    Shared,
+    /// The product shared by the current term's group, viewed from an element offset.
+    Shared(usize),
 }
 
 /// Reusable per-worker storage for contracting terms.
@@ -151,6 +161,13 @@ struct Workspace {
     buffers: Vec<Vec<f64>>,
     /// Released buffers available for reuse.
     pool: Vec<Vec<f64>>,
+    /// Labels of every operand and step result of the current term.
+    masks: Vec<u64>,
+    /// Labels kept by every step of the current term.
+    keeps: Vec<u64>,
+    /// Every input operand of a sliced term with its sliced labels removed, and its offset per
+    /// unit of each sliced label.
+    views: Vec<(Source, TensorShape, [usize; MAXLABELS])>,
 }
 
 impl Workspace {
@@ -164,6 +181,9 @@ impl Workspace {
             operands: Vec::new(),
             buffers: Vec::new(),
             pool: Vec::new(),
+            masks: Vec::new(),
+            keeps: Vec::new(),
+            views: Vec::new(),
         }
     }
 }
@@ -812,7 +832,8 @@ struct PlannedTerm<'a> {
 }
 
 /// Contract one term, with some free indices fixed, and add it to an output block over the
-/// remaining free indices.
+/// remaining free indices. A term whose largest intermediate exceeds `SLICEDTERM` is contracted
+/// once per value of further free indices, with the steps independent of them contracted once.
 /// # Arguments:
 /// - `term`: Kept term with its plan.
 /// - `tensors`: Data of every table-local block and extent of every class-local label.
@@ -873,61 +894,289 @@ fn accumulate_term(
             .push((Source::Block(id as usize, offset), shape));
     }
 
-    // Contract in the planned order; each step keeps the labels of the operands still to be
-    // contracted and the free labels.
-    let mut live = (1u64 << ws.operands.len()) - 1;
+    // Labels of every operand and step result, and the labels each step keeps: those of the
+    // operands still to be contracted and the free labels.
+    let inputs = ws.operands.len();
+    ws.masks.clear();
+    ws.masks
+        .extend(ws.operands.iter().map(|(_, shape)| shape.mask));
+    ws.keeps.clear();
+    let mut live = (1u64 << inputs) - 1;
+    for &(i, j) in term.steps {
+        live &= !((1 << i) | (1 << j));
+        let keep = (0..ws.masks.len())
+            .filter(|&k| live & (1 << k) != 0)
+            .fold(free_mask, |m, k| m | ws.masks[k]);
+        ws.keeps.push(keep);
+        ws.masks
+            .push((ws.masks[i as usize] | ws.masks[j as usize]) & keep);
+        live |= 1 << (ws.masks.len() - 1);
+    }
+
+    // Free labels are never summed, so fixing one slices every intermediate that carries it at
+    // no extra arithmetic; fix those that shrink the largest intermediate most until it fits in
+    // the cache.
+    let size = |mask: u64| {
+        (0..64)
+            .filter(|&l| mask & (1 << l) != 0)
+            .map(|l| extent[l])
+            .product::<usize>()
+    };
+    let peak = |sliced: u64| {
+        ws.masks[inputs..]
+            .iter()
+            .map(|&m| size(m & !sliced))
+            .max()
+            .unwrap_or(0)
+    };
+    let mut sliced = 0u64;
+    let mut largest = peak(0);
+    while largest > SLICEDTERM {
+        let best = (0..64)
+            .filter(|&l| free_mask & !sliced & (1 << l) != 0)
+            .map(|l| (peak(sliced | (1 << l)), l))
+            .min();
+        match best {
+            Some((p, l)) if p < largest => {
+                sliced |= 1 << l;
+                largest = p;
+            }
+            _ => break,
+        }
+    }
+
+    // Operands and steps that depend on a sliced label; the others are contracted once.
+    let mut depends = 0u64;
+    for (k, &m) in ws.masks[..inputs].iter().enumerate() {
+        if m & sliced != 0 {
+            depends |= 1 << k;
+        }
+    }
     for (s, &(i, j)) in term.steps.iter().enumerate() {
-        // The anchored step takes the group's shared product, relabelled to this term.
+        if depends & ((1 << i) | (1 << j)) != 0 {
+            depends |= 1 << (inputs + s);
+        }
+    }
+    let placeholder = (Source::Buffer(0), strided_tensor_shape(&[], extent));
+    ws.operands.resize(inputs + term.steps.len(), placeholder);
+    contract_steps(term, (data, shared), (inputs, &[], !depends), ws);
+    if sliced == 0 {
+        scatter_last(term, (data, shared), (free, fixed), extent, out, ws);
+        let released = std::mem::take(&mut ws.buffers);
+        ws.pool.extend(released);
+        return;
+    }
+
+    // Sliced labels with their extents, and every sliced operand's view with those labels
+    // removed and its offset per unit of each.
+    let mut labels = [(0u16, 0usize); MAXLABELS];
+    let mut ns = 0;
+    for l in (0..64).filter(|&l| sliced & (1 << l) != 0) {
+        labels[ns] = (l as u16, extent[l]);
+        ns += 1;
+    }
+    let labels = &labels[..ns];
+    ws.views.clear();
+    for k in 0..inputs {
+        let (source, mut shape) = ws.operands[k];
+        let mut steps = [0usize; MAXLABELS];
+        if ws.masks[k] & sliced != 0 {
+            for (step, &(l, _)) in steps.iter_mut().zip(labels) {
+                *step = fix_label(&mut shape, l, 1);
+            }
+        }
+        ws.views.push((source, shape, steps));
+    }
+
+    // Every tuple of sliced values contracts the dependent steps and adds its slice.
+    let hoisted = ws.buffers.len();
+    let mut values = [0usize; MAXLABELS];
+    let mut all = [(0u16, 0usize); MAXLABELS];
+    all[..fixed.len()].copy_from_slice(fixed);
+    loop {
+        for k in 0..inputs {
+            let (source, shape, steps) = ws.views[k];
+            if ws.masks[k] & sliced == 0 {
+                continue;
+            }
+            let shift = values[..ns]
+                .iter()
+                .zip(&steps)
+                .map(|(v, st)| v * st)
+                .sum::<usize>();
+            let source = match source {
+                Source::Block(id, off) => Source::Block(id, off + shift),
+                other => other,
+            };
+            ws.operands[k] = (source, shape);
+        }
+        for (slot, (&(l, _), &v)) in all[fixed.len()..]
+            .iter_mut()
+            .zip(labels.iter().zip(&values))
+        {
+            *slot = (l, v);
+        }
+        let current = &all[fixed.len()..fixed.len() + ns];
+        contract_steps(term, (data, shared), (inputs, current, depends), ws);
+        scatter_last(
+            term,
+            (data, shared),
+            (free, &all[..fixed.len() + ns]),
+            extent,
+            out,
+            ws,
+        );
+        let released = ws.buffers.drain(hoisted..).collect::<Vec<_>>();
+        ws.pool.extend(released);
+
+        // Advance the sliced values as an odometer.
+        let mut k = ns;
+        loop {
+            if k == 0 {
+                let released = std::mem::take(&mut ws.buffers);
+                ws.pool.extend(released);
+                return;
+            }
+            k -= 1;
+            values[k] += 1;
+            if values[k] < labels[k].1 {
+                break;
+            }
+            values[k] = 0;
+        }
+    }
+}
+
+/// Contract the selected steps of a term in its planned order, each into a new buffer that
+/// becomes the step's result operand.
+/// # Arguments:
+/// - `term`: Kept term with its plan.
+/// - `sources`: Data of every table-local block, and the group's shared product with its use.
+/// - `selection`: Number of input operands, the sliced labels with their current values, and
+///   the operands whose steps run, as a bit mask over operand numbers.
+/// - `ws`: Worker storage, with `operands` sized for every step result.
+/// # Returns:
+/// - `()`: Mutates `ws`.
+fn contract_steps(
+    term: &PlannedTerm<'_>,
+    sources: TermSources<'_>,
+    selection: (usize, &[(u16, usize)], u64),
+    ws: &mut Workspace,
+) {
+    let (data, shared) = sources;
+    let (inputs, slice, run) = selection;
+    let sliced = slice.iter().fold(0u64, |m, &(l, _)| m | (1 << l));
+    for (s, &(i, j)) in term.steps.iter().enumerate() {
+        let target = inputs + s;
+        if run & (1 << target) == 0 {
+            continue;
+        }
+
+        // The anchored step takes the group's shared product, relabelled to this term, with
+        // its sliced labels fixed to their current values.
         if let Some((_, canonical, anchor)) = shared
             && s == anchor.step as usize
         {
-            live &= !((1 << i) | (1 << j));
             let mut shape = *canonical;
             shape.mask = 0;
             for l in shape.labels[..shape.n].iter_mut() {
                 *l = anchor.labels[*l as usize];
                 shape.mask |= 1 << *l;
             }
-            live |= 1 << ws.operands.len();
-            ws.operands.push((Source::Shared, shape));
+            let offset = slice
+                .iter()
+                .map(|&(l, v)| fix_label(&mut shape, l, v))
+                .sum();
+            ws.operands[target] = (Source::Shared(offset), shape);
             continue;
         }
         let (sa, a) = ws.operands[i as usize];
         let (sb, b) = ws.operands[j as usize];
-        live &= !((1 << i) | (1 << j));
-        let keep = (0..ws.operands.len())
-            .filter(|&k| live & (1 << k) != 0)
-            .fold(free_mask, |m, k| m | ws.operands[k].1.mask);
-
-        let buffer = ws.pool.pop().unwrap_or_default();
+        let keep = ws.keeps[s] & !sliced;
+        let buffer = pooled_buffer(&mut ws.pool, result_size(&a, &b, keep));
         let (result, shape) = {
             let source = |s: Source| match s {
                 Source::Block(id, off) => &data[id][off..],
                 Source::Buffer(id) => ws.buffers[id].as_slice(),
-                Source::Shared => shared.map_or(&[][..], |x| x.0),
+                Source::Shared(off) => shared.map_or(&[][..], |x| &x.0[off..]),
             };
             contract_tensor_pair((source(sa), &a), (source(sb), &b), keep, buffer)
         };
         ws.buffers.push(result);
-        live |= 1 << ws.operands.len();
-        ws.operands
-            .push((Source::Buffer(ws.buffers.len() - 1), shape));
+        ws.operands[target] = (Source::Buffer(ws.buffers.len() - 1), shape);
     }
+}
 
-    // Add the final operand, times the coefficient, to the output block.
-    let last = ws.operands.pop().map(|(s, shape)| {
+/// Number of elements of a pairwise contraction's result.
+/// # Arguments:
+/// - `a`: First operand shape.
+/// - `b`: Second operand shape.
+/// - `keep`: Labels kept by the contraction.
+/// # Returns:
+/// - `usize`: Product of the extents of the kept labels of either operand.
+fn result_size(
+    a: &TensorShape,
+    b: &TensorShape,
+    keep: u64,
+) -> usize {
+    let from_a = (0..a.n)
+        .filter(|&k| keep & (1 << a.labels[k]) != 0)
+        .map(|k| a.dims[k])
+        .product::<usize>();
+    let from_b = (0..b.n)
+        .filter(|&k| keep & !a.mask & (1 << b.labels[k]) != 0)
+        .map(|k| b.dims[k])
+        .product::<usize>();
+    from_a * from_b
+}
+
+/// Take the released buffer that best fits a result: the smallest that holds it, or else the
+/// largest, so buffers are rarely grown.
+/// # Arguments:
+/// - `pool`: Released buffers.
+/// - `len`: Number of result elements.
+/// # Returns:
+/// - `Vec<f64>`: Buffer removed from the pool, or a new empty one.
+fn pooled_buffer(
+    pool: &mut Vec<Vec<f64>>,
+    len: usize,
+) -> Vec<f64> {
+    let fits = (0..pool.len())
+        .filter(|&k| pool[k].capacity() >= len)
+        .min_by_key(|&k| pool[k].capacity());
+    let chosen = fits.or_else(|| (0..pool.len()).max_by_key(|&k| pool[k].capacity()));
+    chosen.map_or_else(Vec::new, |k| pool.swap_remove(k))
+}
+
+/// Add the term's final operand, times its coefficient, to the output block.
+/// # Arguments:
+/// - `term`: Kept term with its plan.
+/// - `sources`: Data of every table-local block, and the group's shared product with its use.
+/// - `indices`: Class-local ids of the free indices of `out` in output order, and the fixed
+///   representatives with their values.
+/// - `extent`: Extent of every class-local label.
+/// - `out`: Row-major output block, updated in place.
+/// - `ws`: Worker storage holding the term's operands.
+/// # Returns:
+/// - `()`: Mutates `out`.
+fn scatter_last(
+    term: &PlannedTerm<'_>,
+    sources: TermSources<'_>,
+    indices: (&[u16], &[(u16, usize)]),
+    extent: &[usize],
+    out: &mut [f64],
+    ws: &Workspace,
+) {
+    let (data, shared) = sources;
+    let last = ws.operands.last().map(|&(s, shape)| {
         let values = match s {
             Source::Block(id, off) => &data[id][off..],
             Source::Buffer(id) => ws.buffers[id].as_slice(),
-            Source::Shared => shared.map_or(&[][..], |x| x.0),
+            Source::Shared(off) => shared.map_or(&[][..], |x| &x.0[off..]),
         };
         (values, shape)
     });
-    scatter_into_output(last, (free, fixed), map, extent, term.coefficient, out);
-
-    // Release this term's buffers for reuse.
-    let released = std::mem::take(&mut ws.buffers);
-    ws.pool.extend(released);
+    scatter_into_output(last, indices, &term.map, extent, term.coefficient, out);
 }
 
 /// Fix one label of an operand shape to one value, removing it from the shape.
