@@ -10,10 +10,10 @@
 //! columns, and narrow ones trade columns for rows.
 
 // Standard library imports.
-use std::arch::x86_64::{
-    _mm256_broadcast_sd, _mm256_fmadd_pd, _mm256_loadu_pd, _mm256_setzero_pd, _mm256_storeu_pd,
-};
 use std::cell::RefCell;
+
+// Parent/sibling imports.
+use super::simd::F64x4;
 
 thread_local! {
     /// Packed panels of the small operand, reused by every product on this thread.
@@ -185,18 +185,19 @@ unsafe fn gemm_tile<const MR: usize, const NV: usize>(
     unsafe {
         let pa = a.as_ptr();
         let pb = panel.as_ptr();
+        let rows = offsets.map(|offset| pa.add(offset));
 
         // Accumulate `MR \times NV` packed columns over the summed index.
-        let mut acc = [[_mm256_setzero_pd(); NV]; MR];
+        let mut acc = [[F64x4::zero(); NV]; MR];
         for (kk, &col) in cols.iter().enumerate() {
-            let mut bv = [_mm256_setzero_pd(); NV];
+            let mut bv = [F64x4::zero(); NV];
             for (v, x) in bv.iter_mut().enumerate() {
-                *x = _mm256_loadu_pd(pb.add(kk * nr + 4 * v));
+                *x = F64x4::load(&*(pb.add(kk * nr + 4 * v) as *const [f64; 4]));
             }
-            for (row, &offset) in acc.iter_mut().zip(offsets) {
-                let av = _mm256_broadcast_sd(&*pa.add(offset + col));
+            for (row, &start) in acc.iter_mut().zip(&rows) {
+                let av = F64x4::splat(*start.add(col));
                 for (x, &b) in row.iter_mut().zip(&bv) {
-                    *x = _mm256_fmadd_pd(av, b, *x);
+                    *x = F64x4::madd(*x, av, b);
                 }
             }
         }
@@ -206,14 +207,14 @@ unsafe fn gemm_tile<const MR: usize, const NV: usize>(
             let dst = (i0 + r) * ldc + j0;
             if width == nr {
                 for (v, x) in row.iter().enumerate() {
-                    _mm256_storeu_pd(c.as_mut_ptr().add(dst + 4 * v), *x);
+                    x.store(&mut *(c.as_mut_ptr().add(dst + 4 * v) as *mut [f64; 4]));
                 }
             } else {
-                let mut buffer = [0.0f64; 12];
-                for (v, x) in row.iter().enumerate() {
-                    _mm256_storeu_pd(buffer.as_mut_ptr().add(4 * v), *x);
+                let mut buffer = [[0.0f64; 4]; 3];
+                for (x, lanes) in row.iter().zip(buffer.iter_mut()) {
+                    x.store(lanes);
                 }
-                c[dst..dst + width].copy_from_slice(&buffer[..width]);
+                c[dst..dst + width].copy_from_slice(&buffer.as_flattened()[..width]);
             }
         }
     }
