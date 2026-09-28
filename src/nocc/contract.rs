@@ -27,8 +27,14 @@ use crate::nocc::common::{Tensors, evaluate_factor, space_orbitals};
 use crate::nocc::space::Spaces;
 use crate::nocc::terms::{GeneratedTerm, TensorFactor};
 
-/// Smallest output block, in elements, whose terms are split only once per thread.
+/// Smallest output block, in elements, evaluated as slices over its leading free indices.
 const LARGEBLOCK: usize = 1 << 20;
+
+/// Largest slice, in elements, of a large output block accumulated by one worker.
+const SLICESIZE: usize = 1 << 16;
+
+/// Smallest number of slices a large output block is split into.
+const SLICES: usize = 64;
 
 /// Orbital-space block of one tensor kind: the kind id and the space of every slot, upper then
 /// lower.
@@ -92,8 +98,8 @@ pub(crate) struct DenseBlock {
 /// Location of an operand's data.
 #[derive(Clone, Copy)]
 enum Source {
-    /// A dense factor block, by table-local block id.
-    Block(usize),
+    /// A dense factor block, by table-local block id, viewed from an element offset.
+    Block(usize, usize),
     /// An intermediate buffer of the current term.
     Buffer(usize),
 }
@@ -106,8 +112,21 @@ struct Workspace {
     buffers: Vec<Vec<f64>>,
     /// Released buffers available for reuse.
     pool: Vec<Vec<f64>>,
-    /// Accumulated output block.
-    out: Vec<f64>,
+}
+
+impl Workspace {
+    /// Build empty worker storage.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `Self`: Empty workspace.
+    fn new() -> Self {
+        Self {
+            operands: Vec::new(),
+            buffers: Vec::new(),
+            pool: Vec::new(),
+        }
+    }
 }
 
 impl TermEvaluator {
@@ -501,38 +520,64 @@ pub(crate) fn evaluate_dense_table(
     let dims = free.iter().map(|&x| extent[x as usize]).collect::<Vec<_>>();
     let size = dims.iter().product::<usize>();
 
-    let workspace = || Workspace {
-        operands: Vec::new(),
-        buffers: Vec::new(),
-        pool: Vec::new(),
-        out: vec![0.0; size],
+    let planned = |t: usize, index: u32| {
+        let range = |starts: &[u32]| starts[t] as usize..starts[t + 1] as usize;
+        PlannedTerm {
+            factors: &terms[index as usize].3,
+            blocks: &plan.factor_blocks[range(&plan.term_starts)],
+            steps: &plan.steps[range(&plan.step_starts)],
+            map: label_map(&plan.substitutions[range(&plan.substitution_starts)]),
+            coefficient: plan.coefficients[t],
+        }
     };
-    // Every split of the terms accumulates its own output block, so large blocks are split
-    // only once per thread.
-    let threads = rayon::current_num_threads();
-    let min_len = if size >= LARGEBLOCK {
-        plan.terms.len().div_ceil(threads)
-    } else {
-        1
-    };
+
+    // A large block is split over its leading free indices into cache-sized slices, each
+    // accumulated by one worker evaluating every term with those indices fixed.
+    if size >= LARGEBLOCK {
+        let mut lead = 0;
+        let mut slice = size;
+        while lead < free.len() && (slice > SLICESIZE || size / slice < SLICES) {
+            slice /= dims[lead];
+            lead += 1;
+        }
+        let mut out = vec![0.0; size];
+        out.par_chunks_mut(slice)
+            .enumerate()
+            .for_each_init(Workspace::new, |ws, (s, chunk)| {
+                let mut fixed = [(0u16, 0usize); MAXLABELS];
+                let mut r = s;
+                for k in (0..lead).rev() {
+                    fixed[k] = (free[k], r % dims[k]);
+                    r /= dims[k];
+                }
+                for (t, &index) in plan.terms.iter().enumerate() {
+                    let term = planned(t, index);
+                    accumulate_term(
+                        &term,
+                        (&data, &extent),
+                        (&free[lead..], &fixed[..lead]),
+                        chunk,
+                        ws,
+                    );
+                }
+            });
+        return DenseBlock { data: out, dims };
+    }
+
+    // A small block is accumulated once per split of the terms and the splits summed.
     let out = plan
         .terms
         .par_iter()
         .enumerate()
-        .with_min_len(min_len)
-        .fold(workspace, |mut ws, (t, &index)| {
-            let range = |starts: &[u32]| starts[t] as usize..starts[t + 1] as usize;
-            let term = PlannedTerm {
-                factors: &terms[index as usize].3,
-                blocks: &plan.factor_blocks[range(&plan.term_starts)],
-                steps: &plan.steps[range(&plan.step_starts)],
-                map: label_map(&plan.substitutions[range(&plan.substitution_starts)]),
-                coefficient: plan.coefficients[t],
-            };
-            accumulate_term(&term, &data, &extent, free, &mut ws);
-            ws
-        })
-        .map(|ws| ws.out)
+        .fold(
+            || (Workspace::new(), vec![0.0; size]),
+            |(mut ws, mut out), (t, &index)| {
+                let term = planned(t, index);
+                accumulate_term(&term, (&data, &extent), (free, &[]), &mut out, &mut ws);
+                (ws, out)
+            },
+        )
+        .map(|(_, out)| out)
         .reduce(
             || vec![0.0; size],
             |mut a, b| {
@@ -560,27 +605,49 @@ struct PlannedTerm<'a> {
     coefficient: f64,
 }
 
-/// Contract one term and add its contribution to the workspace output block.
+/// Contract one term, with some free indices fixed, and add it to an output block over the
+/// remaining free indices.
 /// # Arguments:
 /// - `term`: Kept term with its plan.
-/// - `data`: Data of every table-local block.
-/// - `extent`: Extent of every class-local label.
-/// - `free`: Class-local ids of the free indices, in output order.
-/// - `ws`: Worker storage, holding the output block.
+/// - `tensors`: Data of every table-local block and extent of every class-local label.
+/// - `indices`: Class-local ids of the free indices of `out` in output order, and the free
+///   indices fixed to one value with their values.
+/// - `out`: Row-major output block over the unfixed free indices, updated in place.
+/// - `ws`: Worker storage.
 /// # Returns:
-/// - `()`: Mutates `ws`.
+/// - `()`: Mutates `out` and `ws`.
 fn accumulate_term(
     term: &PlannedTerm<'_>,
-    data: &[&[f64]],
-    extent: &[usize],
-    free: &[u16],
+    tensors: (&[&[f64]], &[usize]),
+    indices: (&[u16], &[(u16, usize)]),
+    out: &mut [f64],
     ws: &mut Workspace,
 ) {
+    let (data, extent) = tensors;
+    let (free, fixed) = indices;
     let map = &term.map;
-    let free_mask = free.iter().fold(0u64, |m, &x| m | (1 << map[x as usize]));
 
-    // Every tensor factor becomes an operand over its block, with its labels substituted; a
-    // label repeated within one factor becomes a diagonal view.
+    // Fixed indices by representative; a representative fixed to two values vanishes here.
+    let mut reps = [(0u16, 0usize); MAXLABELS];
+    let mut nf = 0;
+    for &(l, v) in fixed {
+        let r = map[l as usize];
+        match reps[..nf].iter().find(|x| x.0 == r) {
+            Some(&(_, w)) if w != v => return,
+            Some(_) => {}
+            None => {
+                reps[nf] = (r, v);
+                nf += 1;
+            }
+        }
+    }
+    let fixed = &reps[..nf];
+    let fixed_mask = fixed.iter().fold(0u64, |m, x| m | (1 << x.0));
+    let free_mask = free.iter().fold(0u64, |m, &x| m | (1 << map[x as usize])) & !fixed_mask;
+
+    // Every tensor factor becomes an operand over its block, with its labels substituted and
+    // its fixed labels folded into an offset; a label repeated within one factor becomes a
+    // diagonal view.
     ws.operands.clear();
     for (f, &id) in term.factors.iter().zip(term.blocks) {
         let mut labels = [0u16; 2 * MAXLABELS];
@@ -588,8 +655,13 @@ fn accumulate_term(
         for (slot, &l) in labels.iter_mut().zip(f.1.iter().chain(&f.2)) {
             *slot = map[l as usize];
         }
-        let shape = strided_tensor_shape(&labels[..n], extent);
-        ws.operands.push((Source::Block(id as usize), shape));
+        let mut shape = strided_tensor_shape(&labels[..n], extent);
+        let offset = fixed
+            .iter()
+            .map(|&(r, v)| fix_label(&mut shape, r, v))
+            .sum();
+        ws.operands
+            .push((Source::Block(id as usize, offset), shape));
     }
 
     // Contract in the planned order; each step keeps the labels of the operands still to be
@@ -606,7 +678,7 @@ fn accumulate_term(
         let buffer = ws.pool.pop().unwrap_or_default();
         let (result, shape) = {
             let source = |s: Source| match s {
-                Source::Block(id) => data[id],
+                Source::Block(id, off) => &data[id][off..],
                 Source::Buffer(id) => ws.buffers[id].as_slice(),
             };
             contract_tensor_pair((source(sa), &a), (source(sb), &b), keep, buffer)
@@ -620,16 +692,42 @@ fn accumulate_term(
     // Add the final operand, times the coefficient, to the output block.
     let last = ws.operands.pop().map(|(s, shape)| {
         let values = match s {
-            Source::Block(id) => data[id],
+            Source::Block(id, off) => &data[id][off..],
             Source::Buffer(id) => ws.buffers[id].as_slice(),
         };
         (values, shape)
     });
-    scatter_into_output(last, free, map, extent, term.coefficient, &mut ws.out);
+    scatter_into_output(last, (free, fixed), map, extent, term.coefficient, out);
 
     // Release this term's buffers for reuse.
     let released = std::mem::take(&mut ws.buffers);
     ws.pool.extend(released);
+}
+
+/// Fix one label of an operand shape to one value, removing it from the shape.
+/// # Arguments:
+/// - `shape`: Operand shape, updated in place.
+/// - `label`: Label to fix.
+/// - `value`: Value of the label.
+/// # Returns:
+/// - `usize`: Element offset of the fixed slice, zero when the operand lacks the label.
+fn fix_label(
+    shape: &mut TensorShape,
+    label: u16,
+    value: usize,
+) -> usize {
+    let Some(k) = shape.labels[..shape.n].iter().position(|&x| x == label) else {
+        return 0;
+    };
+    let offset = value * shape.strides[k];
+    for j in k..shape.n - 1 {
+        shape.labels[j] = shape.labels[j + 1];
+        shape.dims[j] = shape.dims[j + 1];
+        shape.strides[j] = shape.strides[j + 1];
+    }
+    shape.n -= 1;
+    shape.mask &= !(1 << label);
+    offset
 }
 
 /// Add `c` times the final operand to the output block over the free indices.
@@ -638,7 +736,9 @@ fn accumulate_term(
 /// factors is a constant.
 /// # Arguments:
 /// - `operand`: Final operand data and shape, or `None` for a term without factors.
-/// - `free`: Class-local ids of the free indices, in output order.
+/// - `indices`: Class-local ids of the free indices of `out` in output order, and the fixed
+///   representatives with their values; an output index whose representative is fixed is
+///   written only at that value.
 /// - `map`: Representative of every label.
 /// - `extent`: Extent of every class-local label.
 /// - `coeff`: Term coefficient.
@@ -647,7 +747,7 @@ fn accumulate_term(
 /// - `()`: Mutates `out`.
 fn scatter_into_output(
     operand: Option<(&[f64], TensorShape)>,
-    free: &[u16],
+    indices: (&[u16], &[(u16, usize)]),
     map: &[u16; 64],
     extent: &[usize],
     coeff: f64,
@@ -656,17 +756,24 @@ fn scatter_into_output(
     if out.is_empty() {
         return;
     }
+    let (free, fixed) = indices;
     let unit = [1.0];
     let (data, shape) = operand.unwrap_or((&unit, strided_tensor_shape(&[], extent)));
 
     // Extent, output stride and operand stride of every representative of the free indices;
-    // free indices sharing a representative add their output strides.
+    // free indices sharing a representative add their output strides, and an index whose
+    // representative is fixed moves the base offset to its value.
     let mut reps = [(0u16, 0usize, 0usize, 0usize); 2 * MAXLABELS];
     let mut nr = 0;
+    let mut base = 0;
     let mut stride = out.len();
     for &l in free {
         stride /= extent[l as usize];
         let r = map[l as usize];
+        if let Some(&(_, v)) = fixed.iter().find(|x| x.0 == r) {
+            base += v * stride;
+            continue;
+        }
         match reps[..nr].iter().position(|x| x.0 == r) {
             Some(k) => reps[k].2 += stride,
             None => {
@@ -725,7 +832,7 @@ fn scatter_into_output(
     };
     let count = inner.iter().map(|x| x.1).product::<usize>();
     let mut idx = [0usize; 2 * MAXLABELS];
-    let (mut o, mut p) = (0usize, 0usize);
+    let (mut o, mut p) = (base, 0usize);
     for _ in 0..count {
         let (d, so, sd) = last;
         if summed.is_empty() {
