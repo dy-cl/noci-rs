@@ -13,6 +13,7 @@
 
 // Standard library imports.
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 // External crate imports.
@@ -26,6 +27,9 @@ use crate::maths::contract::{
 use crate::nocc::common::{Tensors, evaluate_factor, space_orbitals};
 use crate::nocc::space::Spaces;
 use crate::nocc::terms::{GeneratedTerm, TensorFactor};
+
+/// Largest number of terms evaluated together from one computed shared product.
+const GROUPTERMS: usize = 1024;
 
 /// Smallest output block, in elements, evaluated as slices over its leading free indices.
 const LARGEBLOCK: usize = 1 << 20;
@@ -65,6 +69,39 @@ pub(crate) struct TablePlan {
     /// Coefficient of every kept term, including the extent of every summed label left only in
     /// resolved deltas.
     coefficients: Vec<f64>,
+    /// Products of two factor blocks shared by several kept terms, in canonical labels.
+    shared: Vec<SharedProduct>,
+    /// Shared product of every kept term, its step number, and the term label of every
+    /// canonical label, or `None`.
+    anchors: Vec<Option<Anchor>>,
+    /// Kept-term positions grouped by shared product, each group with its product.
+    groups: Vec<(Range<usize>, Option<u32>)>,
+    /// Kept-term positions in group order.
+    order: Vec<u32>,
+}
+
+/// Product of two factor blocks over canonical labels, `C = A B` summed over the labels not
+/// kept, computed once for every kept term that contains it.
+struct SharedProduct {
+    /// Table-local block of each operand.
+    blocks: [u32; 2],
+    /// Canonical label of every slot of each operand.
+    labels: [Vec<u16>; 2],
+    /// Bit mask of the canonical labels kept in the product.
+    keep: u64,
+    /// Extent of every canonical label.
+    extent: Vec<usize>,
+}
+
+/// Use of a shared product by one kept term.
+#[derive(Clone)]
+struct Anchor {
+    /// Shared product id.
+    product: u32,
+    /// Step of the term the product replaces.
+    step: u8,
+    /// Term label of every canonical label.
+    labels: Vec<u16>,
 }
 
 /// Evaluator of generated term tables: the cumulant truncation, the orbital-space sizes that
@@ -102,6 +139,8 @@ enum Source {
     Block(usize, usize),
     /// An intermediate buffer of the current term.
     Buffer(usize),
+    /// The product shared by the current term's group.
+    Shared,
 }
 
 /// Reusable per-worker storage for contracting terms.
@@ -292,16 +331,70 @@ fn resolve_table_plan(
             let all = masks.iter().fold(0u64, |m, &x| m | x);
             let mut steps = Vec::with_capacity(masks.len());
             optimal_contraction_steps(&masks, all & !summed, &sizes, &mut steps);
-            steps
+            let blocks = &factor_blocks[term_starts[k] as usize..term_starts[k + 1] as usize];
+            let anchor = shared_step(term, &map, blocks, &masks, &steps, all & !summed, &sizes);
+            (steps, anchor)
         })
         .collect::<Vec<_>>();
     let mut steps = Vec::new();
     let mut step_starts = Vec::with_capacity(kept.len() + 1);
-    for s in term_steps {
+    let mut shared = Vec::new();
+    let mut shared_ids = HashMap::<SharedKey, u32>::new();
+    let mut anchors = Vec::with_capacity(kept.len());
+    for (s, anchor) in term_steps {
         step_starts.push(steps.len() as u32);
         steps.extend(s);
+        anchors.push(anchor.map(|(key, step, labels)| {
+            let next = shared.len() as u32;
+            let product = *shared_ids.entry(key.clone()).or_insert_with(|| {
+                let extent = labels.iter().map(|&l| extent[l as usize]).collect();
+                shared.push(SharedProduct {
+                    blocks: [key.0, key.2],
+                    labels: [key.1.clone(), key.3.clone()],
+                    keep: key.4,
+                    extent,
+                });
+                next
+            });
+            Anchor {
+                product,
+                step,
+                labels,
+            }
+        }));
     }
     step_starts.push(steps.len() as u32);
+
+    // Group the kept terms by shared product, in pieces small enough to balance the workers;
+    // products used by one term are not shared.
+    let mut uses = vec![0usize; shared.len()];
+    for a in anchors.iter().flatten() {
+        uses[a.product as usize] += 1;
+    }
+    for a in anchors.iter_mut() {
+        if a.as_ref().is_some_and(|x| uses[x.product as usize] < 2) {
+            *a = None;
+        }
+    }
+    let mut order = (0..kept.len() as u32).collect::<Vec<_>>();
+    order.sort_by_key(|&t| anchors[t as usize].as_ref().map_or(u32::MAX, |a| a.product));
+    let mut groups = Vec::new();
+    let mut start = 0;
+    while start < order.len() {
+        let product = anchors[order[start] as usize].as_ref().map(|a| a.product);
+        let mut end = start + 1;
+        if product.is_some() {
+            while end < order.len()
+                && anchors[order[end] as usize].as_ref().map(|a| a.product) == product
+            {
+                end += 1;
+            }
+        }
+        for piece in (start..end).step_by(GROUPTERMS) {
+            groups.push((piece..(piece + GROUPTERMS).min(end), product));
+        }
+        start = end;
+    }
 
     TablePlan {
         keys,
@@ -313,7 +406,94 @@ fn resolve_table_plan(
         substitutions,
         substitution_starts,
         coefficients,
+        shared,
+        anchors,
+        groups,
+        order,
     }
+}
+
+/// Canonical form of a product of two factor blocks: each operand's block and canonical slot
+/// labels, and the bit mask of kept canonical labels.
+type SharedKey = (u32, Vec<u16>, u32, Vec<u16>, u64);
+
+/// Find a term's most expensive step that contracts two factor blocks, in canonical form.
+/// Labels are renumbered in order of first appearance over the two operands' slots, in the
+/// operand order giving the smaller key, so terms that contract the same blocks in the same way
+/// share one key. The kept labels are those the evaluator keeps at that step.
+/// # Arguments:
+/// - `term`: Generated term.
+/// - `map`: Representative of every label.
+/// - `blocks`: Table-local block of every tensor factor.
+/// - `masks`: Label mask of every tensor factor.
+/// - `steps`: Planned contraction steps.
+/// - `kept`: Bit mask of labels kept in the final result.
+/// - `sizes`: Joint index-space sizes of label masks.
+/// # Returns:
+/// - `Option<(SharedKey, u8, Vec<u16>)>`: Canonical key, step number, and term label of every
+///   canonical label, or `None` when no step contracts two factor blocks.
+fn shared_step(
+    term: &GeneratedTerm,
+    map: &[u16; 64],
+    blocks: &[u32],
+    masks: &[u64],
+    steps: &[(u8, u8)],
+    kept: u64,
+    sizes: &LabelSizes,
+) -> Option<(SharedKey, u8, Vec<u16>)> {
+    // Replay the steps with the evaluator's kept labels, recording block-by-block steps.
+    let leaves = masks.len();
+    let mut ops = masks.to_vec();
+    let mut live = (1u64 << ops.len()) - 1;
+    let mut best: Option<(f64, u8, usize, usize, u64)> = None;
+    for (s, &(i, j)) in steps.iter().enumerate() {
+        live &= !((1 << i) | (1 << j));
+        let rest = (0..ops.len())
+            .filter(|&k| live & (1 << k) != 0)
+            .fold(kept, |m, k| m | ops[k]);
+        let joint = ops[i as usize] | ops[j as usize];
+        let result = joint & rest;
+        if (i as usize) < leaves && (j as usize) < leaves {
+            let cost = sizes.size(joint);
+            if best.is_none_or(|b| cost > b.0) {
+                best = Some((cost, s as u8, i as usize, j as usize, result));
+            }
+        }
+        live |= 1 << ops.len();
+        ops.push(result);
+    }
+    let (_, step, i, j) = best.map(|b| (b.0, b.1, b.2, b.3))?;
+    let keep = best?.4;
+
+    // Canonical labels in order of first appearance over the two operands' slots.
+    let slots = |f: usize| {
+        let x = &term.3[f];
+        x.1.iter()
+            .chain(&x.2)
+            .map(|&l| map[l as usize])
+            .collect::<Vec<_>>()
+    };
+    let canonical = |a: usize, b: usize| {
+        let mut names = Vec::<u16>::new();
+        let mut rename = |l: u16| {
+            let k = names.iter().position(|&x| x == l).unwrap_or_else(|| {
+                names.push(l);
+                names.len() - 1
+            });
+            k as u16
+        };
+        let la = slots(a).into_iter().map(&mut rename).collect::<Vec<_>>();
+        let lb = slots(b).into_iter().map(&mut rename).collect::<Vec<_>>();
+        let keep_c = names
+            .iter()
+            .enumerate()
+            .filter(|&(_, &l)| keep & (1 << l) != 0)
+            .fold(0u64, |m, (k, _)| m | (1 << k));
+        ((blocks[a], la, blocks[b], lb, keep_c), names)
+    };
+    let (x, y) = (canonical(i, j), canonical(j, i));
+    let (key, names) = if x.0 <= y.0 { x } else { y };
+    Some((key, step, names))
 }
 
 /// Resolve the Kronecker deltas of one term into label substitutions. Labels joined by deltas
@@ -556,6 +736,7 @@ pub(crate) fn evaluate_dense_table(
                         &term,
                         (&data, &extent),
                         (&free[lead..], &fixed[..lead]),
+                        None,
                         chunk,
                         ws,
                     );
@@ -564,20 +745,45 @@ pub(crate) fn evaluate_dense_table(
         return DenseBlock { data: out, dims };
     }
 
-    // A small block is accumulated once per split of the terms and the splits summed.
+    // A small block is accumulated once per split of the groups and the splits summed; each
+    // group contracts its shared product once for all its terms.
     let out = plan
-        .terms
+        .groups
         .par_iter()
-        .enumerate()
         .fold(
-            || (Workspace::new(), vec![0.0; size]),
-            |(mut ws, mut out), (t, &index)| {
-                let term = planned(t, index);
-                accumulate_term(&term, (&data, &extent), (free, &[]), &mut out, &mut ws);
-                (ws, out)
+            || (Workspace::new(), vec![0.0; size], Vec::new()),
+            |(mut ws, mut out, buffer), (range, product)| {
+                let shared = product.map(|id| {
+                    let sp = &plan.shared[id as usize];
+                    let a = strided_tensor_shape(&sp.labels[0], &sp.extent);
+                    let b = strided_tensor_shape(&sp.labels[1], &sp.extent);
+                    contract_tensor_pair(
+                        (data[sp.blocks[0] as usize], &a),
+                        (data[sp.blocks[1] as usize], &b),
+                        sp.keep,
+                        buffer,
+                    )
+                });
+                for &t in &plan.order[range.clone()] {
+                    let t = t as usize;
+                    let term = planned(t, plan.terms[t]);
+                    let use_shared = shared
+                        .as_ref()
+                        .zip(plan.anchors[t].as_ref())
+                        .map(|((values, shape), anchor)| (values.as_slice(), shape, anchor));
+                    accumulate_term(
+                        &term,
+                        (&data, &extent),
+                        (free, &[]),
+                        use_shared,
+                        &mut out,
+                        &mut ws,
+                    );
+                }
+                (ws, out, shared.map_or_else(Vec::new, |(values, _)| values))
             },
         )
-        .map(|(_, out)| out)
+        .map(|(_, out, _)| out)
         .reduce(
             || vec![0.0; size],
             |mut a, b| {
@@ -612,6 +818,8 @@ struct PlannedTerm<'a> {
 /// - `tensors`: Data of every table-local block and extent of every class-local label.
 /// - `indices`: Class-local ids of the free indices of `out` in output order, and the free
 ///   indices fixed to one value with their values.
+/// - `shared`: Data and canonical shape of the term's shared product with its use, which
+///   replaces the anchored step, or `None`.
 /// - `out`: Row-major output block over the unfixed free indices, updated in place.
 /// - `ws`: Worker storage.
 /// # Returns:
@@ -620,6 +828,7 @@ fn accumulate_term(
     term: &PlannedTerm<'_>,
     tensors: (&[&[f64]], &[usize]),
     indices: (&[u16], &[(u16, usize)]),
+    shared: Option<(&[f64], &TensorShape, &Anchor)>,
     out: &mut [f64],
     ws: &mut Workspace,
 ) {
@@ -667,7 +876,22 @@ fn accumulate_term(
     // Contract in the planned order; each step keeps the labels of the operands still to be
     // contracted and the free labels.
     let mut live = (1u64 << ws.operands.len()) - 1;
-    for &(i, j) in term.steps {
+    for (s, &(i, j)) in term.steps.iter().enumerate() {
+        // The anchored step takes the group's shared product, relabelled to this term.
+        if let Some((_, canonical, anchor)) = shared
+            && s == anchor.step as usize
+        {
+            live &= !((1 << i) | (1 << j));
+            let mut shape = *canonical;
+            shape.mask = 0;
+            for l in shape.labels[..shape.n].iter_mut() {
+                *l = anchor.labels[*l as usize];
+                shape.mask |= 1 << *l;
+            }
+            live |= 1 << ws.operands.len();
+            ws.operands.push((Source::Shared, shape));
+            continue;
+        }
         let (sa, a) = ws.operands[i as usize];
         let (sb, b) = ws.operands[j as usize];
         live &= !((1 << i) | (1 << j));
@@ -680,6 +904,7 @@ fn accumulate_term(
             let source = |s: Source| match s {
                 Source::Block(id, off) => &data[id][off..],
                 Source::Buffer(id) => ws.buffers[id].as_slice(),
+                Source::Shared => shared.map_or(&[][..], |x| x.0),
             };
             contract_tensor_pair((source(sa), &a), (source(sb), &b), keep, buffer)
         };
@@ -694,6 +919,7 @@ fn accumulate_term(
         let values = match s {
             Source::Block(id, off) => &data[id][off..],
             Source::Buffer(id) => ws.buffers[id].as_slice(),
+            Source::Shared => shared.map_or(&[][..], |x| x.0),
         };
         (values, shape)
     });
