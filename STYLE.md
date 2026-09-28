@@ -1,5 +1,23 @@
 # Style Guide
 
+## Module Layout
+
+Organise methods by family first and approach second. Each family folder holds its shared
+layer at the root and one subfolder per approach:
+
+1. `noci/`: the shared NOCI matrix-element layer, with `deterministic/`, `stochastic/` and
+   `selected/`.
+2. `nocc/`: the shared NOCC layer (`setup/`, `rdm/`, `cumulants/`, `space/`, `terms/` and
+   `equations/`), with `deterministic/` and, later, `stochastic/`.
+
+`deterministic/` always means the exact, non-sampled counterpart of the stochastic method.
+Folders name the approach, while types and functions name the method, for example
+`noci::selected::snoci_step` and `SNOCIOptions`.
+
+A method subfolder may depend only on its own family's shared layer and on modules below it,
+such as `maths`, `nonorthogonalwicks`, `scf` and `determinant`. It never depends on a sibling
+method subfolder. `nocc/` may use the `noci/` shared layer but never `noci/`'s method subfolders.
+
 ## Rust Module Headers
 
 Use this order, omitting empty sections:

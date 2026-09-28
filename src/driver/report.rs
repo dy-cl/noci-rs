@@ -200,21 +200,21 @@ pub fn print_report(
 
     if input.snoci.is_some() {
         // Report selected-NOCI and perturbative-selection costs when requested.
-        print_counter("Total SNOCI time", res.timings.snoci.run_snoci, 0);
-        print_counter("Full SNOCI step", res.timings.snoci.snoci_step, 2);
+        print_counter("Total SNOCI time", res.timings.selected.run_snoci, 0);
+        print_counter("Full SNOCI step", res.timings.selected.snoci_step, 2);
         print_counter(
             "Current space H, S and GEVP",
-            res.timings.snoci.solve_current_space,
+            res.timings.selected.solve_current_space,
             2,
         );
         print_counter(
             "Initial candidate pool generation",
-            res.timings.snoci.candidate_pool_new,
+            res.timings.selected.candidate_pool_new,
             2,
         );
         print_counter(
             "Update candidate pool overlaps",
-            res.timings.snoci.candidate_pool_update,
+            res.timings.selected.candidate_pool_update,
             2,
         );
 
@@ -222,66 +222,66 @@ pub fn print_report(
 
         print_counter(
             "Candidate-current overlaps",
-            res.timings.snoci.build_snoci_overlaps,
+            res.timings.selected.build_snoci_overlaps,
             2,
         );
         print_counter(
             "Candidate-current space H",
-            res.timings.snoci.build_candidate_h_ai,
+            res.timings.selected.build_candidate_h_ai,
             2,
         );
         print_counter(
             "Generalised Fock build",
-            res.timings.snoci.build_generalised_fock,
+            res.timings.selected.build_generalised_fock,
             2,
         );
         print_counter(
             "Current-current and candidate-current Fock blocks",
-            res.timings.snoci.build_snoci_focks,
+            res.timings.selected.build_snoci_focks,
             2,
         );
         print_counter(
             "Build cached candidate shifted Fock",
-            res.timings.snoci.build_candidate_m,
+            res.timings.selected.build_candidate_m,
             2,
         );
         print_counter(
             "Build candidate shifted Fock diagonal",
-            res.timings.snoci.build_candidate_m_diag,
+            res.timings.selected.build_candidate_m_diag,
             2,
         );
         print_counter(
             "PT2 projection contractions",
-            res.timings.snoci.build_snoci_projection,
+            res.timings.selected.build_snoci_projection,
             2,
         );
         print_counter(
             "Candidate coupling vector",
-            res.timings.snoci.build_candidate_v,
+            res.timings.selected.build_candidate_v,
             2,
         );
         print_counter(
             "Projected coupling vector",
-            res.timings.snoci.build_omega_v,
+            res.timings.selected.build_omega_v,
             2,
         );
         print_counter(
             "Build projected PT2 diagonal",
-            res.timings.snoci.build_omega_m_diag,
+            res.timings.selected.build_omega_m_diag,
             2,
         );
 
         println!("{}", "-".repeat(100));
 
-        print_counter("GMRES Solve", res.timings.snoci.gmres, 2);
+        print_counter("GMRES Solve", res.timings.selected.gmres, 2);
         print_counter(
             "Apply projected PT2 operator",
-            res.timings.snoci.apply_omega_m,
+            res.timings.selected.apply_omega_m,
             4,
         );
         print_counter(
             "Apply unprojected candidate M",
-            res.timings.snoci.apply_candidate_m,
+            res.timings.selected.apply_candidate_m,
             6,
         );
 

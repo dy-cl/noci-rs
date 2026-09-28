@@ -20,15 +20,15 @@
 //! initial guesses so that corresponding SCF branches can be followed between geometries.
 
 mod config;
-mod deterministic;
 mod geometry;
+#[cfg(feature = "nocc")]
+mod nocc;
+mod noci;
 mod post;
 mod reference;
 mod report;
 mod run;
 mod scf;
-mod snoci;
-mod stochastic;
 mod types;
 
 // Public function re-exports.

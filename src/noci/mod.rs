@@ -14,8 +14,10 @@
 //! - The generalised Slater-Condon implementation provides the direct alternative.
 //!
 //! The module centralises determinant-pair ordering, excitation phases and matrix-element
-//! cache access so that reference NOCI, deterministic propagation, NOCIQMC and
-//! NOCI-PT2/SNOCI use consistent matrix elements.
+//! cache access so that reference NOCI and the method subfolders below it use consistent
+//! matrix elements: deterministic propagation in [`deterministic`], NOCIQMC in [`stochastic`],
+//! and selected NOCI with NOCI-PT2 in [`selected`]. Each method subfolder depends only on this
+//! shared layer and the modules below it, never on a sibling method subfolder.
 //!
 //! Full Hamiltonian, overlap and generalised-Fock matrices may be constructed for
 //! deterministic calculations. The resulting generalised eigenvalue problem
@@ -30,6 +32,10 @@
 //!   (2009), [doi:10.1063/1.3236841](https://doi.org/10.1063/1.3236841); Burton and Thom,
 //!   *J. Chem. Theory Comput.* **15**, 4851 (2019),
 //!   [doi:10.1021/acs.jctc.9b00441](https://doi.org/10.1021/acs.jctc.9b00441).
+
+pub mod deterministic;
+pub mod selected;
+pub mod stochastic;
 
 mod auxiliary;
 mod cache;

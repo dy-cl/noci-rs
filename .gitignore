@@ -11,7 +11,7 @@ wickscache/
 scripts/studies/
 .cargo/
 tools/wick/__pycache__/
-src/nocc/terms/*
+src/nocc/terms/*.json
 build/generated/*
 .codex
 uprof

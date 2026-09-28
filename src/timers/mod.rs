@@ -3,7 +3,7 @@
 //!
 //! Timing counters are grouped by the scientific subsystem whose work they measure:
 //! general driver operations, deterministic propagation, stochastic propagation,
-//! NOCI-PT2/SNOCI, NOCI matrix elements and extended nonorthogonal Wick evaluation.
+//! selected NOCI and NOCI-PT2, NOCI matrix elements and extended nonorthogonal Wick evaluation.
 //!
 //! Each counter stores its total elapsed time and number of calls. When the `timings` feature
 //! is enabled, [`time_call!`] records a timed region without changing its returned value.
@@ -18,7 +18,7 @@ pub mod deterministic;
 pub mod general;
 pub mod noci;
 pub mod nonorthogonalwicks;
-pub mod snoci;
+pub mod selected;
 pub mod stochastic;
 
 // Private imports.
@@ -71,24 +71,24 @@ macro_rules! for_each_counter {
         $f!($tot.stochastic.step.compute_population_stats);
         $f!($tot.stochastic.step.compute_projected_energy);
 
-        $f!($tot.snoci.run_snoci);
-        $f!($tot.snoci.snoci_step);
-        $f!($tot.snoci.solve_current_space);
-        $f!($tot.snoci.candidate_pool_new);
-        $f!($tot.snoci.candidate_pool_update);
-        $f!($tot.snoci.build_candidate_h_ai);
-        $f!($tot.snoci.build_generalised_fock);
-        $f!($tot.snoci.gmres);
-        $f!($tot.snoci.build_snoci_projection);
-        $f!($tot.snoci.build_snoci_overlaps);
-        $f!($tot.snoci.build_snoci_focks);
-        $f!($tot.snoci.build_candidate_m_diag);
-        $f!($tot.snoci.build_candidate_m);
-        $f!($tot.snoci.apply_candidate_m);
-        $f!($tot.snoci.apply_omega_m);
-        $f!($tot.snoci.build_omega_m_diag);
-        $f!($tot.snoci.build_candidate_v);
-        $f!($tot.snoci.build_omega_v);
+        $f!($tot.selected.run_snoci);
+        $f!($tot.selected.snoci_step);
+        $f!($tot.selected.solve_current_space);
+        $f!($tot.selected.candidate_pool_new);
+        $f!($tot.selected.candidate_pool_update);
+        $f!($tot.selected.build_candidate_h_ai);
+        $f!($tot.selected.build_generalised_fock);
+        $f!($tot.selected.gmres);
+        $f!($tot.selected.build_snoci_projection);
+        $f!($tot.selected.build_snoci_overlaps);
+        $f!($tot.selected.build_snoci_focks);
+        $f!($tot.selected.build_candidate_m_diag);
+        $f!($tot.selected.build_candidate_m);
+        $f!($tot.selected.apply_candidate_m);
+        $f!($tot.selected.apply_omega_m);
+        $f!($tot.selected.build_omega_m_diag);
+        $f!($tot.selected.build_candidate_v);
+        $f!($tot.selected.build_omega_v);
 
         $f!($tot.noci.build_mo_cache);
         $f!($tot.noci.build_fock_mo_cache);
@@ -215,8 +215,8 @@ pub struct Totals {
     pub deterministic: deterministic::Totals,
     /// Timing counters for stochastic NOCI-QMC stages.
     pub stochastic: stochastic::Totals,
-    /// Timing counters for SNOCI stages.
-    pub snoci: snoci::Totals,
+    /// Timing counters for selected NOCI and NOCI-PT2 stages.
+    pub selected: selected::Totals,
     /// Timing counters for routines in the `noci` module.
     pub noci: noci::Totals,
     /// Timing counters for routines in the `nonorthogonalwicks` module.
@@ -237,7 +237,7 @@ impl Totals {
         self.general.merge_from(&other.general);
         self.deterministic.merge_from(&other.deterministic);
         self.stochastic.merge_from(&other.stochastic);
-        self.snoci.merge_from(&other.snoci);
+        self.selected.merge_from(&other.selected);
         self.noci.merge_from(&other.noci);
         self.nonorthogonalwicks
             .merge_from(&other.nonorthogonalwicks);

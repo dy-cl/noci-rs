@@ -18,9 +18,17 @@
 //! using orthogonal Slater-Condon shortcuts, the generalised Slater-Condon rules, or the
 //! extended nonorthogonal Wick theorem. MPI provides distributed-memory parallelism and
 //! Rayon provides shared-memory parallelism where supported by the selected method.
+//!
+//! Methods are organised by family first and approach second. The [`noci`] family holds a
+//! shared matrix-element layer with its deterministic propagation, stochastic NOCIQMC and
+//! selected NOCI/NOCI-PT2 methods in `noci::deterministic`, `noci::stochastic` and
+//! `noci::selected`. The feature-gated `nocc` family holds a shared layer of reduced density
+//! matrices, cumulants, excitation spaces, term evaluation and working equations, with the
+//! deterministic GNOCC solver in `nocc::deterministic`. A method folder depends only on its
+//! family's shared layer and on the modules below it, such as [`maths`], [`nonorthogonalwicks`]
+//! and [`scf`], never on a sibling method folder.
 
 pub mod basis;
-pub mod deterministic;
 pub mod driver;
 pub mod error;
 pub mod input;
@@ -31,13 +39,9 @@ pub mod mpiutils;
 pub mod nocc;
 pub mod noci;
 pub mod nonorthogonalwicks;
-#[cfg(feature = "nocc")]
-pub mod orbitals;
 pub mod paths;
 pub mod scalar;
 pub mod scf;
-pub mod snoci;
-pub mod stochastic;
 pub mod timers;
 pub mod utils;
 pub mod write;

@@ -7,10 +7,10 @@ use std::sync::OnceLock;
 
 // External crate imports.
 use noci_rs::basis::generate_reference_noci_basis;
+use noci_rs::noci::stochastic::qmc_step;
 use noci_rs::noci::{
     NOCIData, NOCIIndex, NOCISpace, build_mo_cache, build_wicks_shared, calculate_noci_energy,
 };
-use noci_rs::stochastic::qmc_step;
 use rayon::ThreadPoolBuilder;
 use serde::Deserialize;
 use serial_test::serial;

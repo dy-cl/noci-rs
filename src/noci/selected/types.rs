@@ -1,0 +1,327 @@
+// noci/selected/types.rs
+//! SNOCI projected operators and their low-rank preconditioners.
+
+// Standard library imports.
+use std::time::Instant;
+
+// External crate imports.
+use ndarray::{Array1, Array2};
+
+// Crate-root imports.
+use crate::input::SNOCIPreconditioner;
+use crate::noci::{FockData, NOCIData, NOCIIndex, NOCIScalar};
+
+/// Storage for the result of a selected NOCI step.
+pub struct SNOCIState<T: NOCIScalar> {
+    /// Current selected-space NOCI energy.
+    pub ecurrent: f64,
+    /// Current selected-space ground-state eigenvector.
+    pub coeffs: Array1<T>,
+    /// Hamiltonian matrix in the current selected space.
+    pub hcurrent: Array2<T>,
+    /// Overlap matrix in the current selected space.
+    pub scurrent: Array2<T>,
+    /// Candidate determinants selected for addition to the current space.
+    pub(crate) selected: Vec<NOCIIndex>,
+    // Results of the NOCI-PT2 solve.
+    pub pt2: Vec<SNOCIPT2Result>,
+}
+
+// Storage for result of a PT2 solve.
+pub struct SNOCIPT2Result {
+    /// Imaginary shift used in the NOCI-PT2 solve.
+    pub imag_shift: f64,
+    /// Second-order correction for this imaginary shift.
+    pub ept2: f64,
+    /// Importance scores `|a_i v_i|` for this imaginary shift.
+    pub candidate_scores: Vec<f64>,
+    /// Largest first-order amplitude magnitude.
+    pub max_abs_a: f64,
+    /// Largest projected coupling magnitude.
+    pub max_abs_v: f64,
+    /// Largest amplitude-coupling product.
+    pub max_abs_av: f64,
+    /// GMRES residual for this shifted solve.
+    pub gmres_residual: f64,
+    /// GMRES iterations for this shifted solve.
+    pub gmres_iterations: usize,
+    /// Whether GMRES converged for this shifted solve.
+    pub gmres_converged: bool,
+}
+
+/// Result of a GMRES linear solve.
+pub(in crate::noci::selected) struct GMRESResult<T: NOCIScalar> {
+    /// Approximate solution vector.
+    pub(in crate::noci::selected) x: Array1<T>,
+    /// Root-mean-square residual norm.
+    pub(in crate::noci::selected) residual_rms: f64,
+    /// Number of GMRES iterations performed.
+    pub(in crate::noci::selected) iterations: usize,
+    /// Whether the residual reached the requested tolerance.
+    pub(in crate::noci::selected) converged: bool,
+}
+
+/// Candidate-space overlap blocks required for projection out of the current selected space.
+pub(in crate::noci::selected) struct SNOCIOverlaps<T: NOCIScalar> {
+    /// `Candidate-current overlap, S_ai.`
+    pub(in crate::noci::selected) s_ai: Array2<T>,
+    /// `Current-candidate overlap, S_ia.`
+    pub(in crate::noci::selected) s_ia: Array2<T>,
+}
+
+/// Fock matrix blocks required to build the SNOCI response problem.
+pub(in crate::noci::selected) struct SNOCIFocks<T: NOCIScalar> {
+    /// `Current-current Fock matrix, F_ij.`
+    pub(in crate::noci::selected) f_ii: Array2<T>,
+    /// `Candidate-current Fock matrix, F_ai.`
+    pub(in crate::noci::selected) f_ai: Array2<T>,
+    /// `Current-candidate Fock matrix, F_ia.`
+    pub(in crate::noci::selected) f_ia: Array2<T>,
+}
+
+/// Projector quantities required to remove the current selected-space NOCI state
+/// from the NOCI-PT2 first-order interacting space.
+pub(in crate::noci::selected) struct PT2Projection<T: NOCIScalar> {
+    /// Zeroth-order NOCI generalised-Fock energy.
+    pub(in crate::noci::selected) e0: f64,
+    /// `Candidate-reference overlap, S_a0.`
+    pub(in crate::noci::selected) s_a0: Array1<T>,
+    /// `Reference-candidate overlap, S_0a.`
+    pub(in crate::noci::selected) s_0a: Array1<T>,
+    /// `Candidate-reference Fock contraction, F_a0.`
+    pub(in crate::noci::selected) f_a0: Array1<T>,
+    /// `Reference-candidate Fock contraction, F_0a.`
+    pub(in crate::noci::selected) f_0a: Array1<T>,
+}
+
+impl<T: NOCIScalar> PT2Projection<T> {
+    /// Represent the projection contractions in scalar `R`.
+    /// The quantities `S_{a0}`, `S_{0a}`, `F_{a0}` and `F_{0a}` are unchanged mathematically.
+    /// # Arguments:
+    /// - `self`: Projection contractions represented by scalar `T`.
+    /// # Returns:
+    /// - `PT2Projection<R>`: The same projection contractions represented by scalar `R`.
+    pub(in crate::noci::selected) fn cast<R>(&self) -> PT2Projection<R>
+    where
+        R: NOCIScalar + From<T>,
+    {
+        PT2Projection {
+            e0: self.e0,
+            s_a0: self.s_a0.mapv(<R as From<T>>::from),
+            s_0a: self.s_0a.mapv(<R as From<T>>::from),
+            f_a0: self.f_a0.mapv(<R as From<T>>::from),
+            f_0a: self.f_0a.mapv(<R as From<T>>::from),
+        }
+    }
+}
+
+/// Matrix-free projected NOCI-PT2 operator.
+pub(in crate::noci::selected) struct PT2ProjectedOperator<'a, 'data, 'fock, T: NOCIScalar> {
+    /// Shared NOCI matrix-element data.
+    pub(in crate::noci::selected) data: &'a NOCIData<'data, T>,
+    /// Fock-specific matrix-element data.
+    pub(in crate::noci::selected) fock: &'a FockData<'fock, T>,
+    /// Candidate determinants defining the first-order interacting space.
+    pub(in crate::noci::selected) candidates: &'a [NOCIIndex],
+    /// Precomputed projection quantities.
+    pub(in crate::noci::selected) projection: &'a PT2Projection<T>,
+}
+
+/// Storage for a single restarted Arnoldi cycle.
+pub(in crate::noci::selected) struct ArnoldiCycle<T: NOCIScalar> {
+    /// Right-preconditioned Krylov vectors used in the Arnoldi operator application.
+    pub(in crate::noci::selected) z: Vec<Array1<T>>,
+    /// Upper Hessenberg matrix after Givens rotations.
+    pub(in crate::noci::selected) h: Array2<T>,
+    /// Rotated residual right-hand side.
+    pub(in crate::noci::selected) g: Array1<T>,
+    /// Number of Arnoldi iterations completed in the current cycle.
+    pub(in crate::noci::selected) kfinal: usize,
+}
+
+/// Parameters for a single restarted Arnoldi cycle.
+pub(in crate::noci::selected) struct ArnoldiParams<'a, T: NOCIScalar> {
+    /// Maximum number of Arnoldi iterations in this restart cycle.
+    pub(in crate::noci::selected) inner_max: usize,
+    /// Right-hand side vector.
+    pub(in crate::noci::selected) b: &'a Array1<T>,
+    /// Solution vector at the start of the restart cycle.
+    pub(in crate::noci::selected) x_start: &'a Array1<T>,
+    /// GMRES restart cycle index.
+    pub(in crate::noci::selected) restart_id: usize,
+    /// Total number of GMRES iterations before this cycle.
+    pub(in crate::noci::selected) total_iter: usize,
+    /// Square-root of the vector length.
+    pub(in crate::noci::selected) rms: f64,
+    /// Wall-time for GMRES.
+    pub(in crate::noci::selected) gmres_start: &'a Instant,
+}
+
+/// Rank-2 Woodbury preconditioner for the projected NOCI-PT2 shifted Fock matrix.
+/// # References
+/// - Woodbury, *Inverting Modified Matrices*, Statistical Research Group Memorandum Report 42,
+///   Princeton University (1950).
+pub(in crate::noci::selected) struct Preconditioner<T: NOCIScalar> {
+    /// Inverse diagonal of the unprojected candidate-candidate matrix.
+    dinv: Array1<T>,
+    /// First diagonal-scaled left update vector `D^{-1} u_0`.
+    z0: Array1<T>,
+    /// Second diagonal-scaled left update vector `D^{-1} u_1`.
+    z1: Array1<T>,
+    /// First right update vector.
+    v0: Array1<T>,
+    /// Second right update vector.
+    v1: Array1<T>,
+    /// `(0,0)` element of the inverse Woodbury core.
+    w00: T,
+    /// `(0,1)` element of the inverse Woodbury core.
+    w01: T,
+    /// `(1,0)` element of the inverse Woodbury core.
+    w10: T,
+    /// `(1,1)` element of the inverse Woodbury core.
+    w11: T,
+    /// Whether the rank-2 Woodbury correction is numerically safe to apply.
+    active: bool,
+}
+
+impl<R: NOCIScalar> Preconditioner<R> {
+    /// Build a preconditioner from an unprojected diagonal and projection contractions.
+    /// # Arguments:
+    /// - `m_diag`: Diagonal of the unprojected candidate-candidate matrix `M`.
+    /// - `p`: Projection contractions used to form `M^Omega`.
+    /// - `kind`: Requested SNOCI preconditioner type.
+    /// - `imag_shift`: Imaginary shift strength `epsilon`.
+    /// # Returns:
+    /// - `Preconditioner`: Diagonal or rank-2 Woodbury preconditioner.
+    pub(in crate::noci::selected) fn new(
+        m_diag: &Array1<R>,
+        p: &PT2Projection<R>,
+        kind: SNOCIPreconditioner,
+        imag_shift: f64,
+    ) -> Self {
+        // Regularise `D^{-1}` below a scale-relative floor so near-zero candidate
+        // diagonals cannot dominate the preconditioned Krylov vector.
+        let dmax = m_diag.iter().fold(0.0_f64, |a, &x| a.max(x.abs()));
+        let dfloor = (1e-12_f64 * dmax).max(1e-14_f64);
+
+        let dinv = Array1::from_iter(m_diag.iter().map(|&x| {
+            let ax = x.abs();
+            if ax > dfloor {
+                R::from_real(1.0) / x
+            } else {
+                x.conj() / R::from_real(dfloor * dfloor)
+            }
+        }));
+
+        let n = m_diag.len();
+
+        if matches!(kind, SNOCIPreconditioner::Diag) {
+            return Preconditioner {
+                dinv,
+                z0: Array1::from_elem(n, R::from_real(0.0)),
+                z1: Array1::from_elem(n, R::from_real(0.0)),
+                v0: Array1::from_elem(n, R::from_real(0.0)),
+                v1: Array1::from_elem(n, R::from_real(0.0)),
+                w00: R::from_real(1.0),
+                w01: R::from_real(0.0),
+                w10: R::from_real(0.0),
+                w11: R::from_real(1.0),
+                active: false,
+            };
+        }
+
+        // Write the projected correction as `M^\Omega \approx D + U V^T`, with
+        // `U = [u0, u1]` and `V = [v0, v1]` from the reference couplings.
+        let u0 = Array1::from_iter(
+            p.f_a0
+                .iter()
+                .zip(p.s_a0.iter())
+                .map(|(&f, &s)| -f + (R::from_real(2.0 * p.e0) - R::from_imag(imag_shift)) * s),
+        );
+        let u1 = p.s_a0.mapv(|s| -s);
+        let v0 = p.s_0a.clone();
+        let v1 = p.f_0a.clone();
+
+        // Woodbury reduces the inverse to the 2x2 core `C = I + V^T D^{-1} U`.
+        let z0 = Array1::from_iter(dinv.iter().zip(u0.iter()).map(|(&d, &u)| d * u));
+        let z1 = Array1::from_iter(dinv.iter().zip(u1.iter()).map(|(&d, &u)| d * u));
+
+        let c00 = R::from_real(1.0) + bilinear_dot(&v0, &z0);
+        let c01 = bilinear_dot(&v0, &z1);
+        let c10 = bilinear_dot(&v1, &z0);
+        let c11 = R::from_real(1.0) + bilinear_dot(&v1, &z1);
+
+        // Disable the rank correction when `C` is nearly singular; the
+        // regularised diagonal inverse remains available as a fallback.
+        let det = c00 * c11 - c01 * c10;
+        let active = det.abs() > 1e-14_f64;
+
+        let (w00, w01, w10, w11) = if active {
+            (c11 / det, -c01 / det, -c10 / det, c00 / det)
+        } else {
+            (
+                R::from_real(1.0),
+                R::from_real(0.0),
+                R::from_real(0.0),
+                R::from_real(1.0),
+            )
+        };
+
+        Preconditioner {
+            dinv,
+            z0,
+            z1,
+            v0,
+            v1,
+            w00,
+            w01,
+            w10,
+            w11,
+            active,
+        }
+    }
+
+    /// Apply the rank-2 Woodbury preconditioner to a vector.
+    /// # Arguments:
+    /// - `v`: Vector to precondition.
+    /// # Returns:
+    /// - `Array1<R>`: Approximate action of `(M^Omega)^{-1} v`.
+    pub(in crate::noci::selected) fn apply(
+        &self,
+        v: &Array1<R>,
+    ) -> Array1<R> {
+        let mut y = Array1::from_iter(v.iter().zip(self.dinv.iter()).map(|(&vi, &di)| vi * di));
+
+        if !self.active {
+            return y;
+        }
+
+        // `(D + U V^T)^{-1}v = D^{-1}v - D^{-1}U C^{-1}V^T D^{-1}v`.
+        let t0 = self.v0.dot(&y);
+        let t1 = self.v1.dot(&y);
+
+        let c0 = self.w00 * t0 + self.w01 * t1;
+        let c1 = self.w10 * t0 + self.w11 * t1;
+
+        for i in 0..y.len() {
+            y[i] -= self.z0[i] * c0 + self.z1[i] * c1;
+        }
+        y
+    }
+}
+
+/// Compute the unconjugated vector contraction used by the projected operator's
+/// rank updates.
+/// # Arguments:
+/// - `x`: First projected vector.
+/// - `y`: Second projected vector.
+/// # Returns
+/// - `T`: Bilinear dot product `\sum_i x_i y_i`.
+fn bilinear_dot<T: NOCIScalar>(
+    x: &Array1<T>,
+    y: &Array1<T>,
+) -> T {
+    x.iter()
+        .zip(y.iter())
+        .fold(T::from_real(0.0), |acc, (&xi, &yi)| acc + xi * yi)
+}

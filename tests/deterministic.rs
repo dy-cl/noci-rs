@@ -3,7 +3,7 @@ mod common;
 // External crate imports.
 use ndarray::Array1;
 use noci_rs::basis::generate_reference_noci_basis;
-use noci_rs::deterministic::{projected_energy, propagate};
+use noci_rs::noci::deterministic::{projected_energy, propagate};
 use noci_rs::noci::{
     NOCIData, NOCIIndex, NOCISpace, build_mo_cache, build_noci_hs, build_wicks_shared,
     calculate_noci_energy,

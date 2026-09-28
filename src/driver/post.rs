@@ -2,22 +2,14 @@
 
 // External crate imports.
 use mpi::topology::Communicator;
-#[cfg(feature = "nocc")]
-use ndarray::Array1;
 use num_complex::Complex64;
 
 // Crate-root imports.
-use crate::driver::deterministic::run_qmc_deterministic_noci;
+#[cfg(feature = "nocc")]
+use crate::driver::nocc::run_gnocc;
+use crate::driver::noci::{run_qmc_deterministic_noci, run_qmc_stochastic_noci, run_snoci};
 use crate::driver::reference::ReferenceRun;
-use crate::driver::snoci::run_snoci;
-use crate::driver::stochastic::run_qmc_stochastic_noci;
 use crate::input::Input;
-#[cfg(feature = "nocc")]
-use crate::nocc::run_noccmc;
-#[cfg(feature = "nocc")]
-use crate::noci::NOCIData;
-#[cfg(feature = "nocc")]
-use crate::orbitals::noci_natural_orbitals;
 use crate::{AoData, PostSCFData};
 
 /// Results from optional post-reference calculations.
@@ -87,19 +79,7 @@ pub fn run_real_post_reference(
 
     #[cfg(feature = "nocc")]
     if input.noccmc.is_some() {
-        // Build natural orbitals before releasing Wick storage for the NOCCMC calculation.
-        let no = {
-            let wicks = reference.wicks.as_ref().map(|ws| ws.view());
-            let data = NOCIData::new(post.ao, post.space, input, post.tol, wicks)
-                .withmocache(post.mocache);
-            let coeffs = Array1::from_vec(reference.c0.clone());
-
-            let tol = input.noccmc.as_ref().map_or(1e-6, |n| n.active_space_tol);
-            noci_natural_orbitals(&data, &coeffs, tol, tol)
-        };
-
-        reference.wicks = None;
-        run_noccmc(&post, input, &reference.c0, &no, world);
+        run_gnocc(&post, input, &reference.c0, &mut reference.wicks, world);
     }
 
     // Select real or complex PT2 arithmetic according to the requested imaginary shifts.
