@@ -319,19 +319,13 @@ unsafe fn xw_rdmk_same_prepared_simd_batch<T: NOCIScalar, const K: usize, const 
     let mut start = 0usize;
     while start < count {
         let lanes = (count - start).min(N);
-        let mut packet = [unsafe { *requests.get_unchecked(start) }; N];
-        for lane in 1..lanes {
-            packet[lane] = unsafe { *requests.get_unchecked(start + lane) };
-        }
+        let mut packet = [requests[start]; N];
+        packet[1..lanes].copy_from_slice(&requests[start + 1..start + lanes]);
         let mut values = [T::from_real(0.0); N];
         unsafe {
             kernel(w, ex, fundamental, &packet, tol, &mut values);
         }
-        for lane in 0..lanes {
-            unsafe {
-                *out.get_unchecked_mut(start + lane) = values[lane];
-            }
-        }
+        out[start..start + lanes].copy_from_slice(&values[..lanes]);
         start += lanes;
     }
 }
@@ -1041,8 +1035,8 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
 
             // Construct `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)` at runtime, with
             // the creators-first external block entirely in `X^{(0)}`.
-            for i in 0..d_rank {
-                let row = rows[i] * ext_n;
+            for (i, &r) in rows.iter().enumerate().take(d_rank) {
+                let row = r * ext_n;
                 for j in 0..d_rank {
                     d[i * d_rank + j] = if i >= j || j < K {
                         x0[row + cols[j]]
@@ -1109,8 +1103,8 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
             // Prepare all-`m_i=0` and all-`m_i=1` endpoint determinants. Each allowed distribution
             // later selects whole columns from these endpoints. The creators-first external
             // block lies entirely in `X`.
-            for i in 0..d_rank {
-                let row = rows[i] * ext_n;
+            for (i, &r) in rows.iter().enumerate().take(d_rank) {
+                let row = r * ext_n;
                 for j in 0..d_rank {
                     let index = i * d_rank + j;
                     if i >= j || j < K {

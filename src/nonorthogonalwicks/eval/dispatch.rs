@@ -1,6 +1,7 @@
 // nonorthogonalwicks/eval/dispatch.rs
 
-/// Dispatch one same-spin rank pair to arm-local compile-time constants.
+/// Dispatch one same-spin rank pair to arm-local compile-time constants, with or without the
+/// determinant size `D = L^2`.
 macro_rules! dispatch_pair_ranks {
     (
         @rank ($rx_value:literal, $rw_value:literal),
@@ -10,6 +11,15 @@ macro_rules! dispatch_pair_ranks {
         const $rw: usize = $rw_value;
         const $l: usize = $rx + $rw;
         const $d: usize = $l * $l;
+        $kernel
+    }};
+    (
+        @rank ($rx_value:literal, $rw_value:literal),
+        |$rx:ident, $rw:ident, $l:ident| $kernel:expr
+    ) => {{
+        const $rx: usize = $rx_value;
+        const $rw: usize = $rw_value;
+        const $l: usize = $rx + $rw;
         $kernel
     }};
     (
@@ -23,6 +33,22 @@ macro_rules! dispatch_pair_ranks {
                 ($rx_value, $rw_value) => dispatch_pair_ranks!(
                     @rank ($rx_value, $rw_value),
                     |$rx, $rw, $l, $d| $kernel
+                ),
+            )*
+            _ => $fallback,
+        }
+    }};
+    (
+        @match $ranks:expr,
+        |$rx:ident, $rw:ident, $l:ident| $kernel:expr,
+        $fallback:expr;
+        $(($rx_value:literal, $rw_value:literal)),* $(,)?
+    ) => {{
+        match $ranks {
+            $(
+                ($rx_value, $rw_value) => dispatch_pair_ranks!(
+                    @rank ($rx_value, $rw_value),
+                    |$rx, $rw, $l| $kernel
                 ),
             )*
             _ => $fallback,
@@ -113,7 +139,7 @@ macro_rules! dispatch_rdm_scalar_ranks {
             }
             ranks => dispatch_overlap_scalar_ranks!(
                 ranks,
-                |$rx, $rw, $l, _ld| {
+                |$rx, $rw, $l| {
                     const $k: usize = $k_value;
                     const $d: usize = $k + $l;
                     const $dd: usize = $d * $d;
@@ -171,7 +197,7 @@ macro_rules! dispatch_rdm_ranks {
             }
             ranks => dispatch_overlap_ranks!(
                 ranks,
-                |$rx, $rw, $l, _ld| {
+                |$rx, $rw, $l| {
                     const $k: usize = $k_value;
                     const $d: usize = $k + $l;
                     const $dd: usize = $d * $d;

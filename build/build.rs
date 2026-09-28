@@ -365,7 +365,8 @@ fn config_source(maxexcit: usize) -> String {
     )
 }
 
-/// Append one generated same-spin rank-dispatch macro.
+/// Append one generated same-spin rank-dispatch macro, with arms that bind the determinant size
+/// `D = L^2` and arms that do not.
 /// # Arguments:
 /// - `src`: Generated Rust source buffer.
 /// - `name`: Dispatch macro name.
@@ -390,11 +391,26 @@ fn write_pair_macro(
             $fallback;
 "#,
     );
-
     for &(rx, rw) in ranks {
         let _ = writeln!(src, "            ({rx}, {rw}),");
     }
-
+    src.push_str(
+        r#"        )
+    }};
+    (
+        $ranks:expr,
+        |$rx:ident, $rw:ident, $l:ident| $kernel:expr,
+        $fallback:expr $(,)?
+    ) => {{
+        dispatch_pair_ranks!(
+            @match $ranks,
+            |$rx, $rw, $l| $kernel,
+            $fallback;
+"#,
+    );
+    for &(rx, rw) in ranks {
+        let _ = writeln!(src, "            ({rx}, {rw}),");
+    }
     src.push_str(
         r#"        )
     }};
