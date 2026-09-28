@@ -28,6 +28,7 @@ use ndarray_linalg::Solve;
 
 // Crate-root imports.
 use crate::input::NOCCMCOptions;
+use crate::maths::parallel_matvec;
 use crate::nocc::contract::TermEvaluator;
 use crate::nocc::dyall::{dyall_matrix, orbital_denominators};
 use crate::nocc::energy::correlation_energy;
@@ -152,7 +153,9 @@ pub(crate) fn solve_amplitudes(
     // Fixed parts of the update: the zeroth-order coupling `A`, applied as `Y Y^\dagger A`, and
     // the shifted denominators `\Delta_\nu + \eta`.
     let dyall = dyall_matrix(reference, manifold, evaluator);
-    let jacobian = |x: &Array1<f64>| y.dot(&y.t().dot(&dyall.dot(x)));
+    let yt = y.t().to_owned();
+    let jacobian =
+        |x: &Array1<f64>| parallel_matvec(y, &parallel_matvec(&yt, &parallel_matvec(&dyall, x)));
     let denominators = orbital_denominators(reference, manifold) + options.level_shift;
 
     let mut amplitudes = Array1::<f64>::zeros(n);
