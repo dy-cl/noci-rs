@@ -8,9 +8,6 @@
 //! products. Shapes are fixed-size and label sets are 64-bit masks, so contracting many small
 //! tensors does not touch the heap beyond the result buffer.
 
-// Standard library imports.
-use std::borrow::Cow;
-
 // Crate-root imports.
 use crate::maths::gemm::{strided_gemm, strided_offsets};
 
@@ -340,8 +337,7 @@ pub fn contract_tensor_pair(
 
     // Every result element is one dot product over the summed labels, written once in
     // row-major order of the kept labels.
-    buffer.clear();
-    buffer.resize(stride, 0.0);
+    fit_buffer(&mut buffer, stride);
     let nk = shape.n;
     let mut idx = [0usize; 2 * MAXLABELS];
     let (mut oa, mut ob) = (0usize, 0usize);
@@ -470,38 +466,19 @@ fn contract_reading_larger_in_place(
     let rows = strided_offsets(&layout(kept_large, sl));
     let cols = strided_offsets(&layout(summed, sl));
     let batches = strided_offsets(&layout(batch, sl));
-    let packed = pack_strided(
-        ds,
-        &[
-            layout(batch, ss),
-            layout(summed, ss),
-            layout(kept_small, ss),
-        ]
-        .concat(),
-    );
+    let brows = strided_offsets(&layout(summed, ss));
+    let bcols = strided_offsets(&layout(kept_small, ss));
+    let bbatches = strided_offsets(&layout(batch, ss));
 
     // One product per batch element into the row-major result.
-    let (m, k) = (rows.len(), cols.len());
+    let m = rows.len();
     let n = kept_small.iter().map(|&(_, d)| d).product::<usize>();
-    // Every element is written by the kernel, so earlier contents are left in place.
-    let len = batches.len() * m * n;
-    if buffer.len() < len {
-        buffer.resize(len, 0.0);
-    } else {
-        buffer.truncate(len);
-    }
-    for (i, (c, &base)) in buffer.chunks_mut(m * n).zip(&batches).enumerate() {
-        // SAFETY: The kernels are available, every offset indexes the operands by construction of
-        // their shapes, and the slices hold the matrix sizes.
+    fit_buffer(buffer, batches.len() * m * n);
+    for ((c, &base), &bbase) in buffer.chunks_mut(m * n).zip(&batches).zip(&bbatches) {
+        // SAFETY: Every offset indexes the operands by construction of their shapes, and the
+        // result slice holds the matrix size.
         unsafe {
-            strided_gemm(
-                &dl[base..],
-                &rows,
-                &cols,
-                &packed[i * k * n..(i + 1) * k * n],
-                n,
-                c,
-            );
+            strided_gemm(&dl[base..], &rows, &cols, (&ds[bbase..], &brows, &bcols), c);
         }
     }
 
@@ -532,72 +509,24 @@ fn contract_reading_larger_in_place(
     shape
 }
 
-/// Gather a strided tensor into a contiguous row-major array, borrowing the source when it is
-/// already contiguous in the requested order. Axes that are contiguous with their inner
-/// neighbour are merged first, and the innermost axis is copied as one run.
+/// Size a reused buffer for a result whose every element is written, without copying or
+/// clearing its earlier contents.
 /// # Arguments:
-/// - `data`: Source data.
-/// - `layout`: Extent and source stride of every output axis, outermost first.
+/// - `buffer`: Reused storage, resized in place.
+/// - `len`: Number of result elements.
 /// # Returns:
-/// - `Cow<[f64]>`: Row-major elements, borrowed from `data` when no copy is needed.
-fn pack_strided<'a>(
-    data: &'a [f64],
-    layout: &[(usize, usize)],
-) -> Cow<'a, [f64]> {
-    // Merge each axis into its inner neighbour when `s_{\text{outer}} = d_{\text{inner}}
-    // s_{\text{inner}}`, dropping unit axes.
-    let mut axes = [(1usize, 0usize); 2 * MAXLABELS];
-    let mut n = 0;
-    for &(d, st) in layout.iter().rev() {
-        if d == 1 {
-            continue;
-        }
-        if n > 0 && axes[n - 1].0 * axes[n - 1].1 == st {
-            axes[n - 1].0 *= d;
-        } else {
-            axes[n] = (d, st);
-            n += 1;
-        }
+/// - `()`: Mutates `buffer`.
+fn fit_buffer(
+    buffer: &mut Vec<f64>,
+    len: usize,
+) {
+    if buffer.capacity() < len {
+        *buffer = vec![0.0; len];
+    } else if buffer.len() < len {
+        buffer.resize(len, 0.0);
+    } else {
+        buffer.truncate(len);
     }
-    let axes = &mut axes[..n];
-    axes.reverse();
-    let total = axes.iter().map(|&(d, _)| d).product::<usize>();
-
-    // A single unit-stride run is the source itself.
-    if n == 0 {
-        return Cow::Borrowed(&data[..1]);
-    }
-    if n == 1 && axes[0].1 == 1 {
-        return Cow::Borrowed(&data[..total]);
-    }
-
-    let (inner, outer) = axes.split_last().unwrap();
-    let (d, st) = *inner;
-    let count = total / d;
-    let mut out = Vec::with_capacity(total);
-    let mut idx = [0usize; 2 * MAXLABELS];
-    let mut offset = 0;
-    for _ in 0..count {
-        if st == 1 {
-            out.extend_from_slice(&data[offset..offset + d]);
-        } else {
-            out.extend((0..d).map(|i| data[offset + i * st]));
-        }
-
-        let mut k = outer.len();
-        while k > 0 {
-            k -= 1;
-            idx[k] += 1;
-            offset += outer[k].1;
-            if idx[k] < outer[k].0 {
-                break;
-            }
-            offset -= outer[k].1 * outer[k].0;
-            idx[k] = 0;
-        }
-    }
-
-    Cow::Owned(out)
 }
 
 /// Sum `A B` over the summed labels for one result element,

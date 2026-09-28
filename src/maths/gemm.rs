@@ -33,26 +33,24 @@ thread_local! {
     static PANELS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Compute `C = A B` with `A_{ik} = a[r_i + c_k]`, `B` a contiguous row-major `k \times n` matrix and
+/// Compute `C = A B` with `A_{ik} = a[r_i + c_k]`, `B_{kj} = b[s_k + t_j]` a `k \times n` matrix and
 /// `C` a contiguous row-major `m \times n` matrix, which is overwritten, using the widest kernel the
 /// CPU supports.
 /// # Arguments:
 /// - `a`: Data of `A`.
 /// - `rows`: Offset `r_i` of every row of `A`.
 /// - `cols`: Offset `c_k` of every column of `A`.
-/// - `b`: Row-major `B`.
-/// - `n`: Number of columns of `B` and `C`.
+/// - `b`: Data of `B`, with the offset `s_k` of every row and `t_j` of every column.
 /// - `c`: Row-major `C`, overwritten.
 /// # Returns:
 /// - `()`: Writes `C`.
 /// # Safety
-/// - Every `r_i + c_k` must index `a`, `b` must hold `k n` elements and `c` must hold `m n`.
+/// - Every `r_i + c_k` must index `a`, every `s_k + t_j` must index `b`, and `c` must hold `m n`.
 pub(crate) unsafe fn strided_gemm(
     a: &[f64],
     rows: &[usize],
     cols: &[usize],
-    b: &[f64],
-    n: usize,
+    b: (&[f64], &[usize], &[usize]),
     c: &mut [f64],
 ) {
     #[cfg(target_arch = "x86_64")]
@@ -60,16 +58,16 @@ pub(crate) unsafe fn strided_gemm(
         // SAFETY: Each kernel runs only when the CPU supports its features, and the caller
         // guarantees the index ranges.
         if is_x86_feature_detected!("avx512f") {
-            unsafe { strided_gemm_f64x8(a, rows, cols, b, n, c) };
+            unsafe { strided_gemm_f64x8(a, rows, cols, b, c) };
             return;
         }
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-            unsafe { strided_gemm_f64x4(a, rows, cols, b, n, c) };
+            unsafe { strided_gemm_f64x4(a, rows, cols, b, c) };
             return;
         }
     }
 
-    strided_gemm_scalar(a, rows, cols, b, n, c);
+    strided_gemm_scalar(a, rows, cols, b, c);
 }
 
 /// Compute `C = A B` with the AVX-512 tile kernel, choosing the tile shape from the width of `B`.
@@ -77,8 +75,7 @@ pub(crate) unsafe fn strided_gemm(
 /// - `a`: Data of `A`.
 /// - `rows`: Offset of every row of `A`.
 /// - `cols`: Offset of every column of `A`.
-/// - `b`: Row-major `B`.
-/// - `n`: Number of columns of `B` and `C`.
+/// - `b`: Data of `B`, with the offset `s_k` of every row and `t_j` of every column.
 /// - `c`: Row-major `C`, overwritten.
 /// # Returns:
 /// - `()`: Writes `C`.
@@ -90,18 +87,18 @@ unsafe fn strided_gemm_f64x8(
     a: &[f64],
     rows: &[usize],
     cols: &[usize],
-    b: &[f64],
-    n: usize,
+    b: (&[f64], &[usize], &[usize]),
     c: &mut [f64],
 ) {
+    let n = b.2.len();
     // SAFETY: The caller guarantees AVX-512F and the index ranges.
     unsafe {
         if n > 16 {
-            gemm_tiles::<F64x8, 8, 8, 3>(a, rows, cols, b, n, c);
+            gemm_tiles::<F64x8, 8, 8, 3>(a, rows, cols, b, c);
         } else if n > 8 {
-            gemm_tiles::<F64x8, 8, 12, 2>(a, rows, cols, b, n, c);
+            gemm_tiles::<F64x8, 8, 12, 2>(a, rows, cols, b, c);
         } else {
-            gemm_tiles::<F64x8, 8, 24, 1>(a, rows, cols, b, n, c);
+            gemm_tiles::<F64x8, 8, 24, 1>(a, rows, cols, b, c);
         }
     }
 }
@@ -111,8 +108,7 @@ unsafe fn strided_gemm_f64x8(
 /// - `a`: Data of `A`.
 /// - `rows`: Offset of every row of `A`.
 /// - `cols`: Offset of every column of `A`.
-/// - `b`: Row-major `B`.
-/// - `n`: Number of columns of `B` and `C`.
+/// - `b`: Data of `B`, with the offset `s_k` of every row and `t_j` of every column.
 /// - `c`: Row-major `C`, overwritten.
 /// # Returns:
 /// - `()`: Writes `C`.
@@ -124,18 +120,18 @@ unsafe fn strided_gemm_f64x4(
     a: &[f64],
     rows: &[usize],
     cols: &[usize],
-    b: &[f64],
-    n: usize,
+    b: (&[f64], &[usize], &[usize]),
     c: &mut [f64],
 ) {
+    let n = b.2.len();
     // SAFETY: The caller guarantees AVX2, FMA and the index ranges.
     unsafe {
         if n > 8 {
-            gemm_tiles::<F64x4, 4, 4, 3>(a, rows, cols, b, n, c);
+            gemm_tiles::<F64x4, 4, 4, 3>(a, rows, cols, b, c);
         } else if n > 4 {
-            gemm_tiles::<F64x4, 4, 6, 2>(a, rows, cols, b, n, c);
+            gemm_tiles::<F64x4, 4, 6, 2>(a, rows, cols, b, c);
         } else {
-            gemm_tiles::<F64x4, 4, 12, 1>(a, rows, cols, b, n, c);
+            gemm_tiles::<F64x4, 4, 12, 1>(a, rows, cols, b, c);
         }
     }
 }
@@ -146,8 +142,7 @@ unsafe fn strided_gemm_f64x4(
 /// - `a`: Data of `A`.
 /// - `rows`: Offset of every row of `A`.
 /// - `cols`: Offset of every column of `A`.
-/// - `b`: Row-major `B`.
-/// - `n`: Number of columns of `B` and `C`.
+/// - `b`: Data of `B`, with the offset `s_k` of every row and `t_j` of every column.
 /// - `c`: Row-major `C`, overwritten.
 /// # Returns:
 /// - `()`: Writes `C`.
@@ -157,16 +152,16 @@ fn strided_gemm_scalar(
     a: &[f64],
     rows: &[usize],
     cols: &[usize],
-    b: &[f64],
-    n: usize,
+    b: (&[f64], &[usize], &[usize]),
     c: &mut [f64],
 ) {
-    for (&row, out) in rows.iter().zip(c.chunks_mut(n)) {
+    let (b, brows, bcols) = b;
+    for (&row, out) in rows.iter().zip(c.chunks_mut(bcols.len())) {
         out.fill(0.0);
-        for (&col, bk) in cols.iter().zip(b.chunks(n)) {
+        for (&col, &brow) in cols.iter().zip(brows) {
             let x = a[row + col];
-            for (o, &y) in out.iter_mut().zip(bk) {
-                *o += x * y;
+            for (o, &bcol) in out.iter_mut().zip(bcols) {
+                *o += x * b[brow + bcol];
             }
         }
     }
@@ -178,8 +173,7 @@ fn strided_gemm_scalar(
 /// - `a`: Data of `A`.
 /// - `rows`: Offset of every row of `A`.
 /// - `cols`: Offset of every column of `A`.
-/// - `b`: Row-major `B`.
-/// - `n`: Number of columns of `B` and `C`.
+/// - `b`: Data of `B`, with the offset `s_k` of every row and `t_j` of every column.
 /// - `c`: Row-major `C`, overwritten.
 /// # Returns:
 /// - `()`: Writes `C`.
@@ -192,11 +186,11 @@ unsafe fn gemm_tiles<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, 
     a: &[f64],
     rows: &[usize],
     cols: &[usize],
-    b: &[f64],
-    n: usize,
+    b: (&[f64], &[usize], &[usize]),
     c: &mut [f64],
 ) {
-    let (m, k) = (rows.len(), cols.len());
+    let (b, brows, bcols) = b;
+    let (m, k, n) = (rows.len(), cols.len(), bcols.len());
     let nr = N * NV;
     let panels = n.div_ceil(nr);
 
@@ -206,18 +200,25 @@ unsafe fn gemm_tiles<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, 
         for k0 in (0..k).step_by(KC) {
             let kc = KC.min(k - k0);
 
-            // Pack this block of `B` as `[panel][kc][N NV]`, padding the last panel with zeros.
-            packed.clear();
-            packed.resize(panels * kc * nr, 0.0);
+            // Gather this block of `B` as `[panel][kc][N NV]`, padding the last panel with zeros;
+            // every element is written, so earlier contents are left in place.
+            let len = panels * kc * nr;
+            if packed.len() < len {
+                packed.resize(len, 0.0);
+            }
             for p in 0..panels {
-                let width = nr.min(n - p * nr);
+                let bcols = &bcols[p * nr..n.min((p + 1) * nr)];
                 for kk in 0..kc {
-                    let src = (k0 + kk) * n + p * nr;
-                    let dst = (p * kc + kk) * nr;
-                    packed[dst..dst + width].copy_from_slice(&b[src..src + width]);
+                    let brow = brows[k0 + kk];
+                    let dst = &mut packed[(p * kc + kk) * nr..(p * kc + kk + 1) * nr];
+                    for (lane, x) in dst.iter_mut().enumerate() {
+                        *x = bcols.get(lane).map_or(0.0, |&bcol| b[brow + bcol]);
+                    }
                 }
             }
 
+            // Every row block against every panel; rows past `m` repeat the first row and are
+            // dropped.
             // Every row block against every panel; rows past `m` repeat the first row and are
             // dropped.
             for i0 in (0..m).step_by(MR) {
@@ -285,7 +286,11 @@ unsafe fn gemm_tile<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, c
             for (r, row) in acc.iter_mut().enumerate().take(mr) {
                 let mut buffer = [[0.0f64; N]; NV];
                 let src = (i0 + r) * ldc + j0;
-                buffer.as_flattened_mut()[..width].copy_from_slice(&c[src..src + width]);
+                for (lane, x) in buffer.as_flattened_mut().iter_mut().enumerate() {
+                    if lane < width {
+                        *x = *c.get_unchecked(src + lane);
+                    }
+                }
                 for (x, lanes) in row.iter_mut().zip(&buffer) {
                     *x = V::load(lanes);
                 }
@@ -316,7 +321,12 @@ unsafe fn gemm_tile<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, c
                 for (x, lanes) in row.iter().zip(buffer.iter_mut()) {
                     x.store(lanes);
                 }
-                c[dst..dst + width].copy_from_slice(&buffer.as_flattened()[..width]);
+                // A fixed trip count keeps this a few scalar moves rather than a library call.
+                for (lane, &x) in buffer.as_flattened().iter().enumerate() {
+                    if lane < width {
+                        *c.get_unchecked_mut(dst + lane) = x;
+                    }
+                }
             }
         }
     }
