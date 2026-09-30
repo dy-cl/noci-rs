@@ -1300,33 +1300,93 @@ def plotMatrix(args):
 
 def plotExcitationHist(args):
     """
-    Plot the combined excitation histogram.
+    Plot a combined excitation histogram, or overlay one normalised histogram per file.
     """
-    df = readExcitationHistogram(args.path)
+    frames = [readExcitationHistogram(path) for path in args.paths]
+
+    # Combining or comparing bins requires one shared binning.
+    binning = [(df["logmin"].iloc[0], df["logmax"].iloc[0], len(df)) for df in frames]
+    if any(b != binning[0] for b in binning[1:]):
+        raise ValueError("Cannot combine excitation histograms with different binning")
 
     setStyle()
     fig, ax = plt.subplots()
 
+    # Histograms bin natural logarithms; the axis shows powers of ten.
     ax.xaxis.set_major_formatter(
         mticker.FuncFormatter(lambda x, pos: rf"$10^{{{int(np.round(x))}}}$")
     )
+    ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
 
-    norm = mcolors.Normalize(
-        vmin=df["binCenter"].min(),
-        vmax=df["binCenter"].max(),
-    )
+    if args.overlay:
+        if args.label is None:
+            labels = [path.parent.name for path in args.paths]
+        else:
+            labels = args.label
+            if len(labels) != len(args.paths):
+                raise ValueError(
+                    "--label must be repeated once per input file when --overlay "
+                    "is used"
+                )
 
-    cmap = plt.cm.winter
+        # Draw each file in the single-histogram style with its own colormap.
+        # Normalise by all attempts so out-of-range samples are not silently dropped.
+        cmaps = [plt.cm.winter, plt.cm.autumn, plt.cm.cool, plt.cm.spring]
+        for i, (df, label) in enumerate(zip(frames, labels)):
+            norm = mcolors.Normalize(
+                vmin=df["binCenter"].min(),
+                vmax=df["binCenter"].max(),
+            )
 
-    colors = cmap(norm(df["binCenter"].to_numpy()))
+            colors = cmaps[i % len(cmaps)](norm(df["binCenter"].to_numpy()))
 
-    ax.bar(
-        df["binCenter"],
-        df["count"],
-        width=df["binWidth"],
-        align="center",
-        color=colors,
-    )
+            ax.bar(
+                df["binCenter"] / np.log(10),
+                df["count"] / df["ntotal"].iloc[0],
+                width=df["binWidth"] / np.log(10),
+                align="center",
+                color=colors,
+                alpha=0.6,
+                label=label,
+            )
+        ylabel = "Normalised frequency"
+    else:
+        if args.label is not None:
+            raise ValueError("--label can only be used with --overlay")
+
+        # Sum per-rank histograms into one combined histogram.
+        df = frames[0].copy()
+        df["count"] = sum(frame["count"].to_numpy() for frame in frames)
+
+        norm = mcolors.Normalize(
+            vmin=df["binCenter"].min(),
+            vmax=df["binCenter"].max(),
+        )
+
+        cmap = plt.cm.winter
+
+        colors = cmap(norm(df["binCenter"].to_numpy()))
+
+        ax.bar(
+            df["binCenter"] / np.log(10),
+            df["count"],
+            width=df["binWidth"] / np.log(10),
+            align="center",
+            color=colors,
+        )
+        ylabel = "Frequency"
+
+    # Mark the spawn cutoff, below which spawns are stochastically rounded.
+    if args.cutoff is not None:
+        ax.axvline(
+            np.log10(args.cutoff),
+            color="black",
+            linestyle="--",
+            linewidth=0.5 * LINEWIDTH,
+        )
+
+    if args.xmin is not None or args.xmax is not None:
+        ax.set_xlim(args.xmin, args.xmax)
 
     formatAxes(
         xlabel=(
@@ -1334,7 +1394,9 @@ def plotExcitationHist(args):
             r" - E_s^S(\tau)\langle {}^x\Psi|{}^w\Psi\rangle|}"
             r"{P_{\mathrm{gen}}(w|x)}$"
         ),
-        ylabel="Frequency",
+        ylabel=ylabel,
+        legend=args.overlay,
+        legendLoc="best" if args.overlay else None,
     )
 
     finish(args)
@@ -2448,8 +2510,45 @@ def buildParser():
     p = subparsers.add_parser("excitation-hist")
 
     p.add_argument(
-        "path",
+        "paths",
+        nargs="+",
         type=Path,
+    )
+
+    p.add_argument(
+        "--overlay",
+        action="store_true",
+        help="Plot each histogram file as a separate normalised curve instead of summing them.",
+    )
+
+    p.add_argument(
+        "--label",
+        action="append",
+        help=(
+            "Legend label for an overlaid histogram file. Repeat once per input "
+            "file, in the same order as the paths."
+        ),
+    )
+
+    p.add_argument(
+        "--cutoff",
+        type=float,
+        default=None,
+        help="Spawn cutoff to mark with a vertical line.",
+    )
+
+    p.add_argument(
+        "--xmin",
+        type=float,
+        default=None,
+        help="Lower x-axis limit as a base-10 exponent.",
+    )
+
+    p.add_argument(
+        "--xmax",
+        type=float,
+        default=None,
+        help="Upper x-axis limit as a base-10 exponent.",
     )
 
     addCommonArgs(p)
