@@ -136,7 +136,6 @@ pub(crate) fn calculate_h_pair_orthogonal<T: NOCIScalar>(
 /// packet contains one double-excitation sector while `out` remains ordered by compact request.
 /// # Arguments:
 /// - `data`: Shared NOCI basis, AO data, and parent MO caches.
-/// - `connections`: Relative orthogonal connection topology.
 /// - `pairs`: Compact `(source, connection)` requests in stochastic request order.
 /// - `scratch`: Reusable source-parent and rank-sector grouping storage.
 /// - `out`: Hamiltonian results in request order.
@@ -144,8 +143,7 @@ pub(crate) fn calculate_h_pair_orthogonal<T: NOCIScalar>(
 /// - `()`: Writes all parent-orthogonal Hamiltonian matrix elements into `out`.
 pub(crate) fn calculate_h_pairs_orthogonal_batched(
     data: &NOCIData<'_, f64>,
-    connections: &[OrthogonalConnection],
-    pairs: &[(NOCIIndex, usize)],
+    pairs: &[(NOCIIndex, OrthogonalConnection)],
     scratch: &mut OrthogonalHamiltonianScratch,
     out: &mut [f64],
 ) {
@@ -153,7 +151,7 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
     scratch.clear();
     for (output, &(source, connection)) in pairs.iter().enumerate() {
         let parent = data.space.state(source).parent;
-        scratch.groups[parent * 5 + connections[connection].sector()].push(output);
+        scratch.groups[parent * 5 + connection.sector()].push(output);
     }
 
     // Select the widest runtime-supported packet size for double-excitation kernels.
@@ -188,8 +186,8 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
                     let output = outputs[start + lane];
                     let (source, connection) = pairs[output];
                     occupations[lane] = data.space.occupations(source);
-                    states[lane] = connections[connection]
-                        .reduced(data.space.alpha(source), data.space.beta(source));
+                    states[lane] =
+                        connection.reduced(data.space.alpha(source), data.space.beta(source));
                 }
                 // Evaluate one full packet, then scatter values back to request order.
                 xw_hamiltonian_orthogonal_prepared_batched(
@@ -207,8 +205,7 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
             // Handle singles and any incomplete SIMD packet with the scalar kernel.
             for &output in &outputs[start..] {
                 let (source, connection) = pairs[output];
-                let state = connections[connection]
-                    .reduced(data.space.alpha(source), data.space.beta(source));
+                let state = connection.reduced(data.space.alpha(source), data.space.beta(source));
                 out[output] = xw_hamiltonian_orthogonal_prepared(
                     data.ao,
                     cache,

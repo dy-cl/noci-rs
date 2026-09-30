@@ -619,6 +619,7 @@ fn read_qmc(
                     ExcitationGen::HeatBath => "heat-bath".to_string(),
                     ExcitationGen::ApproximateHeatBath => "approximate-heat-bath".to_string(),
                     ExcitationGen::OverlapWeighted => "overlap-weighted".to_string(),
+                    ExcitationGen::Pchb => "pchb".to_string(),
                 });
 
         let excitation_gen: ExcitationGen = excitation_gen_str.parse().unwrap_or_else(|msg| {
@@ -639,9 +640,20 @@ fn read_qmc(
             std::process::exit(1);
         }
 
-        // BApply currently samples only uniform parent-orthogonal connections.
-        if b_apply && excitation_gen != ExcitationGen::Uniform {
-            eprintln!("BApply supports only excitation_gen = \"uniform\"");
+        // BApply samples parent-orthogonal connections uniformly or by precomputed heat bath.
+        if b_apply
+            && !matches!(
+                excitation_gen,
+                ExcitationGen::Uniform | ExcitationGen::Pchb
+            )
+        {
+            eprintln!("BApply supports excitation_gen = \"uniform\" or \"pchb\"");
+            std::process::exit(1);
+        }
+
+        // PCHB tables are defined only for BApply's parent-orthogonal connections.
+        if !b_apply && excitation_gen == ExcitationGen::Pchb {
+            eprintln!("excitation_gen = \"pchb\" is supported only by the BApply propagator");
             std::process::exit(1);
         }
 

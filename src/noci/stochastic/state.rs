@@ -5,17 +5,20 @@ use mpi::traits::*;
 use rand::{Rng, SeedableRng};
 
 // Crate-root imports.
-use crate::determinant::{AuxiliaryIndex, AuxiliarySpace, NOCIIndex};
+use crate::determinant::{AuxiliaryIndex, AuxiliarySpace, NOCIIndex, OrthogonalConnection};
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
-use crate::elements::{NOCIData, OrthogonalHamiltonianScratch};
+use crate::elements::{
+    NOCIData, OrthogonalHamiltonianScratch, calculate_h_pairs_orthogonal_batched,
+};
 use crate::input::{ExcitationGen, Propagator};
 use crate::noci::OverlapFactors;
 
 // Parent/sibling imports.
-use super::common::{find_h_orthogonal_batched, find_hs_batched};
-use super::excit::{OrthogonalUniformGenerator, init_heat_bath, pgen_heat_bath};
+use super::common::find_hs_batched;
+use super::excit::{AuxiliaryGenerator, init_heat_bath, pgen_heat_bath};
 use super::fri::{FriAmplitude, compress_sparse};
 use super::overlapweighted::{OverlapProposal, OverlapWeightedGenerator};
+use super::pchb::PchbScratch;
 
 /// Stable RNG used by seeded QMC streams.
 pub(crate) type QmcRng = rand_xoshiro::Xoshiro256PlusPlus;
@@ -555,13 +558,13 @@ struct NOCIBatchedSpawnRequest {
 
 /// Batched orthogonal spawn request with a relative connection and known proposal probability.
 struct AuxiliaryBatchedSpawnRequest {
-    /// Relative connection-table index.
-    connection: usize,
+    /// Source-relative orthogonal connection.
+    connection: OrthogonalConnection,
     /// Retained source determinant index.
     source: NOCIIndex,
     /// Per-attempt sampled source population.
     parent_population: f64,
-    /// Exact uniform generation probability for the connection.
+    /// Exact generation probability of the connection.
     pgen: f64,
 }
 /// Report-block derivative of the pre-overlap change with respect to the shift.
@@ -697,12 +700,14 @@ pub(in crate::noci::stochastic) struct AuxiliaryThreadPropagation {
     spawn_requests: Vec<AuxiliaryBatchedSpawnRequest>,
     /// Raw off-diagonal auxiliary events awaiting one worker-batch pivotal compression.
     raw_spawn_updates: Vec<AuxiliaryPopulationUpdate>,
-    /// Compact source and relative connection indices aligned with requests.
-    spawn_pairs: Vec<(NOCIIndex, usize)>,
+    /// Compact source and relative connections aligned with requests.
+    spawn_pairs: Vec<(NOCIIndex, OrthogonalConnection)>,
     /// Parent-orthogonal Hamiltonian results aligned with spawn requests.
     spawn_h: Vec<f64>,
     /// Reusable numerical parent-and-sector grouping storage for orthogonal H batches.
     orthogonal_scratch: OrthogonalHamiltonianScratch,
+    /// Per-source PCHB sampling state.
+    pchb_scratch: PchbScratch,
 }
 
 /// Access the shared shift-tangent accumulator of either propagation worker.
@@ -1108,6 +1113,7 @@ impl NOCIThreadPropagation {
                 }
                 ExcitationGen::Uniform => unreachable!(),
                 ExcitationGen::OverlapWeighted => unreachable!(),
+                ExcitationGen::Pchb => unreachable!(),
             };
 
             // Apply `1/P_gen` so the expected spawned change equals the exact propagator action.
@@ -1148,6 +1154,7 @@ impl AuxiliaryThreadPropagation {
             spawn_pairs: Vec::new(),
             spawn_h: Vec::new(),
             orthogonal_scratch: OrthogonalHamiltonianScratch::new(nparents),
+            pchb_scratch: PchbScratch::new(),
         }
     }
 
@@ -1216,30 +1223,35 @@ impl AuxiliaryThreadPropagation {
         }
     }
 
-    /// Sample uniform relative connections for the off-diagonal residual
+    /// Sample relative connections for the off-diagonal residual
     /// `\chi_D=-dt H_{Dx}\tilde N_x/P_\mathrm{gen}(D|x)`.
     /// # Arguments:
     /// - `source`: Retained source determinant index `x`.
     /// - `population`: Sampled real population `\tilde N_x`.
-    /// - `generator`: Persistent system-wide orthogonal connection topology.
+    /// - `generator`: Selected parent-orthogonal connection generator.
+    /// - `data`: NOCI data holding the determinant space.
     /// # Returns
     /// - `()`: Appends unresolved batched spawn requests.
     pub(in crate::noci::stochastic) fn spawning(
         &mut self,
         source: usize,
         population: f64,
-        generator: &OrthogonalUniformGenerator,
+        generator: &AuxiliaryGenerator,
+        data: &NOCIData<'_, f64>,
     ) {
         if population == 0.0 {
             return;
         }
+
+        // Build source-dependent proposal state once for all attempts from `x`.
+        generator.prepare(NOCIIndex(source), data, &mut self.pchb_scratch);
 
         // Split a large signed population over `\lceil|\tilde N_x|\rceil`
         // independent connection draws while preserving its total weight.
         let nattempts = population.abs().ceil().max(1.0) as usize;
         let parent_population = population / nattempts as f64;
         for _ in 0..nattempts {
-            if let Some((connection, pgen)) = generator.sample(&mut self.rng) {
+            if let Some((connection, pgen)) = generator.sample(&self.pchb_scratch, &mut self.rng) {
                 self.spawn_requests.push(AuxiliaryBatchedSpawnRequest {
                     connection,
                     source: NOCIIndex(source),
@@ -1256,7 +1268,6 @@ impl AuxiliaryThreadPropagation {
     /// compressed without coalescing duplicate keys.
     /// # Arguments:
     /// - `data`: Shared NOCI basis, parent MO caches, timestep, and FRI configuration.
-    /// - `generator`: Persistent system-wide orthogonal connection topology.
     /// - `auxiliary`: Canonical auxiliary determinant space.
     /// - `run`: MPI ownership metadata for realised physical determinants.
     /// # Returns
@@ -1264,7 +1275,6 @@ impl AuxiliaryThreadPropagation {
     pub(in crate::noci::stochastic) fn resolve_batched_spawning(
         &mut self,
         data: &NOCIData<'_, f64>,
-        generator: &OrthogonalUniformGenerator,
         auxiliary: &AuxiliarySpace,
         run: &QMCRunInfo,
     ) {
@@ -1282,9 +1292,8 @@ impl AuxiliaryThreadPropagation {
         );
         self.spawn_h.clear();
         self.spawn_h.resize(self.spawn_requests.len(), 0.0);
-        find_h_orthogonal_batched(
+        calculate_h_pairs_orthogonal_batched(
             data,
-            generator,
             &self.spawn_pairs,
             &mut self.orthogonal_scratch,
             &mut self.spawn_h,
@@ -1303,11 +1312,7 @@ impl AuxiliaryThreadPropagation {
                 self.samples.push(raw.abs());
             }
 
-            let child = auxiliary.connected(
-                data.space,
-                request.source,
-                generator.connections()[request.connection],
-            );
+            let child = auxiliary.connected(data.space, request.source, request.connection);
             self.raw_spawn_updates
                 .push(AuxiliaryPopulationUpdate::new(child, raw));
         }

@@ -7,13 +7,14 @@ use mpi::traits::*;
 use rand::Rng;
 
 // Crate-root imports.
-use crate::determinant::OrthogonalConnection;
+use crate::determinant::{NOCIIndex, OrthogonalConnection};
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{MOCache, NOCIData};
 use crate::input::{ExcitationGen, Input};
 
 // Parent/sibling imports.
 use super::common::find_hs;
+use super::pchb::{PchbGenerator, PchbScratch};
 use super::state::{HeatBath, OverlapDerivativeSums, PropagationState, QMCRunInfo, QmcRng};
 
 /// Persistent uniform proposal topology for parent-orthogonal Hamiltonian connections.
@@ -123,26 +124,72 @@ impl OrthogonalUniformGenerator {
     /// - `self`: Persistent uniform connection topology.
     /// - `rng`: Thread-local random-number generator.
     /// # Returns
-    /// - `Option<(usize, f64)>`: Connection-table index and exact uniform probability.
+    /// - `Option<(OrthogonalConnection, f64)>`: Source-relative connection and exact uniform
+    ///   probability.
     #[inline(always)]
     pub(in crate::noci::stochastic) fn sample<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
-    ) -> Option<(usize, f64)> {
+    ) -> Option<(OrthogonalConnection, f64)> {
         if self.connections.is_empty() {
             None
         } else {
-            Some((rng.gen_range(0..self.connections.len()), self.pgen))
+            Some((
+                self.connections[rng.gen_range(0..self.connections.len())],
+                self.pgen,
+            ))
+        }
+    }
+}
+
+/// Proposal distribution for parent-orthogonal BApply connections.
+pub(in crate::noci::stochastic) enum AuxiliaryGenerator {
+    /// Uniform proposal over the system-wide connection table.
+    Uniform(OrthogonalUniformGenerator),
+    /// Precomputed heat-bath doubles and contracted-weight singles.
+    Pchb(PchbGenerator),
+}
+
+impl AuxiliaryGenerator {
+    /// Prepare source-dependent sampling state before all attempts from one source.
+    /// The uniform proposal is source independent and needs no preparation.
+    /// # Arguments:
+    /// - `self`: Selected connection generator.
+    /// - `source`: Retained source determinant `x`.
+    /// - `data`: NOCI data holding the determinant space.
+    /// - `scratch`: Worker-local per-source PCHB state.
+    /// # Returns:
+    /// - `()`: Updates `scratch` for PCHB generation.
+    #[inline(always)]
+    pub(in crate::noci::stochastic) fn prepare(
+        &self,
+        source: NOCIIndex,
+        data: &NOCIData<'_, f64>,
+        scratch: &mut PchbScratch,
+    ) {
+        if let Self::Pchb(generator) = self {
+            generator.prepare(source, data, scratch);
         }
     }
 
-    /// Borrow the complete relative connection topology for numerical batching.
+    /// Sample one source-relative connection and its exact `P_\mathrm{gen}(D|x)`.
     /// # Arguments:
-    /// - `self`: Persistent uniform connection generator.
+    /// - `self`: Selected connection generator.
+    /// - `scratch`: Per-source PCHB state from `prepare`.
+    /// - `rng`: Thread-local random-number generator.
     /// # Returns:
-    /// - `&[OrthogonalConnection]`: Connection table indexed by compact spawn requests.
-    pub(in crate::noci::stochastic) fn connections(&self) -> &[OrthogonalConnection] {
-        &self.connections
+    /// - `Option<(OrthogonalConnection, f64)>`: Connection and generation probability, or `None`
+    ///   for an empty or rejected draw.
+    #[inline(always)]
+    pub(in crate::noci::stochastic) fn sample<R: Rng + ?Sized>(
+        &self,
+        scratch: &PchbScratch,
+        rng: &mut R,
+    ) -> Option<(OrthogonalConnection, f64)> {
+        match self {
+            Self::Uniform(generator) => generator.sample(rng),
+            Self::Pchb(generator) => generator.sample(scratch, rng),
+        }
     }
 }
 

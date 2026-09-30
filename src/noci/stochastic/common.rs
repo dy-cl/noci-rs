@@ -17,8 +17,7 @@ use rayon::prelude::*;
 use crate::determinant::AuxiliarySpace;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{
-    DetPair, NOCIData, calculate_h_pairs_orthogonal_batched, calculate_hs_pair,
-    calculate_hs_pairs_wicks_batched, calculate_s_pair,
+    DetPair, NOCIData, calculate_hs_pair, calculate_hs_pairs_wicks_batched, calculate_s_pair,
 };
 use crate::input::{Input, Propagator};
 use crate::maths::general_evp;
@@ -27,7 +26,7 @@ use crate::noci::OverlapFactors;
 use crate::time_call;
 
 // Parent/sibling imports.
-use super::excit::OrthogonalUniformGenerator;
+use super::excit::AuxiliaryGenerator;
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::restart::{basis_hash, population_representation, restart_base_seed};
 use super::state::{
@@ -303,7 +302,7 @@ pub(in crate::noci::stochastic) fn propagate_iteration(
 /// - `data`: Immutable stochastic propagation data.
 /// - `run`: Rank-local ownership and cached diagonal metadata.
 /// - `shift`: Current physical shift `E_s`.
-/// - `auxiliary`: Uniform connection generator and canonical auxiliary-space topology.
+/// - `auxiliary`: Connection generator and canonical auxiliary-space topology.
 /// - `workers`: Persistent thread-local auxiliary propagation storage.
 /// - `result`: Reusable local, remote, and generation-sample results.
 /// # Returns
@@ -313,7 +312,7 @@ pub(in crate::noci::stochastic) fn propagate_iteration_auxiliary(
     data: &NOCIData<'_, f64>,
     run: &QMCRunInfo,
     shift: f64,
-    auxiliary: (&OrthogonalUniformGenerator, &AuxiliarySpace),
+    auxiliary: (&AuxiliaryGenerator, &AuxiliarySpace),
     workers: &mut [Mutex<AuxiliaryThreadPropagation>],
     result: &mut AuxiliaryPropagationResult,
 ) {
@@ -362,12 +361,12 @@ pub(in crate::noci::stochastic) fn propagate_iteration_auxiliary(
                         auxiliary_space,
                         run,
                     );
-                    worker.spawning(source, population, generator);
+                    worker.spawning(source, population, generator, data);
                 }
             }
 
             // Resolve generated orthogonal connections and route auxiliary updates by owner.
-            worker.resolve_batched_spawning(data, generator, auxiliary_space, run);
+            worker.resolve_batched_spawning(data, auxiliary_space, run);
         });
     }
 
@@ -1053,28 +1052,6 @@ pub(in crate::noci::stochastic) fn find_hs_batched(
             out[i] = find_hs(data, a, b, scratch);
         }
     }
-}
-
-/// Evaluate batched orthogonal Hamiltonian elements
-/// `H_{D_kx_k}=\langle D_k^{P_k}|\hat H|\Phi_{x_k}^{P_k}\rangle`.
-/// # Arguments:
-/// - `data`: Shared stochastic propagation data and parent MO caches.
-/// - `generator`: Uniform parent-orthogonal connection topology.
-/// - `factorisation`: Canonical parent-local source component IDs.
-/// - `components`: Prepared occupied and virtual labels for those canonical components.
-/// - `pairs`: Compact retained-source and relative-connection indices.
-/// - `scratch`: Reusable numerical parent-and-sector request groups.
-/// - `out`: Hamiltonian results in request order.
-/// # Returns
-/// - `()`: Writes all requested orthogonal Hamiltonian elements into `out`.
-pub(in crate::noci::stochastic) fn find_h_orthogonal_batched(
-    data: &NOCIData<'_, f64>,
-    generator: &OrthogonalUniformGenerator,
-    pairs: &[(crate::determinant::NOCIIndex, usize)],
-    scratch: &mut crate::elements::OrthogonalHamiltonianScratch,
-    out: &mut [f64],
-) {
-    calculate_h_pairs_orthogonal_batched(data, generator.connections(), pairs, scratch, out);
 }
 
 /// Determine the maximum scratch sizes required for computation of matrix elements using extended

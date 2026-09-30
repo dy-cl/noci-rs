@@ -21,9 +21,10 @@ use crate::noci::{OverlapFactors, SpinFactorisation};
 use super::common::{
     construct_qmc_run, population_stats_projected_energy, propagate_iteration_auxiliary,
 };
-use super::excit::OrthogonalUniformGenerator;
+use super::excit::{AuxiliaryGenerator, OrthogonalUniformGenerator};
 use super::fri::{compress_dense_to_sparse, compress_sparse, sample_populations, target_cutoff};
 use super::init::initialise_qmc_state;
+use super::pchb::PchbGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
 use super::shift::update_shift_tangent;
 use super::state::{
@@ -240,8 +241,11 @@ pub fn qmc_step(
 ) -> (f64, Option<ExcitationHist>) {
     // Validate BApply-specific generator, checkpoint, and parent-orbital requirements.
     let qmc = data.input.qmc.as_ref().unwrap();
-    if qmc.excitation_gen != ExcitationGen::Uniform {
-        panic!("BApply supports only excitation_gen = \"uniform\"");
+    if !matches!(
+        qmc.excitation_gen,
+        ExcitationGen::Uniform | ExcitationGen::Pchb
+    ) {
+        panic!("BApply supports excitation_gen = \"uniform\" or \"pchb\"");
     }
     if let Some(interval) = data.input.write.write_restart_interval
         && (interval == 0 || interval % qmc.ncycles != 0)
@@ -261,10 +265,22 @@ pub fn qmc_step(
     if factorisation.nparents() > 1 && data.wicks.is_none() {
         panic!("BApply cross-parent B^dagger requires Wick intermediates");
     }
-    let generator = OrthogonalUniformGenerator::new(
-        data.space.occupations(NOCIIndex(0)),
-        &mocache[data.space.state(NOCIIndex(0)).parent],
-    );
+    // Select the parent-orthogonal proposal; PCHB tables are built once per parent.
+    let generator = if qmc.excitation_gen == ExcitationGen::Pchb {
+        let pchb = PchbGenerator::new(&mocache[..factorisation.nparents()]);
+        if run.irank == 0 {
+            println!(
+                "PCHB excitation tables: {:.3} MiB",
+                pchb.bytes() as f64 / (1024.0 * 1024.0)
+            );
+        }
+        AuxiliaryGenerator::Pchb(pchb)
+    } else {
+        AuxiliaryGenerator::Uniform(OrthogonalUniformGenerator::new(
+            data.space.occupations(NOCIIndex(0)),
+            &mocache[data.space.state(NOCIIndex(0)).parent],
+        ))
+    };
     let factor_cache = data.input.wicks.cachedir.as_deref().unwrap_or(".");
     let mut overlap_factors = factorisation.build_overlap_factors(
         data,

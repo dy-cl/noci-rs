@@ -220,6 +220,7 @@ pub fn print_input(input: &Input) {
                 ExcitationGen::HeatBath => "heat-bath",
                 ExcitationGen::ApproximateHeatBath => "approximate-heat-bath",
                 ExcitationGen::OverlapWeighted => "overlap-weighted",
+                ExcitationGen::Pchb => "pchb",
             };
             println!("EXCITATION_GEN: {}", excitation_gen);
             println!("FACTOR_TABLES: {}", q.factor_tables.as_str());

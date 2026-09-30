@@ -80,7 +80,8 @@
 //!
 //! The stochastic implementations share:
 //!
-//! - Uniform and heat-bath excitation generation;
+//! - Uniform and heat-bath excitation generation, and precomputed heat-bath (PCHB) generation of
+//!   BApply parent-orthogonal connections;
 //! - On-demand Hamiltonian and overlap matrix elements;
 //! - Determinant ownership and sparse population exchange across MPI ranks;
 //! - Persistent Rayon worker states and nonorthogonal Wick scratch;
@@ -98,6 +99,7 @@ mod excit;
 mod fri;
 mod init;
 mod overlapweighted;
+mod pchb;
 mod propagate;
 mod report;
 mod restart;

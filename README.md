@@ -272,7 +272,7 @@ RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs h2.lua > output.out
 - SApply and BApply propagators for nonorthogonal and overcomplete spaces, using range populations.
 - Pivotal Fast Randomized Iteration compression of persistent populations and sampled updates [7].
 - Range-population shift control with optional target restoring and BApply momentum.
-- Uniform and overlap-weighted excitation generators; exact heat-bath sampling where supported [6].
+- Uniform and overlap-weighted excitation generators; exact heat-bath sampling where supported [6]; precomputed heat-bath (PCHB) generation for BApply [6, 25].
 - Precomputed nonorthogonal Wick intermediates, held in memory or a disk-backed cache, for on-demand matrix elements [5, 12].
 - Deterministic propagation also supports holomorphic SCF states; stochastic propagation currently supports real SCF states only.
 
@@ -532,7 +532,7 @@ These options control the maximum number of propagation steps, convergence thres
 
 ### Stochastic Propagation
 
-The `qmc` table enables stochastic NOCIQMC. SApply and BApply store real-valued range populations and support pivotal FRI compression [7]. Their equations are given in the [NOCIQMC methods section](#nociqmc). BApply requires auxiliary factor tables and currently supports uniform generation only. Legacy propagators use coefficient populations.
+The `qmc` table enables stochastic NOCIQMC. SApply and BApply store real-valued range populations and support pivotal FRI compression [7]. Their equations are given in the [NOCIQMC methods section](#nociqmc). BApply requires auxiliary factor tables and supports uniform or PCHB generation. Legacy propagators use coefficient populations.
 
 `n_projected` sets projected-energy trial dimension. Enlarged trials select residual-important
 determinants and rediagonalise the projected state. Trial overlap `EProjDen/NRange` is a useful
@@ -575,14 +575,17 @@ Available excitation generators are:
 - `uniform`
 - `heat-bath`
 - `overlap-weighted`
+- `pchb`
 
 Exact heat-bath sampling is very expensive.
+
+The `pchb` generator is BApply's precomputed heat-bath proposal over each parent's orthogonal connections [6, 25]. Doubles are drawn by selecting an occupied hole pair with probability $W_{ij}/Z$, where $W_{ij}=\sum_{ab}|\langle ai\|jb\rangle|$ is precomputed from the parent integrals, and then a particle pair from the source's empty orbitals with probability proportional to $|\langle ai\|jb\rangle|$ (or $|(ai|jb)|$ for alpha-beta holes). Singles select an occupied hole $i$ with probability $S_i/Z$, where $S_i=\sum_{a}s_i^a$ over the source's empty orbitals and $s_i^a=|h_{ai}|+\sum_j|(ai\|jj)|+\sum_{\bar j}|(ai|\bar j\bar j)|$ is a precomputed bound on $|H_{a\leftarrow i,x}|$, and then a particle with probability proportional to $s_i^a$ [25]. The single/double split $p_\text{single}=\sum_i S_i/Z$, with $Z=\sum_i S_i+\sum_{ij}W_{ij}$ over the source's occupied orbitals, is chosen automatically for every source. PCHB weights need $O(n^4)$ memory per parent, which is printed at startup.
 
 The `overlap-weighted` generator mixes uniform sampling with a factorised proposal proportional to the absolute determinant overlap, $|S_{wx}|$. `overlap_weight` sets the overlap branch probability in the range $0 \le p < 1$, while `optimise_overlap_weight = true` adapts it between report blocks using the sampled second moment. The required overlap factor tables may use `factor_tables = "ram"` or `factor_tables = "disk"`.
 
 For `s-apply`, omitted `excitation_gen` selects overlap/uniform mixture with `overlap_weight = 0.5`.
 SApply rejects heat-bath generation because tangent needs separately realised overlap elements.
-BApply currently supports uniform generation only; improved generation is future work.
+BApply supports `uniform` and `pchb`; `pchb` is rejected by every other propagator.
 
 `shift_damping` damps Newton range-population shift updates. `population_restoring` is dimensionless
 target-restoring strength $\kappa$ in Newton range-population controller: `0` gives zero-growth
@@ -756,6 +759,8 @@ Markers [1]–[24] refer to method publications; [S1]–[S2] refer to software a
 23. Max A. Woodbury. *Inverting Modified Matrices*. Statistical Research Group, Princeton University, Memorandum Report 42 (1950).
 
 24. Boris T. Polyak. Some methods of speeding up the convergence of iteration methods. *USSR Computational Mathematics and Mathematical Physics* **4**, 1–17 (1964). [doi:10.1016/0041-5553(64)90137-5](https://doi.org/10.1016/0041-5553(64)90137-5).
+
+25. Oskar Weser, Ali Alavi, and Giovanni Li Manni. Exploiting locality in full configuration interaction quantum Monte Carlo for fast excitation generation. *Journal of Chemical Theory and Computation* **19**, 9118 (2023). [doi:10.1021/acs.jctc.3c00546](https://doi.org/10.1021/acs.jctc.3c00546).
 
 ### Software and Data References
 

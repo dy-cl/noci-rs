@@ -12,6 +12,7 @@ pub enum ExcitationGen {
     HeatBath,
     ApproximateHeatBath,
     OverlapWeighted,
+    Pchb,
 }
 
 impl FromStr for ExcitationGen {
@@ -30,6 +31,7 @@ impl FromStr for ExcitationGen {
             "heat-bath" => Ok(Self::HeatBath),
             "approximate-heat-bath" => Ok(Self::ApproximateHeatBath),
             "overlap-weighted" => Ok(Self::OverlapWeighted),
+            "pchb" => Ok(Self::Pchb),
             _ => Err(format!("invalid excitation generator: {s}")),
         }
     }
