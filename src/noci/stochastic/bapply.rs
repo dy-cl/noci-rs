@@ -267,7 +267,7 @@ pub fn qmc_step(
     }
     // Select the parent-orthogonal proposal; PCHB tables are built once per parent.
     let generator = if qmc.excitation_gen == ExcitationGen::Pchb {
-        let pchb = PchbGenerator::new(&mocache[..factorisation.nparents()]);
+        let pchb = PchbGenerator::new(data, &mocache[..factorisation.nparents()]);
         if run.irank == 0 {
             println!(
                 "PCHB excitation tables: {:.3} MiB",
