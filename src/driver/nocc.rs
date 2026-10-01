@@ -99,6 +99,13 @@ pub(crate) fn run_gnocc(
     let reference = ReferenceState::new(&noao, &gamma1, &lambdas);
     let evaluator = TermEvaluator::new(options.max_cumulant, &spaces);
     let fois = build_fois_basis(&reference, &spaces, &excitations, &evaluator, options);
+    if world.rank() == 0 {
+        println!(
+            "FOIS directions: {} of {} excitations",
+            fois.y.ncols(),
+            excitations.len()
+        );
+    }
 
     if world.rank() == 0 {
         // Solve the amplitude equations and report the GNOCC energy.
@@ -112,7 +119,7 @@ pub(crate) fn run_gnocc(
             e0,
             options,
         );
-        print_solution(e0, &solution);
+        print_solution(e0, &solution, options.holomorphic);
     }
 }
 
@@ -120,11 +127,13 @@ pub(crate) fn run_gnocc(
 /// # Arguments:
 /// - `e0`: Reference energy `\langle\Phi|\hat H|\Phi\rangle`.
 /// - `solution`: Final amplitude-equation state.
+/// - `holomorphic`: Whether the amplitudes were complex, so the energy has an imaginary part.
 /// # Returns:
 /// - `()`: Prints the reference, correlation and total energies.
 fn print_solution(
     e0: f64,
     solution: &AmplitudeSolution,
+    holomorphic: bool,
 ) {
     println!("{}", "=".repeat(100));
     println!("GNOCC energy");
@@ -135,4 +144,7 @@ fn print_solution(
     println!("Reference energy: {:.12}", e0);
     println!("Correlation energy: {:.12}", solution.correlation_energy);
     println!("Total energy: {:.12}", e0 + solution.correlation_energy);
+    if holomorphic {
+        println!("Imaginary energy: {:.6e}", solution.imaginary_energy);
+    }
 }

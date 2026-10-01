@@ -9,12 +9,15 @@ use rayon::prelude::*;
 
 // Parent/sibling imports.
 use super::plan::{BlockKey, TablePlan};
-use super::tensors::{SpaceKind, Tensors, evaluate_factor, space_orbitals};
+use super::tensors::{
+    Amplitudes, SpaceKind, TensorKind, Tensors, amplitude_element, evaluate_factor, space_orbitals,
+};
+use super::workspace::Values;
 
 /// Dense tensor blocks of every tensor kind and slot-space pattern used by a set of tables.
 pub(super) struct FactorBlocks {
     /// Row-major block data over the orbitals of each slot space.
-    pub(super) blocks: HashMap<BlockKey, Vec<f64>>,
+    pub(super) blocks: HashMap<BlockKey, Values>,
     /// Number of orbitals in the core, active and virtual spaces.
     pub(super) dims: [usize; 3],
 }
@@ -56,18 +59,44 @@ impl FactorBlocks {
 }
 
 /// Build one dense factor block by evaluating the runtime tensor element at every orbital tuple.
+/// Amplitude blocks take the scalar type of the amplitudes; every other block is real.
 /// # Arguments:
 /// - `key`: Tensor kind and slot spaces.
 /// - `tensors`: Runtime tensors.
 /// # Returns:
-/// - `Vec<f64>`: Row-major block elements.
+/// - `Values`: Row-major block elements.
 /// # Panics
 /// - Panics if the block is an amplitude block and `tensors` holds no amplitudes.
 fn dense_factor_block(
     key: &BlockKey,
     tensors: &Tensors<'_>,
-) -> Vec<f64> {
-    let (kind, spaces) = key;
+) -> Values {
+    let kind = key.0;
+    match tensors.amplitudes {
+        Some(Amplitudes::Complex(t)) if matches!(kind, TensorKind::T1 | TensorKind::T2) => {
+            Values::Complex(dense_block(key, tensors, |slots, idx| {
+                amplitude_element(kind, slots, idx, t)
+            }))
+        }
+        _ => Values::Real(dense_block(key, tensors, |slots, idx| {
+            evaluate_factor(kind, slots, idx, tensors)
+        })),
+    }
+}
+
+/// Evaluate one element function at every orbital tuple of a block, in row-major order.
+/// # Arguments:
+/// - `key`: Tensor kind and slot spaces.
+/// - `tensors`: Runtime tensors, for the orbitals of every space.
+/// - `element`: Element at the upper and lower slot ids and the orbital tuple.
+/// # Returns:
+/// - `Vec<T>`: Row-major block elements.
+fn dense_block<T>(
+    key: &BlockKey,
+    tensors: &Tensors<'_>,
+    element: impl Fn((&[u16], &[u16]), &[usize]) -> T,
+) -> Vec<T> {
+    let (_, spaces) = key;
     let orbitals = spaces
         .iter()
         .map(|&s| space_orbitals(tensors.spaces, s))
@@ -90,7 +119,7 @@ fn dense_factor_block(
     let mut pos = vec![0usize; k];
     let mut data = Vec::with_capacity(size);
     for _ in 0..size {
-        data.push(evaluate_factor(*kind, (&upper, &lower), &idx, tensors));
+        data.push(element((&upper, &lower), &idx));
 
         let mut slot = k;
         while slot > 0 {

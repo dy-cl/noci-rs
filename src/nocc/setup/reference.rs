@@ -8,8 +8,8 @@ use ndarray::Array2;
 use crate::AoData;
 use crate::elements::{RDM1, RDM2};
 use crate::nocc::cumulants::Cumulants;
-use crate::nocc::space::{DenseAmplitudes, Spaces};
-use crate::nocc::terms::Tensors;
+use crate::nocc::space::Spaces;
+use crate::nocc::terms::{Amplitudes, Tensors};
 use crate::scf::fock;
 
 /// Generalised-normal-ordered reference: its Hamiltonian integrals and reduced quantities.
@@ -55,7 +55,7 @@ impl<'a> ReferenceState<'a> {
     pub(in crate::nocc) fn tensors<'b>(
         &'b self,
         spaces: &'b Spaces,
-        amplitudes: Option<&'b DenseAmplitudes>,
+        amplitudes: Option<Amplitudes<'b>>,
     ) -> Tensors<'b> {
         Tensors {
             ao: self.ao,

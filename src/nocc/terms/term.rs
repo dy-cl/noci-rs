@@ -1,13 +1,22 @@
 // nocc/terms/term.rs
 //! Contraction of one planned term and its accumulation into an output block.
 
+// Standard library imports.
+use std::ops::{AddAssign, Mul};
+
+// External crate imports.
+use num_complex::Complex64;
+
 // Crate-root imports.
 use crate::maths::contract::{MAXLABELS, TensorShape, contract_tensor_pair, strided_tensor_shape};
+use crate::maths::gemm::{
+    strided_gemm, strided_gemm_complex, strided_gemm_complex_real, strided_gemm_real_complex,
+};
 
 // Parent/sibling imports.
 use super::plan::Anchor;
 use super::schema::TensorFactor;
-use super::workspace::{Source, Workspace, pooled_buffer};
+use super::workspace::{Out, Source, Values, View, Workspace, pooled_buffer};
 
 /// Largest intermediate, in elements, of a term contracted whole; larger ones are contracted in
 /// slices over free indices so every intermediate stays in the cache.
@@ -15,8 +24,8 @@ const SLICEDTERM: usize = 1 << 16;
 
 /// Data of every table-local block, and the group's shared product with its shape and use.
 type TermSources<'a> = (
-    &'a [&'a [f64]],
-    Option<(&'a [f64], &'a TensorShape, &'a Anchor)>,
+    &'a [View<'a>],
+    Option<(View<'a>, &'a TensorShape, &'a Anchor)>,
 );
 
 /// One kept term with its resolved plan.
@@ -49,10 +58,10 @@ pub(super) struct PlannedTerm<'a> {
 /// - `()`: Mutates `out` and `ws`.
 pub(super) fn accumulate_term(
     term: &PlannedTerm<'_>,
-    tensors: (&[&[f64]], &[usize]),
+    tensors: (&[View<'_>], &[usize]),
     indices: (&[u16], &[(u16, usize)]),
-    shared: Option<(&[f64], &TensorShape, &Anchor)>,
-    out: &mut [f64],
+    shared: Option<(View<'_>, &TensorShape, &Anchor)>,
+    out: &mut Out<'_>,
     ws: &mut Workspace,
 ) {
     let (data, extent) = tensors;
@@ -164,8 +173,7 @@ pub(super) fn accumulate_term(
     contract_steps(term, (data, shared), (inputs, &[], !depends), ws);
     if sliced == 0 {
         scatter_last(term, (data, shared), (free, fixed), extent, out, ws);
-        let released = std::mem::take(&mut ws.buffers);
-        ws.pool.extend(released);
+        ws.release(0);
         return;
     }
 
@@ -228,15 +236,13 @@ pub(super) fn accumulate_term(
             out,
             ws,
         );
-        let released = ws.buffers.drain(hoisted..).collect::<Vec<_>>();
-        ws.pool.extend(released);
+        ws.release(hoisted);
 
         // Advance the sliced values as an odometer.
         let mut k = ns;
         loop {
             if k == 0 {
-                let released = std::mem::take(&mut ws.buffers);
-                ws.pool.extend(released);
+                ws.release(0);
                 return;
             }
             k -= 1;
@@ -295,14 +301,15 @@ fn contract_steps(
         let (sa, a) = ws.operands[i as usize];
         let (sb, b) = ws.operands[j as usize];
         let keep = ws.keeps[s] & !sliced;
-        let buffer = pooled_buffer(&mut ws.pool, result_size(&a, &b, keep));
+        let len = result_size(&a, &b, keep);
         let (result, shape) = {
             let source = |s: Source| match s {
-                Source::Block(id, off) => &data[id][off..],
-                Source::Buffer(id) => ws.buffers[id].as_slice(),
-                Source::Shared(off) => shared.map_or(&[][..], |x| &x.0[off..]),
+                Source::Block(id, off) => offset_view(data[id], off),
+                Source::Buffer(id) => ws.buffers[id].view(0),
+                Source::Shared(off) => shared.map_or(View::Real(&[]), |x| offset_view(x.0, off)),
             };
-            contract_tensor_pair((source(sa), &a), (source(sb), &b), keep, buffer)
+            let pools = (&mut ws.pool, &mut ws.complex_pool);
+            contract_views((source(sa), &a), (source(sb), &b), keep, len, pools)
         };
         ws.buffers.push(result);
         ws.operands[target] = (Source::Buffer(ws.buffers.len() - 1), shape);
@@ -348,19 +355,115 @@ fn scatter_last(
     sources: TermSources<'_>,
     indices: (&[u16], &[(u16, usize)]),
     extent: &[usize],
-    out: &mut [f64],
+    out: &mut Out<'_>,
     ws: &Workspace,
 ) {
     let (data, shared) = sources;
-    let last = ws.operands.last().map(|&(s, shape)| {
-        let values = match s {
-            Source::Block(id, off) => &data[id][off..],
-            Source::Buffer(id) => ws.buffers[id].as_slice(),
-            Source::Shared(off) => shared.map_or(&[][..], |x| &x.0[off..]),
-        };
-        (values, shape)
-    });
-    scatter_into_output(last, indices, &term.map, extent, term.coefficient, out);
+    let unit = [1.0];
+    let (values, shape) = ws.operands.last().map_or_else(
+        || (View::Real(&unit), strided_tensor_shape(&[], extent)),
+        |&(s, shape)| {
+            let values = match s {
+                Source::Block(id, off) => offset_view(data[id], off),
+                Source::Buffer(id) => ws.buffers[id].view(0),
+                Source::Shared(off) => shared.map_or(View::Real(&[]), |x| offset_view(x.0, off)),
+            };
+            (values, shape)
+        },
+    );
+    let (map, coeff) = (&term.map, term.coefficient);
+    match (values, out) {
+        (View::Real(x), Out::Real(o)) => {
+            scatter_into_output((x, shape), indices, map, extent, coeff, o)
+        }
+        (View::Real(x), Out::Complex(o)) => {
+            scatter_into_output((x, shape), indices, map, extent, coeff, o)
+        }
+        (View::Complex(x), Out::Complex(o)) => {
+            scatter_into_output((x, shape), indices, map, extent, coeff, o)
+        }
+        (View::Complex(_), Out::Real(_)) => panic!("complex term in a real output block"),
+    }
+}
+
+/// View a block from an element offset.
+/// # Arguments:
+/// - `view`: Block data.
+/// - `offset`: First element of the view.
+/// # Returns:
+/// - `View<'a>`: Elements from `offset` on.
+fn offset_view(
+    view: View<'_>,
+    offset: usize,
+) -> View<'_> {
+    match view {
+        View::Real(x) => View::Real(&x[offset..]),
+        View::Complex(x) => View::Complex(&x[offset..]),
+    }
+}
+
+/// Contract two real or complex operands, with the matrix products of their element types; the
+/// result is complex when either operand is.
+/// # Arguments:
+/// - `a`: First operand data and shape.
+/// - `b`: Second operand data and shape.
+/// - `keep`: Bit mask of labels that survive the contraction.
+/// - `len`: Number of result elements, used to pick a reused buffer.
+/// - `pools`: Released real and complex buffers.
+/// # Returns:
+/// - `(Values, TensorShape)`: Row-major result and its shape.
+pub(super) fn contract_views(
+    a: (View<'_>, &TensorShape),
+    b: (View<'_>, &TensorShape),
+    keep: u64,
+    len: usize,
+    pools: (&mut Vec<Vec<f64>>, &mut Vec<Vec<Complex64>>),
+) -> (Values, TensorShape) {
+    let (real, complex) = pools;
+    match (a.0, b.0) {
+        (View::Real(x), View::Real(y)) => {
+            let buffer = pooled_buffer(real, len);
+            let (r, s) =
+                contract_tensor_pair((x, a.1), (y, b.1), keep, buffer, strided_gemm, strided_gemm);
+            (Values::Real(r), s)
+        }
+        (View::Real(x), View::Complex(y)) => {
+            let buffer = pooled_buffer(complex, len);
+            let (r, s) = contract_tensor_pair(
+                (x, a.1),
+                (y, b.1),
+                keep,
+                buffer,
+                strided_gemm_real_complex,
+                strided_gemm_complex_real,
+            );
+            (Values::Complex(r), s)
+        }
+        (View::Complex(x), View::Real(y)) => {
+            let buffer = pooled_buffer(complex, len);
+            let (r, s) = contract_tensor_pair(
+                (x, a.1),
+                (y, b.1),
+                keep,
+                buffer,
+                strided_gemm_complex_real,
+                strided_gemm_real_complex,
+            );
+            (Values::Complex(r), s)
+        }
+        (View::Complex(x), View::Complex(y)) => {
+            let buffer = pooled_buffer(complex, len);
+            let (r, s) = contract_tensor_pair(
+                (x, a.1),
+                (y, b.1),
+                keep,
+                buffer,
+                strided_gemm_complex,
+                strided_gemm_complex,
+            );
+            (Values::Complex(r), s)
+        }
+    }
 }
 
 /// Fix one label of an operand shape to one value, removing it from the shape.
@@ -394,7 +497,7 @@ fn fix_label(
 /// absent from the operand are broadcast, labels not free are summed, and a term with no
 /// factors is a constant.
 /// # Arguments:
-/// - `operand`: Final operand data and shape, or `None` for a term without factors.
+/// - `operand`: Final operand data and shape; a term without factors passes the unit scalar.
 /// - `indices`: Class-local ids of the free indices of `out` in output order, and the fixed
 ///   representatives with their values; an output index whose representative is fixed is
 ///   written only at that value.
@@ -404,20 +507,23 @@ fn fix_label(
 /// - `out`: Row-major output block, updated in place.
 /// # Returns:
 /// - `()`: Mutates `out`.
-fn scatter_into_output(
-    operand: Option<(&[f64], TensorShape)>,
+fn scatter_into_output<S, T>(
+    operand: (&[S], TensorShape),
     indices: (&[u16], &[(u16, usize)]),
     map: &[u16; 64],
     extent: &[usize],
     coeff: f64,
-    out: &mut [f64],
-) {
+    out: &mut [T],
+) where
+    S: Copy + AddAssign + From<f64>,
+    f64: Mul<S, Output = S>,
+    T: AddAssign<S>,
+{
     if out.is_empty() {
         return;
     }
     let (free, fixed) = indices;
-    let unit = [1.0];
-    let (data, shape) = operand.unwrap_or((&unit, strided_tensor_shape(&[], extent)));
+    let (data, shape) = operand;
 
     // Extent, output stride and operand stride of every representative of the free indices;
     // free indices sharing a representative add their output strides, and an index whose
@@ -464,7 +570,7 @@ fn scatter_into_output(
         }
         let mut idx = [0usize; MAXLABELS];
         let mut extra = 0;
-        let mut total = 0.0;
+        let mut total = S::from(0.0);
         loop {
             total += data[offset + extra];
             let mut k = summed.len();

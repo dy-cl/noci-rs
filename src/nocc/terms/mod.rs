@@ -28,7 +28,7 @@ mod workspace;
 
 // Restricted type re-exports.
 pub(crate) use plan::TermEvaluator;
-pub(in crate::nocc) use tensors::Tensors;
+pub(in crate::nocc) use tensors::{Amplitudes, Tensors};
 
 // Restricted function re-exports.
 pub(in crate::nocc) use assemble::{assemble_matrix, assemble_scalar, assemble_vector};

@@ -33,7 +33,7 @@ mod write;
 pub use det::DeterministicOptions;
 pub use excit::ExcitationOptions;
 pub use mol::MolOptions;
-pub use nocc::{FoisWeighting, NOCCMCOptions};
+pub use nocc::NOCCMCOptions;
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, FriOptions, QMCOptions};
 pub use scf::{DiisOptions, SCFInfo};

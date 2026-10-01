@@ -5,13 +5,13 @@
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::maths::contract::{MAXLABELS, contract_tensor_pair, strided_tensor_shape};
+use crate::maths::contract::{MAXLABELS, strided_tensor_shape};
 
 // Parent/sibling imports.
 use super::factors::FactorBlocks;
 use super::plan::{TablePlan, TermTable, label_map};
-use super::term::{PlannedTerm, accumulate_term};
-use super::workspace::Workspace;
+use super::term::{PlannedTerm, accumulate_term, contract_views};
+use super::workspace::{Out, Values, Workspace};
 
 /// Smallest output block, in elements, evaluated as slices over its leading free indices.
 const LARGEBLOCK: usize = 1 << 20;
@@ -24,8 +24,8 @@ const SLICES: usize = 64;
 
 /// Dense result block over the free indices of one table.
 pub(super) struct DenseBlock {
-    /// Row-major elements over the free indices in table order.
-    pub(super) data: Vec<f64>,
+    /// Row-major elements over the free indices in table order, complex when any factor is.
+    pub(super) data: Values,
     /// Extent of every free index.
     pub(super) dims: Vec<usize>,
 }
@@ -57,8 +57,12 @@ pub(super) fn evaluate_dense_table(
     let data = plan
         .keys
         .iter()
-        .map(|k| blocks.blocks[k].as_slice())
+        .map(|k| blocks.blocks[k].view(0))
         .collect::<Vec<_>>();
+    let complex = plan
+        .keys
+        .iter()
+        .any(|k| matches!(blocks.blocks[k], Values::Complex(_)));
     let dims = free.iter().map(|&x| extent[x as usize]).collect::<Vec<_>>();
     let size = dims.iter().product::<usize>();
 
@@ -82,28 +86,40 @@ pub(super) fn evaluate_dense_table(
             slice /= dims[lead];
             lead += 1;
         }
-        let mut out = vec![0.0; size];
-        out.par_chunks_mut(slice)
-            .enumerate()
-            .for_each_init(Workspace::new, |ws, (s, chunk)| {
-                let mut fixed = [(0u16, 0usize); MAXLABELS];
-                let mut r = s;
-                for k in (0..lead).rev() {
-                    fixed[k] = (free[k], r % dims[k]);
-                    r /= dims[k];
-                }
-                for (t, &index) in plan.terms.iter().enumerate() {
-                    let term = planned(t, index);
-                    accumulate_term(
-                        &term,
-                        (&data, &extent),
-                        (&free[lead..], &fixed[..lead]),
-                        None,
-                        chunk,
-                        ws,
-                    );
-                }
-            });
+        let slice_terms = |ws: &mut Workspace, s: usize, mut chunk: Out<'_>| {
+            let mut fixed = [(0u16, 0usize); MAXLABELS];
+            let mut r = s;
+            for k in (0..lead).rev() {
+                fixed[k] = (free[k], r % dims[k]);
+                r /= dims[k];
+            }
+            for (t, &index) in plan.terms.iter().enumerate() {
+                let term = planned(t, index);
+                accumulate_term(
+                    &term,
+                    (&data, &extent),
+                    (&free[lead..], &fixed[..lead]),
+                    None,
+                    &mut chunk,
+                    ws,
+                );
+            }
+        };
+        let mut out = Values::zeros(size, complex);
+        match &mut out {
+            Values::Real(x) => x
+                .par_chunks_mut(slice)
+                .enumerate()
+                .for_each_init(Workspace::new, |ws, (s, chunk)| {
+                    slice_terms(ws, s, Out::Real(chunk))
+                }),
+            Values::Complex(x) => x
+                .par_chunks_mut(slice)
+                .enumerate()
+                .for_each_init(Workspace::new, |ws, (s, chunk)| {
+                    slice_terms(ws, s, Out::Complex(chunk))
+                }),
+        }
         return DenseBlock { data: out, dims };
     }
 
@@ -113,17 +129,25 @@ pub(super) fn evaluate_dense_table(
         .groups
         .par_iter()
         .fold(
-            || (Workspace::new(), vec![0.0; size], Vec::new()),
-            |(mut ws, mut out, buffer), (range, product)| {
+            || (Workspace::new(), Values::zeros(size, complex)),
+            |(mut ws, mut out), (range, product)| {
                 let shared = product.map(|id| {
                     let sp = &plan.shared[id as usize];
                     let a = strided_tensor_shape(&sp.labels[0], &sp.extent);
                     let b = strided_tensor_shape(&sp.labels[1], &sp.extent);
-                    contract_tensor_pair(
+                    let len = sp
+                        .extent
+                        .iter()
+                        .enumerate()
+                        .filter(|&(l, _)| sp.keep & (1 << l) != 0)
+                        .map(|(_, &d)| d)
+                        .product();
+                    contract_views(
                         (data[sp.blocks[0] as usize], &a),
                         (data[sp.blocks[1] as usize], &b),
                         sp.keep,
-                        buffer,
+                        len,
+                        (&mut ws.pool, &mut ws.complex_pool),
                     )
                 });
                 for &t in &plan.order[range.clone()] {
@@ -132,26 +156,29 @@ pub(super) fn evaluate_dense_table(
                     let use_shared = shared
                         .as_ref()
                         .zip(plan.anchors[t].as_ref())
-                        .map(|((values, shape), anchor)| (values.as_slice(), shape, anchor));
+                        .map(|((values, shape), anchor)| (values.view(0), shape, anchor));
                     accumulate_term(
                         &term,
                         (&data, &extent),
                         (free, &[]),
                         use_shared,
-                        &mut out,
+                        &mut out.out(),
                         &mut ws,
                     );
                 }
-                (ws, out, shared.map_or_else(Vec::new, |(values, _)| values))
+                if let Some((values, _)) = shared {
+                    ws.buffers.push(values);
+                    let start = ws.buffers.len() - 1;
+                    ws.release(start);
+                }
+                (ws, out)
             },
         )
-        .map(|(_, out, _)| out)
+        .map(|(_, out)| out)
         .reduce(
-            || vec![0.0; size],
+            || Values::zeros(size, complex),
             |mut a, b| {
-                for (x, y) in a.iter_mut().zip(b) {
-                    *x += y;
-                }
+                a.add_assign(b);
                 a
             },
         );

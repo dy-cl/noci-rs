@@ -8,20 +8,26 @@
 //! memory traffic as the arithmetic, so it is read where it lies and only the small operand is
 //! packed.
 //!
-//! The tile kernel is generic over the packed type and instantiated for AVX-512 (`F64x8`) and
-//! AVX2/FMA (`F64x4`), with a scalar fallback; the widest kernel the CPU supports is chosen at
-//! run time. Every tile keeps most of the vector registers as accumulators: wide products use few
-//! rows and many columns, and narrow ones trade columns for rows.
+//! The tile kernel is generic over the element and packed types and takes the multiply-add as a
+//! closure, so one loop serves real products (`F64x8`, `F64x4`), complex products (`C64x8`,
+//! `C64x4`) and the mixed real-complex products, each with a scalar fallback; the widest kernel the
+//! CPU supports is chosen at run time. Every tile keeps most of the vector registers as
+//! accumulators: wide products use few rows and many columns, and narrow ones trade columns for
+//! rows, and complex accumulators, which take two registers each, use half as many.
 
 // Standard library imports.
 #[cfg(target_arch = "x86_64")]
 use std::arch::is_x86_feature_detected;
 #[cfg(target_arch = "x86_64")]
 use std::cell::RefCell;
+use std::ops::{AddAssign, Mul};
+
+// External crate imports.
+use num_complex::Complex64;
 
 // Parent/sibling imports.
 #[cfg(target_arch = "x86_64")]
-use super::simd::{F64x4, F64x8, Simd};
+use super::simd::{C64x4, C64x8, F64x4, F64x8, Simd};
 
 /// Summed indices per block, so one packed panel of `B` stays in the L1 cache.
 #[cfg(target_arch = "x86_64")]
@@ -29,8 +35,10 @@ const KC: usize = 256;
 
 #[cfg(target_arch = "x86_64")]
 thread_local! {
-    /// Packed panels of the small operand, reused by every product on this thread.
+    /// Packed real panels of the small operand, reused by every product on this thread.
     static PANELS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+    /// Packed complex panels of the small operand, reused by every product on this thread.
+    static CPANELS: RefCell<Vec<Complex64>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Compute `C = A B` with `A_{ik} = a[r_i + c_k]`, `B_{kj} = b[s_k + t_j]` a `k \times n` matrix and
@@ -46,7 +54,7 @@ thread_local! {
 /// - `()`: Writes `C`.
 /// # Safety
 /// - Every `r_i + c_k` must index `a`, every `s_k + t_j` must index `b`, and `c` must hold `m n`.
-pub(crate) unsafe fn strided_gemm(
+pub unsafe fn strided_gemm(
     a: &[f64],
     rows: &[usize],
     cols: &[usize],
@@ -63,6 +71,133 @@ pub(crate) unsafe fn strided_gemm(
         }
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
             unsafe { strided_gemm_f64x4(a, rows, cols, b, c) };
+            return;
+        }
+    }
+
+    strided_gemm_scalar(a, rows, cols, b, c);
+}
+
+/// Compute the complex product `C = A B` of complex `A` and `B`, as for `strided_gemm`.
+/// # Arguments:
+/// - `a`: Data of `A`.
+/// - `rows`: Offset `r_i` of every row of `A`.
+/// - `cols`: Offset `c_k` of every column of `A`.
+/// - `b`: Data of `B`, with the offset `s_k` of every row and `t_j` of every column.
+/// - `c`: Row-major `C`, overwritten.
+/// # Returns:
+/// - `()`: Writes `C`.
+/// # Safety
+/// - The index ranges must hold as for `strided_gemm`.
+pub unsafe fn strided_gemm_complex(
+    a: &[Complex64],
+    rows: &[usize],
+    cols: &[usize],
+    b: (&[Complex64], &[usize], &[usize]),
+    c: &mut [Complex64],
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: Each kernel runs only when the CPU supports its features, and the caller
+        // guarantees the index ranges.
+        if is_x86_feature_detected!("avx512f") {
+            CPANELS.with_borrow_mut(|packed| unsafe {
+                complex_gemm_c64x8(a, rows, cols, b, c, packed, |acc, x, y| {
+                    <C64x8 as Simd<8>>::madd(acc, <C64x8 as Simd<8>>::splat(x), y)
+                })
+            });
+            return;
+        }
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            CPANELS.with_borrow_mut(|packed| unsafe {
+                complex_gemm_c64x4(a, rows, cols, b, c, packed, |acc, x, y| {
+                    <C64x4 as Simd<4>>::madd(acc, <C64x4 as Simd<4>>::splat(x), y)
+                })
+            });
+            return;
+        }
+    }
+
+    strided_gemm_scalar(a, rows, cols, b, c);
+}
+
+/// Compute the complex product `C = A B` of real `A` and complex `B`, as for `strided_gemm`,
+/// with two real multiply-adds per complex element.
+/// # Arguments:
+/// - `a`: Data of `A`.
+/// - `rows`: Offset `r_i` of every row of `A`.
+/// - `cols`: Offset `c_k` of every column of `A`.
+/// - `b`: Data of `B`, with the offset `s_k` of every row and `t_j` of every column.
+/// - `c`: Row-major `C`, overwritten.
+/// # Returns:
+/// - `()`: Writes `C`.
+/// # Safety
+/// - The index ranges must hold as for `strided_gemm`.
+pub unsafe fn strided_gemm_real_complex(
+    a: &[f64],
+    rows: &[usize],
+    cols: &[usize],
+    b: (&[Complex64], &[usize], &[usize]),
+    c: &mut [Complex64],
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: Each kernel runs only when the CPU supports its features, and the caller
+        // guarantees the index ranges.
+        if is_x86_feature_detected!("avx512f") {
+            CPANELS.with_borrow_mut(|packed| unsafe {
+                complex_gemm_c64x8(a, rows, cols, b, c, packed, C64x8::madd_real)
+            });
+            return;
+        }
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            CPANELS.with_borrow_mut(|packed| unsafe {
+                complex_gemm_c64x4(a, rows, cols, b, c, packed, C64x4::madd_real)
+            });
+            return;
+        }
+    }
+
+    strided_gemm_scalar(a, rows, cols, b, c);
+}
+
+/// Compute the complex product `C = A B` of complex `A` and real `B`, as for `strided_gemm`,
+/// with two real multiply-adds per complex element.
+/// # Arguments:
+/// - `a`: Data of `A`.
+/// - `rows`: Offset `r_i` of every row of `A`.
+/// - `cols`: Offset `c_k` of every column of `A`.
+/// - `b`: Data of `B`, with the offset `s_k` of every row and `t_j` of every column.
+/// - `c`: Row-major `C`, overwritten.
+/// # Returns:
+/// - `()`: Writes `C`.
+/// # Safety
+/// - The index ranges must hold as for `strided_gemm`.
+pub unsafe fn strided_gemm_complex_real(
+    a: &[Complex64],
+    rows: &[usize],
+    cols: &[usize],
+    b: (&[f64], &[usize], &[usize]),
+    c: &mut [Complex64],
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: Each kernel runs only when the CPU supports its features, and the caller
+        // guarantees the index ranges.
+        if is_x86_feature_detected!("avx512f") {
+            PANELS.with_borrow_mut(|packed| unsafe {
+                complex_gemm_c64x8(a, rows, cols, b, c, packed, |acc, x, y| {
+                    C64x8::madd_real_lanes(acc, <C64x8 as Simd<8>>::splat(x), y)
+                })
+            });
+            return;
+        }
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            PANELS.with_borrow_mut(|packed| unsafe {
+                complex_gemm_c64x4(a, rows, cols, b, c, packed, |acc, x, y| {
+                    C64x4::madd_real_lanes(acc, <C64x4 as Simd<4>>::splat(x), y)
+                })
+            });
             return;
         }
     }
@@ -91,16 +226,17 @@ unsafe fn strided_gemm_f64x8(
     c: &mut [f64],
 ) {
     let n = b.2.len();
+    let product = |acc, x, y| F64x8::madd(acc, F64x8::splat(x), y);
     // SAFETY: The caller guarantees AVX-512F and the index ranges.
-    unsafe {
+    PANELS.with_borrow_mut(|packed| unsafe {
         if n > 16 {
-            gemm_tiles::<F64x8, 8, 8, 3>(a, rows, cols, b, c);
+            gemm_tiles::<_, _, _, F64x8, F64x8, 8, 8, 3>(a, rows, cols, b, c, packed, product);
         } else if n > 8 {
-            gemm_tiles::<F64x8, 8, 12, 2>(a, rows, cols, b, c);
+            gemm_tiles::<_, _, _, F64x8, F64x8, 8, 12, 2>(a, rows, cols, b, c, packed, product);
         } else {
-            gemm_tiles::<F64x8, 8, 24, 1>(a, rows, cols, b, c);
+            gemm_tiles::<_, _, _, F64x8, F64x8, 8, 24, 1>(a, rows, cols, b, c, packed, product);
         }
-    }
+    });
 }
 
 /// Compute `C = A B` with the AVX2/FMA tile kernel, choosing the tile shape from the width of `B`.
@@ -124,14 +260,87 @@ unsafe fn strided_gemm_f64x4(
     c: &mut [f64],
 ) {
     let n = b.2.len();
+    let product = |acc, x, y| F64x4::madd(acc, F64x4::splat(x), y);
     // SAFETY: The caller guarantees AVX2, FMA and the index ranges.
+    PANELS.with_borrow_mut(|packed| unsafe {
+        if n > 8 {
+            gemm_tiles::<_, _, _, F64x4, F64x4, 4, 4, 3>(a, rows, cols, b, c, packed, product);
+        } else if n > 4 {
+            gemm_tiles::<_, _, _, F64x4, F64x4, 4, 6, 2>(a, rows, cols, b, c, packed, product);
+        } else {
+            gemm_tiles::<_, _, _, F64x4, F64x4, 4, 12, 1>(a, rows, cols, b, c, packed, product);
+        }
+    });
+}
+
+/// Compute a complex `C = A B` with the AVX-512 tile kernel. Each complex accumulator occupies
+/// two registers, so the tiles hold half as many accumulators as the real kernel's.
+/// # Arguments:
+/// - `a`: Data of `A`.
+/// - `rows`: Offset of every row of `A`.
+/// - `cols`: Offset of every column of `A`.
+/// - `b`: Data of `B`, with the offset `s_k` of every row and `t_j` of every column.
+/// - `c`: Row-major `C`, overwritten.
+/// - `packed`: Reused panel storage of `B`.
+/// - `product`: Multiply-add of one accumulator, one element of `A` and one panel vector.
+/// # Returns:
+/// - `()`: Writes `C`.
+/// # Safety
+/// - The CPU must support AVX-512F, and the index ranges must hold as for `strided_gemm`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn complex_gemm_c64x8<A: Copy, B: Copy + From<f64>, P: Simd<8, Scalar = B>>(
+    a: &[A],
+    rows: &[usize],
+    cols: &[usize],
+    b: (&[B], &[usize], &[usize]),
+    c: &mut [Complex64],
+    packed: &mut Vec<B>,
+    product: impl Fn(C64x8, A, P) -> C64x8 + Copy,
+) {
+    let n = b.2.len();
+    // SAFETY: The caller guarantees AVX-512F and the index ranges.
     unsafe {
         if n > 8 {
-            gemm_tiles::<F64x4, 4, 4, 3>(a, rows, cols, b, c);
-        } else if n > 4 {
-            gemm_tiles::<F64x4, 4, 6, 2>(a, rows, cols, b, c);
+            gemm_tiles::<_, _, _, C64x8, P, 8, 4, 2>(a, rows, cols, b, c, packed, product);
         } else {
-            gemm_tiles::<F64x4, 4, 12, 1>(a, rows, cols, b, c);
+            gemm_tiles::<_, _, _, C64x8, P, 8, 8, 1>(a, rows, cols, b, c, packed, product);
+        }
+    }
+}
+
+/// Compute a complex `C = A B` with the AVX2/FMA tile kernel. Each complex accumulator occupies
+/// two registers, so the tiles hold half as many accumulators as the real kernel's.
+/// # Arguments:
+/// - `a`: Data of `A`.
+/// - `rows`: Offset of every row of `A`.
+/// - `cols`: Offset of every column of `A`.
+/// - `b`: Data of `B`, with the offset `s_k` of every row and `t_j` of every column.
+/// - `c`: Row-major `C`, overwritten.
+/// - `packed`: Reused panel storage of `B`.
+/// - `product`: Multiply-add of one accumulator, one element of `A` and one panel vector.
+/// # Returns:
+/// - `()`: Writes `C`.
+/// # Safety
+/// - The CPU must support AVX2 and FMA, and the index ranges must hold as for `strided_gemm`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn complex_gemm_c64x4<A: Copy, B: Copy + From<f64>, P: Simd<4, Scalar = B>>(
+    a: &[A],
+    rows: &[usize],
+    cols: &[usize],
+    b: (&[B], &[usize], &[usize]),
+    c: &mut [Complex64],
+    packed: &mut Vec<B>,
+    product: impl Fn(C64x4, A, P) -> C64x4 + Copy,
+) {
+    let n = b.2.len();
+    // SAFETY: The caller guarantees AVX2, FMA and the index ranges.
+    unsafe {
+        if n > 4 {
+            gemm_tiles::<_, _, _, C64x4, P, 4, 2, 2>(a, rows, cols, b, c, packed, product);
+        } else {
+            gemm_tiles::<_, _, _, C64x4, P, 4, 4, 1>(a, rows, cols, b, c, packed, product);
         }
     }
 }
@@ -148,16 +357,20 @@ unsafe fn strided_gemm_f64x4(
 /// - `()`: Writes `C`.
 /// # Panics
 /// - Panics if an offset lies outside `a` or the matrices are shorter than their shapes.
-fn strided_gemm_scalar(
-    a: &[f64],
+fn strided_gemm_scalar<A, B, C>(
+    a: &[A],
     rows: &[usize],
     cols: &[usize],
-    b: (&[f64], &[usize], &[usize]),
-    c: &mut [f64],
-) {
+    b: (&[B], &[usize], &[usize]),
+    c: &mut [C],
+) where
+    A: Copy + Mul<B, Output = C>,
+    B: Copy,
+    C: Copy + AddAssign + From<f64>,
+{
     let (b, brows, bcols) = b;
     for (&row, out) in rows.iter().zip(c.chunks_mut(bcols.len())) {
-        out.fill(0.0);
+        out.fill(C::from(0.0));
         for (&col, &brow) in cols.iter().zip(brows) {
             let x = a[row + col];
             for (o, &bcol) in out.iter_mut().zip(bcols) {
@@ -168,27 +381,39 @@ fn strided_gemm_scalar(
 }
 
 /// Run `C = A B` over `MR \times N NV` tiles: pack `B` into panels of `N NV` columns, then sweep
-/// every row block of `A` over every panel.
+/// every row block of `A` over every panel. The element types and the multiply-add `product` of
+/// one accumulator, one element of `A` and one packed vector of `B` select real, complex or mixed
+/// arithmetic.
 /// # Arguments:
 /// - `a`: Data of `A`.
 /// - `rows`: Offset of every row of `A`.
 /// - `cols`: Offset of every column of `A`.
 /// - `b`: Data of `B`, with the offset `s_k` of every row and `t_j` of every column.
 /// - `c`: Row-major `C`, overwritten.
+/// - `packed`: Reused panel storage of `B`.
+/// - `product`: Multiply-add of one accumulator, one element of `A` and one panel vector.
 /// # Returns:
 /// - `()`: Writes `C`.
 /// # Safety
-/// - The CPU must support the instructions of `V`, and the index ranges must hold as for
+/// - The CPU must support the instructions of `V` and `P`, and the index ranges must hold as for
 ///   `strided_gemm`.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn gemm_tiles<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, const NV: usize>(
-    a: &[f64],
+unsafe fn gemm_tiles<A, B, C, V, P, const N: usize, const MR: usize, const NV: usize>(
+    a: &[A],
     rows: &[usize],
     cols: &[usize],
-    b: (&[f64], &[usize], &[usize]),
-    c: &mut [f64],
-) {
+    b: (&[B], &[usize], &[usize]),
+    c: &mut [C],
+    packed: &mut Vec<B>,
+    product: impl Fn(V, A, P) -> V + Copy,
+) where
+    A: Copy,
+    B: Copy + From<f64>,
+    C: Copy + From<f64>,
+    V: Simd<N, Scalar = C>,
+    P: Simd<N, Scalar = B>,
+{
     let (b, brows, bcols) = b;
     let (m, k, n) = (rows.len(), cols.len(), bcols.len());
     let nr = N * NV;
@@ -196,78 +421,81 @@ unsafe fn gemm_tiles<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, 
 
     // Sweep blocks of `KC` summed indices, so one packed panel stays in the L1 cache while every
     // row block passes over it and the later blocks accumulate into `C`.
-    PANELS.with_borrow_mut(|packed| {
-        for k0 in (0..k).step_by(KC) {
-            let kc = KC.min(k - k0);
+    for k0 in (0..k).step_by(KC) {
+        let kc = KC.min(k - k0);
 
-            // Gather this block of `B` as `[panel][kc][N NV]`, padding the last panel with zeros;
-            // every element is written, so earlier contents are left in place.
-            let len = panels * kc * nr;
-            if packed.len() < len {
-                packed.resize(len, 0.0);
-            }
-            for p in 0..panels {
-                let bcols = &bcols[p * nr..n.min((p + 1) * nr)];
-                for kk in 0..kc {
-                    let brow = brows[k0 + kk];
-                    let dst = &mut packed[(p * kc + kk) * nr..(p * kc + kk + 1) * nr];
-                    for (lane, x) in dst.iter_mut().enumerate() {
-                        *x = bcols.get(lane).map_or(0.0, |&bcol| b[brow + bcol]);
-                    }
-                }
-            }
-
-            // Every row block against every panel; rows past `m` repeat the first row and are
-            // dropped.
-            // Every row block against every panel; rows past `m` repeat the first row and are
-            // dropped.
-            for i0 in (0..m).step_by(MR) {
-                let mr = MR.min(m - i0);
-                let mut offsets = [rows[i0]; MR];
-                offsets[..mr].copy_from_slice(&rows[i0..i0 + mr]);
-                for p in 0..panels {
-                    let width = nr.min(n - p * nr);
-                    // SAFETY: The caller guarantees the feature set and the index ranges.
-                    unsafe {
-                        gemm_tile::<V, N, MR, NV>(
-                            a,
-                            &offsets,
-                            &cols[k0..k0 + kc],
-                            &packed[p * kc * nr..(p + 1) * kc * nr],
-                            (c, n, i0, p * nr),
-                            (mr, width, k0 > 0),
-                        );
-                    }
+        // Gather this block of `B` as `[panel][kc][N NV]`, padding the last panel with zeros;
+        // every element is written, so earlier contents are left in place.
+        let len = panels * kc * nr;
+        if packed.len() < len {
+            packed.resize(len, B::from(0.0));
+        }
+        for p in 0..panels {
+            let bcols = &bcols[p * nr..n.min((p + 1) * nr)];
+            for kk in 0..kc {
+                let brow = brows[k0 + kk];
+                let dst = &mut packed[(p * kc + kk) * nr..(p * kc + kk + 1) * nr];
+                for (lane, x) in dst.iter_mut().enumerate() {
+                    *x = bcols.get(lane).map_or(B::from(0.0), |&bcol| b[brow + bcol]);
                 }
             }
         }
-    });
+
+        // Every row block against every panel; rows past `m` repeat the first row and are
+        // dropped.
+        for i0 in (0..m).step_by(MR) {
+            let mr = MR.min(m - i0);
+            let mut offsets = [rows[i0]; MR];
+            offsets[..mr].copy_from_slice(&rows[i0..i0 + mr]);
+            for p in 0..panels {
+                let width = nr.min(n - p * nr);
+                // SAFETY: The caller guarantees the feature set and the index ranges.
+                unsafe {
+                    gemm_tile::<A, B, C, V, P, N, MR, NV>(
+                        a,
+                        (&offsets, &cols[k0..k0 + kc]),
+                        &packed[p * kc * nr..(p + 1) * kc * nr],
+                        (c, n, i0, p * nr),
+                        (mr, width, k0 > 0),
+                        product,
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Accumulate one `MR \times N NV` tile of `C = A B` in registers and store its valid part,
 /// `C_{ij} = \sum_k A_{ik} B_{kj}`.
 /// # Arguments:
 /// - `a`: Data of `A`.
-/// - `offsets`: Offset of each of the tile's rows of `A`.
-/// - `cols`: Offset of every column of `A`.
+/// - `index`: Offset of each of the tile's rows of `A`, and of every column of `A`.
 /// - `panel`: Packed `k \times N NV` panel of `B`.
 /// - `out`: Output matrix, its row length, and the first row and column of the tile.
 /// - `valid`: Number of valid rows and columns of the tile, and whether to add to `C`.
+/// - `product`: Multiply-add of one accumulator, one element of `A` and one panel vector.
 /// # Returns:
 /// - `()`: Writes the tile into `C`.
 /// # Safety
-/// - The CPU must support the instructions of `V`, and the index ranges must hold as for
+/// - The CPU must support the instructions of `V` and `P`, and the index ranges must hold as for
 ///   `strided_gemm`.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn gemm_tile<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, const NV: usize>(
-    a: &[f64],
-    offsets: &[usize; MR],
-    cols: &[usize],
-    panel: &[f64],
-    out: (&mut [f64], usize, usize, usize),
+unsafe fn gemm_tile<A, B, C, V, P, const N: usize, const MR: usize, const NV: usize>(
+    a: &[A],
+    index: (&[usize; MR], &[usize]),
+    panel: &[B],
+    out: (&mut [C], usize, usize, usize),
     valid: (usize, usize, bool),
-) {
+    product: impl Fn(V, A, P) -> V,
+) where
+    A: Copy,
+    B: Copy,
+    C: Copy + From<f64>,
+    V: Simd<N, Scalar = C>,
+    P: Simd<N, Scalar = B>,
+{
+    let (offsets, cols) = index;
     let (c, ldc, i0, j0) = out;
     let (mr, width, accumulate) = valid;
     let nr = N * NV;
@@ -284,7 +512,7 @@ unsafe fn gemm_tile<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, c
         let mut acc = [[V::zero(); NV]; MR];
         if accumulate {
             for (r, row) in acc.iter_mut().enumerate().take(mr) {
-                let mut buffer = [[0.0f64; N]; NV];
+                let mut buffer = [[C::from(0.0); N]; NV];
                 let src = (i0 + r) * ldc + j0;
                 for (lane, x) in buffer.as_flattened_mut().iter_mut().enumerate() {
                     if lane < width {
@@ -297,14 +525,14 @@ unsafe fn gemm_tile<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, c
             }
         }
         for (kk, &col) in cols.iter().enumerate() {
-            let mut bv = [V::zero(); NV];
+            let mut bv = [P::zero(); NV];
             for (v, x) in bv.iter_mut().enumerate() {
-                *x = V::load(&*(pb.add(kk * nr + N * v) as *const [f64; N]));
+                *x = P::load(&*(pb.add(kk * nr + N * v) as *const [B; N]));
             }
             for (row, &start) in acc.iter_mut().zip(&rows) {
-                let av = V::splat(*start.add(col));
+                let av = *start.add(col);
                 for (x, &b) in row.iter_mut().zip(&bv) {
-                    *x = V::madd(*x, av, b);
+                    *x = product(*x, av, b);
                 }
             }
         }
@@ -314,10 +542,10 @@ unsafe fn gemm_tile<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, c
             let dst = (i0 + r) * ldc + j0;
             if width == nr {
                 for (v, x) in row.iter().enumerate() {
-                    x.store(&mut *(c.as_mut_ptr().add(dst + N * v) as *mut [f64; N]));
+                    x.store(&mut *(c.as_mut_ptr().add(dst + N * v) as *mut [C; N]));
                 }
             } else {
-                let mut buffer = [[0.0f64; N]; NV];
+                let mut buffer = [[C::from(0.0); N]; NV];
                 for (x, lanes) in row.iter().zip(buffer.iter_mut()) {
                     x.store(lanes);
                 }
@@ -338,7 +566,7 @@ unsafe fn gemm_tile<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, c
 /// - `layout`: Extent and stride of every axis, outermost first.
 /// # Returns:
 /// - `Vec<usize>`: Offset of every index tuple.
-pub(crate) fn strided_offsets(layout: &[(usize, usize)]) -> Vec<usize> {
+pub fn strided_offsets(layout: &[(usize, usize)]) -> Vec<usize> {
     let mut out = vec![0usize];
     for &(d, s) in layout {
         out = out

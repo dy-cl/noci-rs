@@ -5,7 +5,7 @@
 use ndarray::{Array1, Array2};
 
 // Crate-root imports.
-use crate::input::{FoisWeighting, NOCCMCOptions};
+use crate::input::NOCCMCOptions;
 use crate::maths::linalg::{block_loewdin_x, symmetric_blocks};
 use crate::nocc::equations::metric_matrix;
 use crate::nocc::setup::ReferenceState;
@@ -24,15 +24,14 @@ pub(crate) struct FoisBasis {
 }
 
 /// Build the weighted FOIS basis from the full raw excitation list.
-/// The weights `w_\mu` are either the Hamiltonian couplings `h_\mu` or, for coupled weighting,
-/// unit weights on excitations with `|h_\mu|` above the coupling threshold and zero otherwise.
-/// Both exclude spectator excitations of separated fragments, whose `h_\mu` vanish exactly.
+/// The weights are the Hamiltonian couplings `h_\mu`, which exclude spectator excitations of
+/// separated fragments, whose `h_\mu` vanish exactly.
 /// # Arguments:
 /// - `reference`: Normal-ordered reference state.
 /// - `spaces`: Core, active, and virtual orbital-space maps.
 /// - `excitations`: Raw spin-free excitation list.
 /// - `evaluator`: Term-table evaluator.
-/// - `options`: FOIS weighting, coupling threshold and weighted-metric eigenvalue threshold.
+/// - `options`: Weighted-metric eigenvalue threshold.
 /// # Returns:
 /// - `FoisBasis`: Raw metric and the orthogonalised FOIS basis `Y`.
 /// # References
@@ -47,15 +46,8 @@ pub(crate) fn build_fois_basis(
     // Raw FOIS metric `S_{\mu\nu} = \langle E_\mu^\dagger E_\nu\rangle` from its class-pair blocks.
     let s = metric_matrix(reference, spaces, excitations, evaluator);
 
-    // Form the weighted metric `\tilde S = \operatorname{diag}(w) S \operatorname{diag}(w)`.
-    let h = hamiltonian_weights(reference, spaces, excitations);
-    let w = match options.fois_weighting {
-        FoisWeighting::Coupled => {
-            let tol = options.fois_coupling_tol;
-            h.mapv(|x| if x.abs() > tol { 1.0 } else { 0.0 })
-        }
-        FoisWeighting::Hamiltonian => h.clone(),
-    };
+    // Form the weighted metric `\tilde S = \operatorname{diag}(h) S \operatorname{diag}(h)`.
+    let w = hamiltonian_weights(reference, spaces, excitations);
     let mut stilde: Array2<f64> = Array2::zeros(s.raw_dim());
 
     for i in 0..s.nrows() {
@@ -64,8 +56,8 @@ pub(crate) fn build_fois_basis(
         }
     }
 
-    // The metric is block diagonal through its Kronecker deltas, and the weights only remove
-    // rows, so both are orthogonalised block by block.
+    // The metric is block diagonal through its Kronecker deltas, and the weights only scale
+    // rows, so both are orthogonalised block by block without the excitations of zero weight.
     let blocks = symmetric_blocks(&s);
     let weighted_blocks = blocks
         .iter()

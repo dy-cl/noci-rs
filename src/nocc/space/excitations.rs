@@ -4,6 +4,9 @@
 // External crate imports.
 use ndarray::{Array1, Array2, Array4};
 
+// Crate-root imports.
+use crate::NOCIScalar;
+
 // Parent/sibling imports.
 use super::orbitals::{OrbitalClass, Spaces};
 
@@ -272,11 +275,11 @@ pub(in crate::nocc) fn excitation_class(
 }
 
 /// Dense spin-free amplitude tensors of one cluster operator.
-pub(in crate::nocc) struct DenseAmplitudes {
+pub(in crate::nocc) struct DenseAmplitudes<T> {
     /// Singles amplitudes `t^q_p`, stored as `[q, p]`.
-    pub(in crate::nocc) t1: Array2<f64>,
+    pub(in crate::nocc) t1: Array2<T>,
     /// Pair-symmetric doubles amplitudes `\bar t^{rs}_{pq}`, stored as `[r, s, p, q]`.
-    pub(in crate::nocc) t2: Array4<f64>,
+    pub(in crate::nocc) t2: Array4<T>,
 }
 
 /// Build the dense amplitude tensors of one amplitude vector.
@@ -291,15 +294,15 @@ pub(in crate::nocc) struct DenseAmplitudes {
 /// - `excitations`: Raw spin-free excitation list.
 /// - `amplitudes`: Cluster amplitude vector in the same order as the excitation list.
 /// # Returns:
-/// - `DenseAmplitudes`: Dense `t_1` and `\bar t_2` tensors.
-pub(in crate::nocc) fn dense_amplitudes(
+/// - `DenseAmplitudes<T>`: Dense `t_1` and `\bar t_2` tensors.
+pub(in crate::nocc) fn dense_amplitudes<T: NOCIScalar>(
     spaces: &Spaces,
     excitations: &[Excitation],
-    amplitudes: &Array1<f64>,
-) -> DenseAmplitudes {
+    amplitudes: &Array1<T>,
+) -> DenseAmplitudes<T> {
     let n = spaces.nmo;
-    let mut t1 = Array2::<f64>::zeros((n, n));
-    let mut t2 = Array4::<f64>::zeros((n, n, n, n));
+    let mut t1 = Array2::<T>::zeros((n, n));
+    let mut t2 = Array4::<T>::zeros((n, n, n, n));
 
     for (nu, &ex) in excitations.iter().enumerate() {
         match ex {

@@ -8,11 +8,17 @@
 //! products. Shapes are fixed-size and label sets are 64-bit masks, so contracting many small
 //! tensors does not touch the heap beyond the result buffer.
 
+// Standard library imports.
+use std::ops::{AddAssign, Mul};
+
 // Crate-root imports.
-use crate::maths::gemm::{strided_gemm, strided_offsets};
+use crate::maths::gemm::strided_offsets;
 
 /// Joint-label positions of one label group with their extents.
 type LabelGroup = Vec<(usize, usize)>;
+
+/// Matrix product reading its first operand in place, `C = A B`, as `strided_gemm`.
+pub type Gemm<A, B, C> = unsafe fn(&[A], &[usize], &[usize], (&[B], &[usize], &[usize]), &mut [C]);
 
 /// Smallest `m n k` for which a pairwise contraction runs as matrix products.
 const MATMULMIN: usize = 1 << 12;
@@ -256,20 +262,30 @@ fn greedy_contraction_steps(
 }
 
 /// Contract two operands, summing every label not kept for the output or later operands:
-/// `C_{\text{keep}} = \sum_{\text{summed}} A B`.
+/// `C_{\text{keep}} = \sum_{\text{summed}} A B`. Real, complex and mixed operands share this
+/// path; `gemm_ab` and `gemm_ba` supply the matrix products for the operands' element types.
 /// # Arguments:
 /// - `a`: First operand data and shape.
 /// - `b`: Second operand data and shape.
 /// - `keep`: Bit mask of labels that survive the contraction.
 /// - `buffer`: Reusable storage for the result.
+/// - `gemm_ab`: Matrix product reading the first operand in place, as `strided_gemm`.
+/// - `gemm_ba`: Matrix product reading the second operand in place.
 /// # Returns:
-/// - `(Vec<f64>, TensorShape)`: Row-major result and its shape.
-pub fn contract_tensor_pair(
-    a: (&[f64], &TensorShape),
-    b: (&[f64], &TensorShape),
+/// - `(Vec<C>, TensorShape)`: Row-major result and its shape.
+pub fn contract_tensor_pair<A, B, C>(
+    a: (&[A], &TensorShape),
+    b: (&[B], &TensorShape),
     keep: u64,
-    mut buffer: Vec<f64>,
-) -> (Vec<f64>, TensorShape) {
+    mut buffer: Vec<C>,
+    gemm_ab: Gemm<A, B, C>,
+    gemm_ba: Gemm<B, A, C>,
+) -> (Vec<C>, TensorShape)
+where
+    A: Copy + Mul<B, Output = C>,
+    B: Copy,
+    C: Copy + AddAssign + From<f64>,
+{
     let ((da, a), (db, b)) = (a, b);
 
     // Joint labels with their strides in both operands.
@@ -298,7 +314,9 @@ pub fn contract_tensor_pair(
 
     // Large contractions whose summed labels occur in both operands run as matrix products.
     let joint = (&labels[..n], &dims[..n], &sa[..n], &sb[..n]);
-    if let Some(shape) = contract_by_matrix_product((da, a), (db, b), joint, keep, &mut buffer) {
+    if let Some(shape) =
+        contract_by_matrix_product((da, a), (db, b), joint, keep, &mut buffer, gemm_ab, gemm_ba)
+    {
         return (buffer, shape);
     }
 
@@ -372,16 +390,23 @@ pub fn contract_tensor_pair(
 /// - `joint`: Joint labels with their extents and strides in `A` and `B`.
 /// - `keep`: Bit mask of labels that survive the contraction.
 /// - `buffer`: Reusable storage, filled with the row-major result over batch, `i` then `j`.
+/// - `gemm_ab`: Matrix product reading the first operand in place.
+/// - `gemm_ba`: Matrix product reading the second operand in place.
 /// # Returns:
 /// - `Option<TensorShape>`: Result shape, or `None` without touching `buffer` when a summed label
 ///   occurs in only one operand or the product is too small to benefit.
-fn contract_by_matrix_product(
-    a: (&[f64], &TensorShape),
-    b: (&[f64], &TensorShape),
+fn contract_by_matrix_product<A, B, C>(
+    a: (&[A], &TensorShape),
+    b: (&[B], &TensorShape),
     joint: (&[u16], &[usize], &[usize], &[usize]),
     keep: u64,
-    buffer: &mut Vec<f64>,
-) -> Option<TensorShape> {
+    buffer: &mut Vec<C>,
+    gemm_ab: Gemm<A, B, C>,
+    gemm_ba: Gemm<B, A, C>,
+) -> Option<TensorShape>
+where
+    C: Copy + From<f64>,
+{
     let ((da, a), (db, b)) = (a, b);
     let (labels, dims, sa, sb) = joint;
 
@@ -409,24 +434,24 @@ fn contract_by_matrix_product(
     }
 
     // Read the larger operand in place and pack only the other.
-    let big_is_a = m * kk >= kk * nn;
-    let (dbig, sbig, dsmall, ssmall) = if big_is_a {
-        (da, sa, db, sb)
+    let (mut left, mut right) = (left, right);
+    Some(if m * kk >= kk * nn {
+        contract_reading_larger_in_place(
+            (da, sa),
+            (db, sb),
+            [&mut batch, &mut left, &mut right, &mut summed],
+            (labels, buffer),
+            gemm_ab,
+        )
     } else {
-        (db, sb, da, sa)
-    };
-    let (mut kept_big, mut kept_small) = if big_is_a {
-        (left, right)
-    } else {
-        (right, left)
-    };
-    Some(contract_reading_larger_in_place(
-        (dbig, sbig),
-        (dsmall, ssmall),
-        [&mut batch, &mut kept_big, &mut kept_small, &mut summed],
-        labels,
-        buffer,
-    ))
+        contract_reading_larger_in_place(
+            (db, sb),
+            (da, sa),
+            [&mut batch, &mut right, &mut left, &mut summed],
+            (labels, buffer),
+            gemm_ba,
+        )
+    })
 }
 
 /// Contract two operands as a batched matrix product that reads the larger operand in place,
@@ -437,18 +462,23 @@ fn contract_by_matrix_product(
 /// - `large`: Data of the larger operand and its stride for every joint label.
 /// - `small`: Data of the smaller operand and its stride for every joint label.
 /// - `groups`: Batch, larger-only kept, smaller-only kept and summed joint labels with extents.
-/// - `labels`: Every joint label.
-/// - `buffer`: Reusable storage, filled with the row-major result over batch, `i` then `j`.
+/// - `output`: Every joint label, and reusable storage filled with the row-major result over
+///   batch, `i` then `j`.
+/// - `gemm`: Matrix product reading the larger operand in place.
 /// # Returns:
 /// - `TensorShape`: Result shape over batch, larger-only then smaller-only kept labels.
-fn contract_reading_larger_in_place(
-    large: (&[f64], &[usize]),
-    small: (&[f64], &[usize]),
+fn contract_reading_larger_in_place<L, S, C>(
+    large: (&[L], &[usize]),
+    small: (&[S], &[usize]),
     groups: [&mut LabelGroup; 4],
-    labels: &[u16],
-    buffer: &mut Vec<f64>,
-) -> TensorShape {
+    output: (&[u16], &mut Vec<C>),
+    gemm: Gemm<L, S, C>,
+) -> TensorShape
+where
+    C: Copy + From<f64>,
+{
     let ((dl, sl), (ds, ss)) = (large, small);
+    let (labels, buffer) = output;
     let [batch, kept_large, kept_small, summed] = groups;
 
     // Walk the larger operand in memory order, and the smaller in its own.
@@ -478,7 +508,7 @@ fn contract_reading_larger_in_place(
         // SAFETY: Every offset indexes the operands by construction of their shapes, and the
         // result slice holds the matrix size.
         unsafe {
-            strided_gemm(&dl[base..], &rows, &cols, (&ds[bbase..], &brows, &bcols), c);
+            gemm(&dl[base..], &rows, &cols, (&ds[bbase..], &brows, &bcols), c);
         }
     }
 
@@ -516,14 +546,14 @@ fn contract_reading_larger_in_place(
 /// - `len`: Number of result elements.
 /// # Returns:
 /// - `()`: Mutates `buffer`.
-fn fit_buffer(
-    buffer: &mut Vec<f64>,
+fn fit_buffer<C: Copy + From<f64>>(
+    buffer: &mut Vec<C>,
     len: usize,
 ) {
     if buffer.capacity() < len {
-        *buffer = vec![0.0; len];
+        *buffer = vec![C::from(0.0); len];
     } else if buffer.len() < len {
-        buffer.resize(len, 0.0);
+        buffer.resize(len, C::from(0.0));
     } else {
         buffer.truncate(len);
     }
@@ -539,14 +569,19 @@ fn fit_buffer(
 /// - `b0`: Offset of the result element in the second operand.
 /// - `summed`: Extent and strides in both operands of every summed label.
 /// # Returns:
-/// - `f64`: Summed product.
-fn summed_dot_product(
-    da: &[f64],
-    db: &[f64],
+/// - `C`: Summed product.
+fn summed_dot_product<A, B, C>(
+    da: &[A],
+    db: &[B],
     a0: usize,
     b0: usize,
     summed: &[(usize, usize, usize)],
-) -> f64 {
+) -> C
+where
+    A: Copy + Mul<B, Output = C>,
+    B: Copy,
+    C: Copy + AddAssign + From<f64>,
+{
     let Some((&(d, sa, sb), outer)) = summed.split_last() else {
         return da[a0] * db[b0];
     };
@@ -554,9 +589,9 @@ fn summed_dot_product(
     let count = outer.iter().map(|x| x.0).product::<usize>();
     let mut idx = [0usize; 2 * MAXLABELS];
     let (mut oa, mut ob) = (a0, b0);
-    let mut total = 0.0;
+    let mut total = C::from(0.0);
     for _ in 0..count {
-        let mut acc = 0.0;
+        let mut acc = C::from(0.0);
         for i in 0..d {
             acc += da[oa + i * sa] * db[ob + i * sb];
         }

@@ -1,14 +1,18 @@
 // nocc/terms/tensors.rs
 //! Runtime tensors of the generated tables and their element-wise evaluation.
 
+// Standard library imports.
+use std::any::TypeId;
+
 // External crate imports.
 use ndarray::Array2;
+use num_complex::Complex64;
 
 // Crate-root imports.
-use crate::AoData;
 use crate::elements::RDM1;
 use crate::nocc::cumulants::Cumulants;
 use crate::nocc::space::{DenseAmplitudes, Excitation, Spaces};
+use crate::{AoData, NOCIScalar};
 
 /// Message of the panic when an amplitude-free table requests an amplitude tensor.
 const AMPLITUDES: &str = "amplitude tensor requested by an amplitude-free table";
@@ -182,7 +186,40 @@ pub(in crate::nocc) struct Tensors<'a> {
     /// Spin-free active-space cumulants.
     pub(in crate::nocc) lambdas: &'a Cumulants<f64>,
     /// Dense amplitude tensors, or `None` for amplitude-free tables.
-    pub(in crate::nocc) amplitudes: Option<&'a DenseAmplitudes>,
+    pub(in crate::nocc) amplitudes: Option<Amplitudes<'a>>,
+}
+
+/// Dense amplitude tensors of one cluster operator, real or complex.
+#[derive(Clone, Copy)]
+pub(in crate::nocc) enum Amplitudes<'a> {
+    /// Real amplitudes.
+    Real(&'a DenseAmplitudes<f64>),
+    /// Complex amplitudes of a holomorphic run.
+    Complex(&'a DenseAmplitudes<Complex64>),
+}
+
+impl<'a> Amplitudes<'a> {
+    /// Borrow amplitudes of the solver's scalar type as real or complex amplitudes.
+    /// # Arguments:
+    /// - `amplitudes`: Dense amplitude tensors.
+    /// # Returns:
+    /// - `Self`: Borrowed amplitudes.
+    /// # Panics
+    /// - Panics if `T` is neither `f64` nor `Complex64`.
+    pub(in crate::nocc) fn of<T: NOCIScalar>(amplitudes: &'a DenseAmplitudes<T>) -> Self {
+        let pointer = std::ptr::from_ref(amplitudes);
+        // SAFETY: The type identity checks guarantee that `T` is the target scalar type, so
+        // the casts reinterpret the reference as itself.
+        unsafe {
+            if TypeId::of::<T>() == TypeId::of::<f64>() {
+                Self::Real(&*pointer.cast::<DenseAmplitudes<f64>>())
+            } else if TypeId::of::<T>() == TypeId::of::<Complex64>() {
+                Self::Complex(&*pointer.cast::<DenseAmplitudes<Complex64>>())
+            } else {
+                panic!("amplitudes must be real or complex")
+            }
+        }
+    }
 }
 
 /// Evaluate a Kronecker delta.
@@ -283,7 +320,8 @@ pub(super) fn excitation_indices(ex: Excitation) -> ([usize; 4], usize) {
 /// # Returns:
 /// - `f64`: Tensor element.
 /// # Panics
-/// - Panics if an amplitude tensor is requested from a table evaluated without amplitudes.
+/// - Panics if an amplitude tensor is requested from a table evaluated without amplitudes, or
+///   from complex amplitudes, which `amplitude_element` evaluates.
 pub(super) fn evaluate_factor(
     kind: TensorKind,
     slots: (&[u16], &[u16]),
@@ -336,19 +374,43 @@ pub(super) fn evaluate_factor(
 
             tensors.lambdas.lambda4.get(&u[..nu], &l[..nl])
         }
+        // t_{i_l}^{i_u} and t_{i_l_1, i_l_2}^{i_u_1, i_u_2}.
+        TensorKind::T1 | TensorKind::T2 => match tensors.amplitudes.expect(AMPLITUDES) {
+            Amplitudes::Real(t) => amplitude_element(kind, slots, idx, t),
+            Amplitudes::Complex(_) => panic!("complex amplitudes requested as a real element"),
+        },
+    }
+}
+
+/// Evaluate one amplitude factor, `t^{i_u}_{i_l}` or `\bar t^{i_{u_1} i_{u_2}}_{i_{l_1} i_{l_2}}`.
+/// # Arguments:
+/// - `kind`: Amplitude kind of the factor, `T1` or `T2`.
+/// - `slots`: Upper then lower class-local index ids of the factor.
+/// - `idx`: Local orbital index values.
+/// - `amplitudes`: Dense amplitude tensors.
+/// # Returns:
+/// - `T`: Amplitude element.
+/// # Panics
+/// - Panics if `kind` is not an amplitude kind.
+pub(super) fn amplitude_element<T: Copy>(
+    kind: TensorKind,
+    slots: (&[u16], &[u16]),
+    idx: &[usize],
+    amplitudes: &DenseAmplitudes<T>,
+) -> T {
+    let (upper, lower) = slots;
+    match kind {
         // t_{i_l}^{i_u}.
-        TensorKind::T1 => {
-            tensors.amplitudes.expect(AMPLITUDES).t1
-                [(idx[upper[0] as usize], idx[lower[0] as usize])]
-        }
+        TensorKind::T1 => amplitudes.t1[(idx[upper[0] as usize], idx[lower[0] as usize])],
         // t_{i_l_1, i_l_2}^{i_u_1, i_u_2}.
         TensorKind::T2 => {
-            tensors.amplitudes.expect(AMPLITUDES).t2[(
+            amplitudes.t2[(
                 idx[upper[0] as usize],
                 idx[upper[1] as usize],
                 idx[lower[0] as usize],
                 idx[lower[1] as usize],
             )]
         }
+        _ => panic!("{kind:?} is not an amplitude tensor"),
     }
 }

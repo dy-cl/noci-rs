@@ -5,9 +5,10 @@
 use ndarray::Array1;
 
 // Crate-root imports.
+use crate::NOCIScalar;
 use crate::nocc::setup::ReferenceState;
 use crate::nocc::space::{DenseAmplitudes, Excitation, Spaces};
-use crate::nocc::terms::{TermEvaluator, assemble_vector, residual_classes};
+use crate::nocc::terms::{Amplitudes, TermEvaluator, assemble_vector, residual_classes};
 
 /// Build the full residual
 /// `R_\mu = \langle\Phi|\hat\tau_\mu^\dagger\hat H\{1 + \hat T + \tfrac12\hat T^2\}|\Phi\rangle_c`.
@@ -19,16 +20,16 @@ use crate::nocc::terms::{TermEvaluator, assemble_vector, residual_classes};
 /// - `evaluator`: Term-table evaluator.
 /// - `amplitudes`: Dense amplitude tensors of the current cluster operator.
 /// # Returns:
-/// - `Array1<f64>`: Residual in the raw excitation basis.
+/// - `Array1<T>`: Residual in the raw excitation basis, in the amplitude scalar type.
 /// # References
 /// - Lee and Tew, arXiv:2507.13472 (2025), Eq. (36).
-pub(in crate::nocc) fn residual_vector(
+pub(in crate::nocc) fn residual_vector<T: NOCIScalar>(
     reference: &ReferenceState<'_>,
     spaces: &Spaces,
     excitations: &[Excitation],
     evaluator: &TermEvaluator,
-    amplitudes: &DenseAmplitudes,
-) -> Array1<f64> {
+    amplitudes: &DenseAmplitudes<T>,
+) -> Array1<T> {
     let orders = [
         residual_classes(0),
         residual_classes(1),
@@ -40,6 +41,6 @@ pub(in crate::nocc) fn residual_vector(
         evaluator,
         TermEvaluator::table_plan,
         &orders,
-        &reference.tensors(spaces, Some(amplitudes)),
+        &reference.tensors(spaces, Some(Amplitudes::of(amplitudes))),
     )
 }

@@ -2,9 +2,10 @@
 //! GNOCC correlation energy.
 
 // Crate-root imports.
+use crate::NOCIScalar;
 use crate::nocc::setup::ReferenceState;
 use crate::nocc::space::{DenseAmplitudes, Spaces};
-use crate::nocc::terms::{TermEvaluator, assemble_scalar, e1_terms, e2_terms};
+use crate::nocc::terms::{Amplitudes, TermEvaluator, assemble_scalar, e1_terms, e2_terms};
 
 /// Evaluate the correlation energy
 /// `E - E_0 = \langle\Phi|\hat H\hat T|\Phi\rangle_c + \tfrac12\langle\Phi|\hat H\{\hat T\hat T\}|\Phi\rangle_c`.
@@ -14,19 +15,19 @@ use crate::nocc::terms::{TermEvaluator, assemble_scalar, e1_terms, e2_terms};
 /// - `evaluator`: Term-table evaluator.
 /// - `amplitudes`: Dense amplitude tensors of the current cluster operator.
 /// # Returns:
-/// - `f64`: Correlation energy.
+/// - `T`: Correlation energy, in the amplitude scalar type.
 /// # References
 /// - Lee and Tew, arXiv:2507.13472 (2025), Eq. (35).
-pub(in crate::nocc) fn correlation_energy(
+pub(in crate::nocc) fn correlation_energy<T: NOCIScalar>(
     reference: &ReferenceState<'_>,
     spaces: &Spaces,
     evaluator: &TermEvaluator,
-    amplitudes: &DenseAmplitudes,
-) -> f64 {
+    amplitudes: &DenseAmplitudes<T>,
+) -> T {
     assemble_scalar(
         evaluator,
         TermEvaluator::table_plan,
         &[e1_terms(), e2_terms()],
-        &reference.tensors(spaces, Some(amplitudes)),
+        &reference.tensors(spaces, Some(Amplitudes::of(amplitudes))),
     )
 }

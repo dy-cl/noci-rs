@@ -14,10 +14,11 @@ use std::sync::Arc;
 use ndarray::{Array1, Array2};
 
 // Crate-root imports.
+use crate::NOCIScalar;
 use crate::nocc::space::{Excitation, ExcitationClass, Spaces, excitation_class};
 
 // Parent/sibling imports.
-use super::evaluate::{DenseBlock, evaluate_dense_table};
+use super::evaluate::evaluate_dense_table;
 use super::factors::FactorBlocks;
 use super::loader::{BlockTables, ClassTables};
 use super::plan::{TablePlan, TermEvaluator, TermTable};
@@ -75,17 +76,17 @@ fn class_members(
 /// - `orders`: Class-keyed tables of the orders to sum.
 /// - `tensors`: Runtime tensors, including the amplitudes when any order needs them.
 /// # Returns:
-/// - `Array1<f64>`: Summed quantity in the raw excitation basis.
+/// - `Array1<T>`: Summed quantity in the raw excitation basis, in the amplitude scalar type.
 /// # Panics
 /// - Panics if `orders` is empty or an order has no terms for an excitation class in the list.
-pub(in crate::nocc) fn assemble_vector(
+pub(in crate::nocc) fn assemble_vector<T: NOCIScalar>(
     spaces: &Spaces,
     excitations: &[Excitation],
     evaluator: &TermEvaluator,
     plan: PlanChoice,
     orders: &[&ClassTables],
     tensors: &Tensors<'_>,
-) -> Array1<f64> {
+) -> Array1<T> {
     // Group the raw excitations by class.
     let classes = class_members(spaces, excitations);
 
@@ -101,35 +102,36 @@ pub(in crate::nocc) fn assemble_vector(
     );
 
     let positions = orbital_positions(spaces);
-    let mut out = Array1::<f64>::zeros(excitations.len());
+    let mut out = Array1::<T>::zeros(excitations.len());
 
     for (class, members) in &classes {
         // `X = \sum_n X_n` over the requested orders, as one dense block.
-        let mut block: Option<DenseBlock> = None;
+        let mut block: Option<(Vec<T>, Vec<usize>)> = None;
         for order in orders {
             let terms = order[class];
             let table = (terms.terms.as_slice(), terms.indices.as_slice());
             let table_plan = plan(evaluator, table);
             let part = evaluate_dense_table(table, &terms.free, &table_plan, &blocks);
+            let data = part.data.into_elements::<T>();
             match &mut block {
-                Some(b) => {
-                    for (x, y) in b.data.iter_mut().zip(part.data) {
+                Some((b, _)) => {
+                    for (x, y) in b.iter_mut().zip(data) {
                         *x += y;
                     }
                 }
-                None => block = Some(part),
+                None => block = Some((data, part.dims)),
             }
         }
-        let block = block.expect("at least one table order");
+        let (data, dims) = block.expect("at least one table order");
 
         // Gather each listed excitation from its free-index tuple.
         for &mu in members {
             let (values, n) = excitation_indices(excitations[mu]);
             let flat = values[..n]
                 .iter()
-                .zip(&block.dims)
+                .zip(&dims)
                 .fold(0, |acc, (&p, &d)| acc * d + positions[p]);
-            out[mu] = block.data[flat];
+            out[mu] = data[flat];
         }
     }
 
@@ -182,6 +184,7 @@ pub(in crate::nocc) fn assemble_matrix(
         let free = [block.left_free.as_slice(), block.right_free.as_slice()].concat();
         let dense =
             evaluate_dense_table((&block.terms, &block.indices), &free, table_plan, &factors);
+        let data = dense.data.into_elements::<f64>();
 
         // Gather every pair from the left then right free-index tuple.
         for &mu in &members[&left] {
@@ -193,8 +196,8 @@ pub(in crate::nocc) fn assemble_matrix(
                     .chain(&right[..nr])
                     .zip(&dense.dims)
                     .fold(0, |acc, (&p, &d)| acc * d + positions[p]);
-                out[(mu, nu)] = dense.data[flat];
-                out[(nu, mu)] = dense.data[flat];
+                out[(mu, nu)] = data[flat];
+                out[(nu, mu)] = data[flat];
             }
         }
     }
@@ -209,13 +212,13 @@ pub(in crate::nocc) fn assemble_matrix(
 /// - `tables`: Generated tables to sum, in order.
 /// - `tensors`: Runtime tensors.
 /// # Returns:
-/// - `f64`: Sum of the table values.
-pub(in crate::nocc) fn assemble_scalar(
+/// - `T`: Sum of the table values, in the amplitude scalar type.
+pub(in crate::nocc) fn assemble_scalar<T: NOCIScalar>(
     evaluator: &TermEvaluator,
     plan: PlanChoice,
     tables: &[&ResidualClassTerms],
     tensors: &Tensors<'_>,
-) -> f64 {
+) -> T {
     // Dense factor blocks shared by every table.
     let tables = tables
         .iter()
@@ -233,6 +236,10 @@ pub(in crate::nocc) fn assemble_scalar(
     tables
         .iter()
         .zip(&plans)
-        .map(|(&t, table_plan)| evaluate_dense_table(t, &[], table_plan, &blocks).data[0])
-        .sum()
+        .map(|(&t, table_plan)| {
+            evaluate_dense_table(t, &[], table_plan, &blocks)
+                .data
+                .into_elements::<T>()[0]
+        })
+        .fold(<T as From<f64>>::from(0.0), |acc, x| acc + x)
 }

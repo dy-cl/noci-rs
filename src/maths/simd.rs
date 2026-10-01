@@ -24,6 +24,9 @@ pub(crate) trait Simd<const N: usize>: Copy {
     /// Scalar value stored independently in each SIMD lane.
     type Scalar: Copy;
 
+    /// Packed real type with the same number of lanes.
+    type Real: Simd<N, Scalar = f64>;
+
     /// Construct packed additive zero.
     /// # Arguments:
     /// - None.
@@ -155,6 +158,32 @@ pub(crate) trait Simd<const N: usize>: Copy {
     fn multiply_real_lanes(
         value: Self,
         factors: &[f64; N],
+    ) -> Self;
+
+    /// Accumulate one packed value scaled by a real scalar.
+    /// # Arguments:
+    /// - `acc`: Packed accumulator.
+    /// - `factor`: Real scale factor.
+    /// - `rhs`: Packed operand.
+    /// # Returns
+    /// - `Self`: `acc + factor * rhs`.
+    fn madd_real(
+        acc: Self,
+        factor: f64,
+        rhs: Self,
+    ) -> Self;
+
+    /// Accumulate one packed value times packed real lanes.
+    /// # Arguments:
+    /// - `acc`: Packed accumulator.
+    /// - `lhs`: Packed operand.
+    /// - `rhs`: Packed real factor of every lane.
+    /// # Returns
+    /// - `Self`: Lane-wise `acc + lhs * rhs`.
+    fn madd_real_lanes(
+        acc: Self,
+        lhs: Self,
+        rhs: Self::Real,
     ) -> Self;
 }
 
@@ -765,6 +794,7 @@ impl C64x8 {
 
 impl Simd<4> for F64x4 {
     type Scalar = f64;
+    type Real = F64x4;
 
     /// Construct packed additive zero.
     /// # Arguments:
@@ -945,10 +975,43 @@ impl Simd<4> for F64x4 {
     ) -> Self {
         F64x4::mul(value, F64x4::load(factors))
     }
+
+    /// Accumulate four real lanes scaled by one real factor.
+    /// # Arguments:
+    /// - `acc`: Packed accumulator.
+    /// - `factor`: Real scale factor.
+    /// - `rhs`: Packed real operand.
+    /// # Returns
+    /// - `Self`: `acc + factor * rhs`.
+    #[inline(always)]
+    fn madd_real(
+        acc: Self,
+        factor: f64,
+        rhs: Self,
+    ) -> Self {
+        F64x4::madd(acc, F64x4::splat(factor), rhs)
+    }
+
+    /// Accumulate four real lanes times four real lanes.
+    /// # Arguments:
+    /// - `acc`: Packed accumulator.
+    /// - `lhs`: Packed real operand.
+    /// - `rhs`: Packed real lane factors.
+    /// # Returns
+    /// - `Self`: Lane-wise `acc + lhs * rhs`.
+    #[inline(always)]
+    fn madd_real_lanes(
+        acc: Self,
+        lhs: Self,
+        rhs: Self::Real,
+    ) -> Self {
+        F64x4::madd(acc, lhs, rhs)
+    }
 }
 
 impl Simd<8> for F64x8 {
     type Scalar = f64;
+    type Real = F64x8;
 
     /// Construct packed additive zero.
     /// # Arguments:
@@ -1133,10 +1196,43 @@ impl Simd<8> for F64x8 {
     ) -> Self {
         F64x8::mul(value, F64x8::load(factors))
     }
+
+    /// Accumulate eight real lanes scaled by one real factor.
+    /// # Arguments:
+    /// - `acc`: Packed accumulator.
+    /// - `factor`: Real scale factor.
+    /// - `rhs`: Packed real operand.
+    /// # Returns
+    /// - `Self`: `acc + factor * rhs`.
+    #[inline(always)]
+    fn madd_real(
+        acc: Self,
+        factor: f64,
+        rhs: Self,
+    ) -> Self {
+        F64x8::madd(acc, F64x8::splat(factor), rhs)
+    }
+
+    /// Accumulate eight real lanes times eight real lanes.
+    /// # Arguments:
+    /// - `acc`: Packed accumulator.
+    /// - `lhs`: Packed real operand.
+    /// - `rhs`: Packed real lane factors.
+    /// # Returns
+    /// - `Self`: Lane-wise `acc + lhs * rhs`.
+    #[inline(always)]
+    fn madd_real_lanes(
+        acc: Self,
+        lhs: Self,
+        rhs: Self::Real,
+    ) -> Self {
+        F64x8::madd(acc, lhs, rhs)
+    }
 }
 
 impl Simd<4> for C64x4 {
     type Scalar = Complex64;
+    type Real = F64x4;
 
     /// Construct packed additive zero.
     /// # Arguments:
@@ -1338,10 +1434,52 @@ impl Simd<4> for C64x4 {
             im: unsafe { _mm256_mul_pd(value.im, factors) },
         }
     }
+
+    /// Accumulate four complex lanes scaled by one real factor, with two real multiply-adds per
+    /// lane.
+    /// # Arguments:
+    /// - `acc`: Packed accumulator.
+    /// - `factor`: Real scale factor.
+    /// - `rhs`: Packed complex operand.
+    /// # Returns
+    /// - `Self`: `acc + factor * rhs`.
+    #[inline(always)]
+    fn madd_real(
+        acc: Self,
+        factor: f64,
+        rhs: Self,
+    ) -> Self {
+        let factor = unsafe { _mm256_set1_pd(factor) };
+        Self {
+            re: unsafe { _mm256_fmadd_pd(factor, rhs.re, acc.re) },
+            im: unsafe { _mm256_fmadd_pd(factor, rhs.im, acc.im) },
+        }
+    }
+
+    /// Accumulate four complex lanes times four real lanes, with two real multiply-adds per
+    /// lane.
+    /// # Arguments:
+    /// - `acc`: Packed accumulator.
+    /// - `lhs`: Packed complex operand.
+    /// - `rhs`: Packed real lane factors.
+    /// # Returns
+    /// - `Self`: Lane-wise `acc + lhs * rhs`.
+    #[inline(always)]
+    fn madd_real_lanes(
+        acc: Self,
+        lhs: Self,
+        rhs: Self::Real,
+    ) -> Self {
+        Self {
+            re: unsafe { _mm256_fmadd_pd(lhs.re, rhs.0, acc.re) },
+            im: unsafe { _mm256_fmadd_pd(lhs.im, rhs.0, acc.im) },
+        }
+    }
 }
 
 impl Simd<8> for C64x8 {
     type Scalar = Complex64;
+    type Real = F64x8;
 
     /// Construct packed additive zero.
     /// # Arguments:
@@ -1549,6 +1687,47 @@ impl Simd<8> for C64x8 {
         Self {
             re: unsafe { _mm512_mul_pd(value.re, factors) },
             im: unsafe { _mm512_mul_pd(value.im, factors) },
+        }
+    }
+
+    /// Accumulate eight complex lanes scaled by one real factor, with two real multiply-adds per
+    /// lane.
+    /// # Arguments:
+    /// - `acc`: Packed accumulator.
+    /// - `factor`: Real scale factor.
+    /// - `rhs`: Packed complex operand.
+    /// # Returns
+    /// - `Self`: `acc + factor * rhs`.
+    #[inline(always)]
+    fn madd_real(
+        acc: Self,
+        factor: f64,
+        rhs: Self,
+    ) -> Self {
+        let factor = unsafe { _mm512_set1_pd(factor) };
+        Self {
+            re: unsafe { _mm512_fmadd_pd(factor, rhs.re, acc.re) },
+            im: unsafe { _mm512_fmadd_pd(factor, rhs.im, acc.im) },
+        }
+    }
+
+    /// Accumulate eight complex lanes times eight real lanes, with two real multiply-adds per
+    /// lane.
+    /// # Arguments:
+    /// - `acc`: Packed accumulator.
+    /// - `lhs`: Packed complex operand.
+    /// - `rhs`: Packed real lane factors.
+    /// # Returns
+    /// - `Self`: Lane-wise `acc + lhs * rhs`.
+    #[inline(always)]
+    fn madd_real_lanes(
+        acc: Self,
+        lhs: Self,
+        rhs: Self::Real,
+    ) -> Self {
+        Self {
+            re: unsafe { _mm512_fmadd_pd(lhs.re, rhs.0, acc.re) },
+            im: unsafe { _mm512_fmadd_pd(lhs.im, rhs.0, acc.im) },
         }
     }
 }
