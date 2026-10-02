@@ -19,6 +19,9 @@ pub(crate) enum Sym {
     /// Columns may be permuted, and the upper and lower index of each column exchanged,
     /// without a sign.
     Pairs,
+    /// Columns may be permuted, and the upper and lower index sets exchanged as wholes,
+    /// without a sign.
+    Transposable,
 }
 
 /// One tensor factor over integer index ids.
@@ -64,6 +67,8 @@ const CATSET: u32 = 2;
 const CATCOLUMN: u32 = 3;
 /// Slot port vertex category.
 const CATPORT: u32 = 4;
+/// Exchangeable side vertex category.
+const CATSIDE: u32 = 5;
 
 /// Pack one vertex colour.
 /// # Arguments:
@@ -86,8 +91,9 @@ fn vertex_colour(
 /// The term is encoded as a coloured graph in which unordered structure is represented by
 /// unordered edges: antisymmetric slot sets attach their indices to one set vertex,
 /// column-symmetric factors attach interchangeable column vertices, through upper and lower
-/// ports or, for pair-symmetric factors, directly, and ordered slots attach through
-/// positional port vertices. Graph isomorphism is then exactly term equality
+/// ports or, for pair-symmetric factors, directly, transposable factors route every column's
+/// two ports through one of two interchangeable side vertices, and ordered slots attach
+/// through positional port vertices. Graph isomorphism is then exactly term equality
 /// under relabelling of dummies and the declared slot symmetries.
 /// # Arguments:
 /// - `form`: Term structure.
@@ -120,10 +126,12 @@ pub(crate) fn canonical_key(form: &Form) -> (Key, i8) {
     // Attach every factor through structure vertices matching its symmetry.
     let mut tensors = Vec::with_capacity(form.factors.len());
     let mut columns = Vec::with_capacity(form.factors.len());
+    let mut sides = Vec::with_capacity(form.factors.len());
     for f in &form.factors {
         let kind = f.kind as u32;
         let t = g.add_vertex(vertex_colour(CATTENSOR, kind, 2, f.sym as u32));
         let mut cols = SmallVec::<[u32; 4]>::new();
+        let mut side = None;
 
         match f.sym {
             Sym::Antisymmetric => {
@@ -160,6 +168,28 @@ pub(crate) fn canonical_key(form: &Form) -> (Key, i8) {
                     cols.push(c);
                 }
             }
+            // The two equally coloured side vertices can only be exchanged together, which
+            // swaps the upper and lower index of every column at once.
+            Sym::Transposable => {
+                let su = g.add_vertex(vertex_colour(CATSIDE, kind, 2, 0));
+                let sl = g.add_vertex(vertex_colour(CATSIDE, kind, 2, 0));
+                g.add_edge(t, su);
+                g.add_edge(t, sl);
+                for (&u, &l) in f.upper.iter().zip(&f.lower) {
+                    let c = g.add_vertex(vertex_colour(CATCOLUMN, kind, 2, 0));
+                    let pu = g.add_vertex(vertex_colour(CATPORT, kind, 2, 0));
+                    let pl = g.add_vertex(vertex_colour(CATPORT, kind, 2, 0));
+                    g.add_edge(t, c);
+                    g.add_edge(c, pu);
+                    g.add_edge(c, pl);
+                    g.add_edge(su, pu);
+                    g.add_edge(sl, pl);
+                    g.add_edge(pu, u as u32);
+                    g.add_edge(pl, l as u32);
+                    cols.push(c);
+                }
+                side = Some([su, sl]);
+            }
             Sym::Ordered => {
                 for (side, xs) in [(0, &f.upper), (1, &f.lower)] {
                     for (pos, &x) in xs.iter().enumerate() {
@@ -173,6 +203,7 @@ pub(crate) fn canonical_key(form: &Form) -> (Key, i8) {
 
         tensors.push(t);
         columns.push(cols);
+        sides.push(side);
     }
 
     for adj in &mut g.adj {
@@ -182,10 +213,10 @@ pub(crate) fn canonical_key(form: &Form) -> (Key, i8) {
     // Build the key from the canonical labelling; every automorphic labelling must agree on
     // the sign, otherwise the term is its own negative and vanishes.
     let canon = graph::canonical_labelling(&g);
-    let (key, sign) = key_from_labelling(form, &canon.label, &tensors, &columns);
+    let (key, sign) = key_from_labelling(form, &canon.label, &tensors, &columns, &sides);
 
     for label in &canon.automorphs {
-        if key_from_labelling(form, label, &tensors, &columns).1 != sign {
+        if key_from_labelling(form, label, &tensors, &columns, &sides).1 != sign {
             return (key, 0);
         }
     }
@@ -199,6 +230,7 @@ pub(crate) fn canonical_key(form: &Form) -> (Key, i8) {
 /// - `label`: Canonical position of every graph vertex.
 /// - `tensors`: Tensor vertex of every factor.
 /// - `columns`: Column vertices of every column-symmetric factor.
+/// - `sides`: Upper and lower side vertices of every transposable factor.
 /// # Returns:
 /// - `(Key, i8)`: Canonical key and sign.
 fn key_from_labelling(
@@ -206,6 +238,7 @@ fn key_from_labelling(
     label: &[u32],
     tensors: &[u32],
     columns: &[SmallVec<[u32; 4]>],
+    sides: &[Option<[u32; 2]>],
 ) -> (Key, i8) {
     // Dummies are renumbered by canonical position; free indices keep their ids.
     let mut dummies = (form.nfree..form.spaces.len()).collect::<Vec<_>>();
@@ -257,6 +290,25 @@ fn key_from_labelling(
                         }
                     })
                     .unzip()
+            }
+            // Reorder columns, then make the lower-labelled side upper.
+            Sym::Transposable => {
+                let mut cols = (0..f.upper.len()).collect::<SmallVec<[usize; 4]>>();
+                cols.sort_unstable_by_key(|&c| label[columns[n][c] as usize]);
+                let u = cols
+                    .iter()
+                    .map(|&c| f.upper[c])
+                    .collect::<SmallVec<[u16; 4]>>();
+                let l = cols
+                    .iter()
+                    .map(|&c| f.lower[c])
+                    .collect::<SmallVec<[u16; 4]>>();
+                let [su, sl] = sides[n].expect("transposable factor without sides");
+                if label[sl as usize] < label[su as usize] {
+                    (l, u)
+                } else {
+                    (u, l)
+                }
             }
             Sym::Ordered => (f.upper.clone(), f.lower.clone()),
         };

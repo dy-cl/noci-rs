@@ -81,17 +81,21 @@ pub(crate) struct Table {
 type Raw = (u8, SmallVec<[u16; 4]>, SmallVec<[u16; 4]>);
 
 /// Return the slot symmetry of one spin-free tensor kind.
-/// Two-electron integrals `g^{pq}_{rs} = (pr|qs)` over real or holomorphic orbitals are
-/// unchanged by exchanging the indices of either electron, `(pr|qs) = (rp|qs)`, as well as by
-/// exchanging the electrons.
+/// Over real or holomorphic orbitals, without complex conjugation, two-electron integrals
+/// `g^{pq}_{rs} = (pr|qs)` are unchanged by exchanging the indices of either electron,
+/// `(pr|qs) = (rp|qs)`, as well as by exchanging the electrons. The one-body densities and the
+/// generalised Fock matrix are symmetric, `\Gamma^p_q = \Gamma^q_p`, and the cumulants are
+/// transposition symmetric, `\Lambda^{p\cdots}_{q\cdots} = \Lambda^{q\cdots}_{p\cdots}`, besides
+/// their simultaneous column permutations.
 /// # Arguments:
 /// - `k`: Spin-free kind id.
 /// # Returns:
 /// - `Sym`: Slot symmetry used by the canonical form.
 pub(crate) fn slot_symmetry(k: u8) -> Sym {
     match k {
-        ERI | DELTA => Sym::Pairs,
-        T2 | LAMBDA2 | LAMBDA3 | LAMBDA4 => Sym::Columns,
+        ERI | DELTA | GAMMA | THETA | FOCK => Sym::Pairs,
+        LAMBDA2 | LAMBDA3 | LAMBDA4 => Sym::Transposable,
+        T2 => Sym::Columns,
         _ => Sym::Ordered,
     }
 }
