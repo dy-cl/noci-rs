@@ -54,11 +54,10 @@ excit = {
 snoci = {
     max_iter = 1,
 
+    full_m = "ram",
     gmres = {
         max_iter = 128,
         restart = 64,
         res_tol = 1e-10,
-        metric_tol = 1e-10,
-        full_m = "ram",
     },
 }

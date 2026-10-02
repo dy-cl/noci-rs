@@ -65,12 +65,11 @@ excit = {
 snoci = {
     max_iter = 1,
 
+    full_m = "none",
+    factor_tables = "none",
     gmres = {
         max_iter = 1024,
         restart = 1024,
         res_tol = 1e-10,
-        metric_tol = 1e-10,
-        full_m = "none",
-        factor_tables = "none",
     },
 }

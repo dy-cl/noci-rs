@@ -248,13 +248,12 @@ pub fn print_input(input: &Input) {
             println!("TOL: {}", s.tol);
             println!("IMAG_SHIFTS: {:?}", s.imag_shifts);
             println!("PRECONDITIONER: {}", s.preconditioner.as_str());
+            println!("FULL_M: {}", s.full_m.as_str());
+            println!("FACTOR_TABLES: {}", s.factor_tables.as_str());
             println!("GMRES:");
             println!("  MAX_ITER: {}", s.gmres.max_iter);
             println!("  RESTART: {}", s.gmres.restart);
             println!("  RES_TOL: {}", s.gmres.res_tol);
-            println!("  METRIC_TOL: {}", s.metric_tol);
-            println!("  FULL_M: {}", s.full_m.as_str());
-            println!("  FACTOR_TABLES: {}", s.factor_tables.as_str());
         }
         None => {
             println!("ENABLED: false");

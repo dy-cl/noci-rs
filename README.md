@@ -617,15 +617,18 @@ snoci = {
     preconditioner = "woodbury",
     imag_shift = {0.0},
 
+    full_m = "none",
+    factor_tables = "ram",
+
     gmres = {
         max_iter = 1e2,
         restart = 2e2,
         res_tol = 1e-8,
-        metric_tol = 1e-8,
-        full_m = true,
     },
 }
 ```
+
+`full_m` and `factor_tables` store the full candidate-candidate shifted Fock matrix and the spin-factorised one-body factor tables as `"none"`, `"ram"`, or `"disk"`. The `gmres` table sets the iteration limit, restart dimension and residual RMS tolerance of each linear solve, as for `noccmc`.
 
 The SNOCI GMRES preconditioner may be set to `"none"`, `"diag"`, or `"woodbury"`.
 `"none"` applies no preconditioning and avoids constructing the candidate-space

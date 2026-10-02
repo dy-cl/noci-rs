@@ -60,12 +60,11 @@ snoci = {
     max_iter = 2,
     max_add = 1,
 
+    full_m = "ram",
+    factor_tables = "none",
     gmres = {
         max_iter = 512,
         restart = 64,
         res_tol = 1e-10,
-        metric_tol = 1e-10,
-        full_m = "ram",
-        factor_tables = "none",
     },
 }

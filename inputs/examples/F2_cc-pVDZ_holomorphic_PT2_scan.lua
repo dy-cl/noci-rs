@@ -179,9 +179,9 @@ snoci = {
     max_iter = 1,
     preconditioner = "diag",
 
+    full_m = "ram",
     gmres = {
         max_iter = 1e6,
         res_tol = 1e-7,
-        full_m = "ram",
     },
 }

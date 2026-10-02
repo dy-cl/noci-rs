@@ -30,11 +30,11 @@ excit = {
 
 snoci = {
     max_iter = 1,
+    full_m = "disk",
     gmres = {
         max_iter = 6,
         restart = 6,
         res_tol = 1e-6,
-        full_m = "disk",
     },
 }
 

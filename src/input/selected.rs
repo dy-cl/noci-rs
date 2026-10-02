@@ -122,8 +122,6 @@ pub struct SNOCIOptions {
     pub preconditioner: SNOCIPreconditioner,
     /// Inner GMRES options.
     pub gmres: GMRESOptions,
-    /// Metric singular-value tolerance.
-    pub metric_tol: f64,
     /// Storage strategy for the full candidate-candidate shifted Fock matrix.
     pub full_m: SNOCIStorage,
     /// Storage strategy for spin-factorised one-body factor tables.
@@ -144,7 +142,6 @@ impl Default for SNOCIOptions {
             max_dim: 100,
             preconditioner: SNOCIPreconditioner::default(),
             gmres: GMRESOptions::default(),
-            metric_tol: 1e-8,
             full_m: SNOCIStorage::None,
             factor_tables: SNOCIStorage::RAM,
         }

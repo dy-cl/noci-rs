@@ -751,26 +751,18 @@ fn read_qmc(
 fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
     snoci_tbl.map(|snoci_tbl| {
         let defaults = SNOCIOptions::default();
-        // The nested GMRES table also holds the SNOCI operator storage and metric settings.
-        let gmres_tbl: Option<Table> = snoci_tbl.get::<_, Option<Table>>("gmres").unwrap_or(None);
+        // Storage of the projected operator, then the nested GMRES settings.
         let full_m = read_snoci_storage(
-            "snoci.gmres.full_m",
-            gmres_tbl
-                .as_ref()
-                .map_or(Ok(Value::Nil), |t| t.get::<_, Value>("full_m")),
+            "snoci.full_m",
+            snoci_tbl.get::<_, Value>("full_m"),
             defaults.full_m,
         );
         let factor_tables = read_snoci_storage(
-            "snoci.gmres.factor_tables",
-            gmres_tbl
-                .as_ref()
-                .map_or(Ok(Value::Nil), |t| t.get::<_, Value>("factor_tables")),
+            "snoci.factor_tables",
+            snoci_tbl.get::<_, Value>("factor_tables"),
             defaults.factor_tables,
         );
-        let metric_tol = gmres_tbl
-            .as_ref()
-            .and_then(|t| t.get("metric_tol").ok())
-            .unwrap_or(defaults.metric_tol);
+        let gmres_tbl: Option<Table> = snoci_tbl.get::<_, Option<Table>>("gmres").unwrap_or(None);
         let gmres = read_gmres(gmres_tbl.as_ref(), GMRESOptions::default());
 
         // Validate the preconditioner name before assembling the final options.
@@ -803,7 +795,6 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
             max_dim: snoci_tbl.get("max_dim").unwrap_or(defaults.max_dim),
             preconditioner,
             gmres,
-            metric_tol,
             full_m,
             factor_tables,
         }
