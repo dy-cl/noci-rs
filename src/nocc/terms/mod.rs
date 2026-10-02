@@ -11,14 +11,21 @@
 //! block of every factor is resolved once per table and cached, operand shapes are fixed-size,
 //! label sets are bit masks, and intermediate buffers are reused within each worker.
 //!
+//! Terms also share most of their work: the same intermediate recurs across many terms, and
+//! many terms end in a product with the same operand. Each table is therefore planned as one
+//! graph in which every distinct intermediate is contracted once and the final products sharing
+//! an operand are summed before that product.
+//!
 //! The stages are: `loader` decodes the embedded tables, `plan` resolves each table's kept
-//! terms, contraction orders and shared products, `factors` builds the dense factor blocks,
-//! `term` contracts one term in the reusable `workspace`, `evaluate` sums a table over its
-//! terms, and `assemble` gathers tables into quantities over the raw excitation basis.
+//! terms and contraction orders, `graph` builds and evaluates its shared contraction graph,
+//! `factors` builds the dense factor blocks, `term` contracts one term in the reusable
+//! `workspace`, `evaluate` sums a table over its terms, and `assemble` gathers tables into
+//! quantities over the raw excitation basis.
 
 mod assemble;
 mod evaluate;
 mod factors;
+mod graph;
 mod loader;
 mod plan;
 mod schema;

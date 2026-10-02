@@ -14,19 +14,12 @@ use crate::maths::gemm::{
 };
 
 // Parent/sibling imports.
-use super::plan::Anchor;
 use super::schema::TensorFactor;
 use super::workspace::{Out, Source, Values, View, Workspace, pooled_buffer};
 
 /// Largest intermediate, in elements, of a term contracted whole; larger ones are contracted in
 /// slices over free indices so every intermediate stays in the cache.
 const SLICEDTERM: usize = 1 << 16;
-
-/// Data of every table-local block, and the group's shared product with its shape and use.
-type TermSources<'a> = (
-    &'a [View<'a>],
-    Option<(View<'a>, &'a TensorShape, &'a Anchor)>,
-);
 
 /// One kept term with its resolved plan.
 pub(super) struct PlannedTerm<'a> {
@@ -50,8 +43,6 @@ pub(super) struct PlannedTerm<'a> {
 /// - `tensors`: Data of every table-local block and extent of every class-local label.
 /// - `indices`: Class-local ids of the free indices of `out` in output order, and the free
 ///   indices fixed to one value with their values.
-/// - `shared`: Data and canonical shape of the term's shared product with its use, which
-///   replaces the anchored step, or `None`.
 /// - `out`: Row-major output block over the unfixed free indices, updated in place.
 /// - `ws`: Worker storage.
 /// # Returns:
@@ -60,7 +51,6 @@ pub(super) fn accumulate_term(
     term: &PlannedTerm<'_>,
     tensors: (&[View<'_>], &[usize]),
     indices: (&[u16], &[(u16, usize)]),
-    shared: Option<(View<'_>, &TensorShape, &Anchor)>,
     out: &mut Out<'_>,
     ws: &mut Workspace,
 ) {
@@ -170,9 +160,9 @@ pub(super) fn accumulate_term(
     }
     let placeholder = (Source::Buffer(0), strided_tensor_shape(&[], extent));
     ws.operands.resize(inputs + term.steps.len(), placeholder);
-    contract_steps(term, (data, shared), (inputs, &[], !depends), ws);
+    contract_steps(term, data, (inputs, &[], !depends), ws);
     if sliced == 0 {
-        scatter_last(term, (data, shared), (free, fixed), extent, out, ws);
+        scatter_last(term, data, (free, fixed), extent, out, ws);
         ws.release(0);
         return;
     }
@@ -227,10 +217,10 @@ pub(super) fn accumulate_term(
             *slot = (l, v);
         }
         let current = &all[fixed.len()..fixed.len() + ns];
-        contract_steps(term, (data, shared), (inputs, current, depends), ws);
+        contract_steps(term, data, (inputs, current, depends), ws);
         scatter_last(
             term,
-            (data, shared),
+            data,
             (free, &all[..fixed.len() + ns]),
             extent,
             out,
@@ -259,7 +249,7 @@ pub(super) fn accumulate_term(
 /// becomes the step's result operand.
 /// # Arguments:
 /// - `term`: Kept term with its plan.
-/// - `sources`: Data of every table-local block, and the group's shared product with its use.
+/// - `data`: Data of every table-local block.
 /// - `selection`: Number of input operands, the sliced labels with their current values, and
 ///   the operands whose steps run, as a bit mask over operand numbers.
 /// - `ws`: Worker storage, with `operands` sized for every step result.
@@ -267,35 +257,15 @@ pub(super) fn accumulate_term(
 /// - `()`: Mutates `ws`.
 fn contract_steps(
     term: &PlannedTerm<'_>,
-    sources: TermSources<'_>,
+    data: &[View<'_>],
     selection: (usize, &[(u16, usize)], u64),
     ws: &mut Workspace,
 ) {
-    let (data, shared) = sources;
     let (inputs, slice, run) = selection;
     let sliced = slice.iter().fold(0u64, |m, &(l, _)| m | (1 << l));
     for (s, &(i, j)) in term.steps.iter().enumerate() {
         let target = inputs + s;
         if run & (1 << target) == 0 {
-            continue;
-        }
-
-        // The anchored step takes the group's shared product, relabelled to this term, with
-        // its sliced labels fixed to their current values.
-        if let Some((_, canonical, anchor)) = shared
-            && s == anchor.step as usize
-        {
-            let mut shape = *canonical;
-            shape.mask = 0;
-            for l in shape.labels[..shape.n].iter_mut() {
-                *l = anchor.labels[*l as usize];
-                shape.mask |= 1 << *l;
-            }
-            let offset = slice
-                .iter()
-                .map(|&(l, v)| fix_label(&mut shape, l, v))
-                .sum();
-            ws.operands[target] = (Source::Shared(offset), shape);
             continue;
         }
         let (sa, a) = ws.operands[i as usize];
@@ -306,7 +276,6 @@ fn contract_steps(
             let source = |s: Source| match s {
                 Source::Block(id, off) => offset_view(data[id], off),
                 Source::Buffer(id) => ws.buffers[id].view(0),
-                Source::Shared(off) => shared.map_or(View::Real(&[]), |x| offset_view(x.0, off)),
             };
             let pools = (&mut ws.pool, &mut ws.complex_pool);
             contract_views((source(sa), &a), (source(sb), &b), keep, len, pools)
@@ -323,7 +292,7 @@ fn contract_steps(
 /// - `keep`: Labels kept by the contraction.
 /// # Returns:
 /// - `usize`: Product of the extents of the kept labels of either operand.
-fn result_size(
+pub(super) fn result_size(
     a: &TensorShape,
     b: &TensorShape,
     keep: u64,
@@ -342,7 +311,7 @@ fn result_size(
 /// Add the term's final operand, times its coefficient, to the output block.
 /// # Arguments:
 /// - `term`: Kept term with its plan.
-/// - `sources`: Data of every table-local block, and the group's shared product with its use.
+/// - `data`: Data of every table-local block.
 /// - `indices`: Class-local ids of the free indices of `out` in output order, and the fixed
 ///   representatives with their values.
 /// - `extent`: Extent of every class-local label.
@@ -352,13 +321,12 @@ fn result_size(
 /// - `()`: Mutates `out`.
 fn scatter_last(
     term: &PlannedTerm<'_>,
-    sources: TermSources<'_>,
+    data: &[View<'_>],
     indices: (&[u16], &[(u16, usize)]),
     extent: &[usize],
     out: &mut Out<'_>,
     ws: &Workspace,
 ) {
-    let (data, shared) = sources;
     let unit = [1.0];
     let (values, shape) = ws.operands.last().map_or_else(
         || (View::Real(&unit), strided_tensor_shape(&[], extent)),
@@ -366,12 +334,145 @@ fn scatter_last(
             let values = match s {
                 Source::Block(id, off) => offset_view(data[id], off),
                 Source::Buffer(id) => ws.buffers[id].view(0),
-                Source::Shared(off) => shared.map_or(View::Real(&[]), |x| offset_view(x.0, off)),
             };
             (values, shape)
         },
     );
-    let (map, coeff) = (&term.map, term.coefficient);
+    scatter_view(
+        (values, shape),
+        indices,
+        (&term.map, extent),
+        term.coefficient,
+        out,
+    );
+}
+
+/// Add `c` times a real or complex operand to a real or complex row-major block over distinct
+/// labels that the operand all carries, as `add_into_block`.
+/// # Arguments:
+/// - `operand`: Operand data and shape.
+/// - `labels`: Label of every block index, in row-major order.
+/// - `extent`: Extent of every label.
+/// - `coeff`: Coefficient.
+/// - `out`: Row-major block, updated in place.
+/// # Returns:
+/// - `()`: Mutates `out`.
+/// # Panics
+/// - Panics if a complex operand is added to a real block.
+pub(super) fn add_view(
+    operand: (View<'_>, TensorShape),
+    labels: &[u16],
+    extent: &[usize],
+    coeff: f64,
+    out: &mut Out<'_>,
+) {
+    let (values, shape) = operand;
+    match (values, out) {
+        (View::Real(x), Out::Real(o)) => add_into_block((x, shape), labels, extent, coeff, o),
+        (View::Real(x), Out::Complex(o)) => add_into_block((x, shape), labels, extent, coeff, o),
+        (View::Complex(x), Out::Complex(o)) => add_into_block((x, shape), labels, extent, coeff, o),
+        (View::Complex(_), Out::Real(_)) => panic!("complex operand in a real block"),
+    }
+}
+
+/// Add `c` times an operand to a row-major block whose distinct labels the operand all
+/// carries; the operand's other labels are summed. The operand is walked in its own memory
+/// order, every label advancing the block by its block stride, zero for a summed label.
+/// # Arguments:
+/// - `operand`: Operand data and shape.
+/// - `labels`: Label of every block index, in row-major order.
+/// - `extent`: Extent of every label.
+/// - `coeff`: Coefficient.
+/// - `out`: Row-major block, updated in place.
+/// # Returns:
+/// - `()`: Mutates `out`.
+fn add_into_block<S, T>(
+    operand: (&[S], TensorShape),
+    labels: &[u16],
+    extent: &[usize],
+    coeff: f64,
+    out: &mut [T],
+) where
+    S: Copy,
+    f64: Mul<S, Output = S>,
+    T: AddAssign<S>,
+{
+    let (data, shape) = operand;
+
+    // Extent, operand stride and block stride of every operand label, by decreasing operand
+    // stride so the innermost loop reads the operand most contiguously.
+    let mut walk = [(0usize, 0usize, 0usize); MAXLABELS];
+    let n = shape.n;
+    for (k, w) in walk[..n].iter_mut().enumerate() {
+        let l = shape.labels[k];
+        let mut stride = 0;
+        let mut s = 1;
+        for &x in labels.iter().rev() {
+            if x == l {
+                stride = s;
+            }
+            s *= extent[x as usize];
+        }
+        *w = (shape.dims[k], shape.strides[k], stride);
+    }
+    let walk = &mut walk[..n];
+    walk.sort_unstable_by_key(|&(_, a, _)| std::cmp::Reverse(a));
+    if walk.iter().any(|w| w.0 == 0) || out.is_empty() {
+        return;
+    }
+
+    let (last, outer) = match walk.split_last() {
+        Some((&last, outer)) => (last, outer),
+        None => {
+            out[0] += coeff * data[0];
+            return;
+        }
+    };
+    let (d, sp, so) = last;
+    let count = outer.iter().map(|w| w.0).product::<usize>();
+    let mut idx = [0usize; MAXLABELS];
+    let (mut p, mut o) = (0usize, 0usize);
+    for _ in 0..count {
+        for i in 0..d {
+            out[o + i * so] += coeff * data[p + i * sp];
+        }
+        let mut k = outer.len();
+        while k > 0 {
+            k -= 1;
+            idx[k] += 1;
+            p += outer[k].1;
+            o += outer[k].2;
+            if idx[k] < outer[k].0 {
+                break;
+            }
+            p -= outer[k].1 * outer[k].0;
+            o -= outer[k].2 * outer[k].0;
+            idx[k] = 0;
+        }
+    }
+}
+
+/// Add `c` times a real or complex operand to a real or complex output block, as
+/// `scatter_into_output`.
+/// # Arguments:
+/// - `operand`: Operand data and shape.
+/// - `indices`: Labels of the output indices in output order, and the fixed representatives
+///   with their values.
+/// - `labels`: Representative of every label, and the extent of every label.
+/// - `coeff`: Coefficient.
+/// - `out`: Row-major output block, updated in place.
+/// # Returns:
+/// - `()`: Mutates `out`.
+/// # Panics
+/// - Panics if a complex operand is added to a real output block.
+pub(super) fn scatter_view(
+    operand: (View<'_>, TensorShape),
+    indices: (&[u16], &[(u16, usize)]),
+    labels: (&[u16; 64], &[usize]),
+    coeff: f64,
+    out: &mut Out<'_>,
+) {
+    let ((values, shape), (map, extent)) = (operand, labels);
     match (values, out) {
         (View::Real(x), Out::Real(o)) => {
             scatter_into_output((x, shape), indices, map, extent, coeff, o)

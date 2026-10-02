@@ -1,10 +1,9 @@
 // nocc/terms/plan.rs
-//! Planning of generated term tables: kept terms, factor blocks, contraction orders and
-//! shared products.
+//! Planning of generated term tables: kept terms, factor blocks, contraction orders and the
+//! shared contraction graph.
 
 // Standard library imports.
 use std::collections::HashMap;
-use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 // External crate imports.
@@ -15,11 +14,9 @@ use crate::maths::contract::{LabelSizes, optimal_contraction_steps};
 use crate::nocc::space::Spaces;
 
 // Parent/sibling imports.
+use super::graph::{TableGraph, build_table_graph};
 use super::schema::GeneratedTerm;
 use super::tensors::{SpaceKind, TensorKind, space_orbitals};
-
-/// Largest number of terms evaluated together from one computed shared product.
-const GROUPTERMS: usize = 1024;
 
 /// Orbital-space block of one tensor kind: the kind and the space of every slot, upper then
 /// lower.
@@ -50,39 +47,8 @@ pub(in crate::nocc) struct TablePlan {
     /// Coefficient of every kept term, including the extent of every summed label left only in
     /// resolved deltas.
     pub(super) coefficients: Vec<f64>,
-    /// Products of two factor blocks shared by several kept terms, in canonical labels.
-    pub(super) shared: Vec<SharedProduct>,
-    /// Shared product of every kept term, its step number, and the term label of every
-    /// canonical label, or `None`.
-    pub(super) anchors: Vec<Option<Anchor>>,
-    /// Kept-term positions grouped by shared product, each group with its product.
-    pub(super) groups: Vec<(Range<usize>, Option<u32>)>,
-    /// Kept-term positions in group order.
-    pub(super) order: Vec<u32>,
-}
-
-/// Product of two factor blocks over canonical labels, `C = A B` summed over the labels not
-/// kept, computed once for every kept term that contains it.
-pub(super) struct SharedProduct {
-    /// Table-local block of each operand.
-    pub(super) blocks: [u32; 2],
-    /// Canonical label of every slot of each operand.
-    pub(super) labels: [Vec<u16>; 2],
-    /// Bit mask of the canonical labels kept in the product.
-    pub(super) keep: u64,
-    /// Extent of every canonical label.
-    pub(super) extent: Vec<usize>,
-}
-
-/// Use of a shared product by one kept term.
-#[derive(Clone)]
-pub(super) struct Anchor {
-    /// Shared product id.
-    pub(super) product: u32,
-    /// Step of the term the product replaces.
-    pub(super) step: u8,
-    /// Term label of every canonical label.
-    pub(super) labels: Vec<u16>,
+    /// Shared contraction graph of the kept terms.
+    pub(super) graph: TableGraph,
 }
 
 /// Evaluator of generated term tables: the cumulant truncation, the orbital-space sizes that
@@ -260,72 +226,19 @@ fn resolve_table_plan(
             let all = masks.iter().fold(0u64, |m, &x| m | x);
             let mut steps = Vec::with_capacity(masks.len());
             optimal_contraction_steps(&masks, all & !summed, &sizes, &mut steps);
-            let blocks = &factor_blocks[term_starts[k] as usize..term_starts[k + 1] as usize];
-            let anchor = shared_step(term, &map, blocks, &masks, &steps, all & !summed, &sizes);
-            (steps, anchor)
+            steps
         })
         .collect::<Vec<_>>();
     let mut steps = Vec::new();
     let mut step_starts = Vec::with_capacity(kept.len() + 1);
-    let mut shared = Vec::new();
-    let mut shared_ids = HashMap::<SharedKey, u32>::new();
-    let mut anchors = Vec::with_capacity(kept.len());
-    for (s, anchor) in term_steps {
+    for s in term_steps {
         step_starts.push(steps.len() as u32);
         steps.extend(s);
-        anchors.push(anchor.map(|(key, step, labels)| {
-            let next = shared.len() as u32;
-            let product = *shared_ids.entry(key.clone()).or_insert_with(|| {
-                let extent = labels.iter().map(|&l| extent[l as usize]).collect();
-                shared.push(SharedProduct {
-                    blocks: [key.0, key.2],
-                    labels: [key.1.clone(), key.3.clone()],
-                    keep: key.4,
-                    extent,
-                });
-                next
-            });
-            Anchor {
-                product,
-                step,
-                labels,
-            }
-        }));
     }
     step_starts.push(steps.len() as u32);
 
-    // Group the kept terms by shared product, in pieces small enough to balance the workers;
-    // products used by one term are not shared.
-    let mut uses = vec![0usize; shared.len()];
-    for a in anchors.iter().flatten() {
-        uses[a.product as usize] += 1;
-    }
-    for a in anchors.iter_mut() {
-        if a.as_ref().is_some_and(|x| uses[x.product as usize] < 2) {
-            *a = None;
-        }
-    }
-    let mut order = (0..kept.len() as u32).collect::<Vec<_>>();
-    order.sort_by_key(|&t| anchors[t as usize].as_ref().map_or(u32::MAX, |a| a.product));
-    let mut groups = Vec::new();
-    let mut start = 0;
-    while start < order.len() {
-        let product = anchors[order[start] as usize].as_ref().map(|a| a.product);
-        let mut end = start + 1;
-        if product.is_some() {
-            while end < order.len()
-                && anchors[order[end] as usize].as_ref().map(|a| a.product) == product
-            {
-                end += 1;
-            }
-        }
-        for piece in (start..end).step_by(GROUPTERMS) {
-            groups.push((piece..(piece + GROUPTERMS).min(end), product));
-        }
-        start = end;
-    }
-
-    TablePlan {
+    // The shared contraction graph of the kept terms, built over the finished plan.
+    let mut plan = TablePlan {
         keys,
         terms: kept,
         factor_blocks,
@@ -335,94 +248,10 @@ fn resolve_table_plan(
         substitutions,
         substitution_starts,
         coefficients,
-        shared,
-        anchors,
-        groups,
-        order,
-    }
-}
-
-/// Canonical form of a product of two factor blocks: each operand's block and canonical slot
-/// labels, and the bit mask of kept canonical labels.
-type SharedKey = (u32, Vec<u16>, u32, Vec<u16>, u64);
-
-/// Find a term's most expensive step that contracts two factor blocks, in canonical form.
-/// Labels are renumbered in order of first appearance over the two operands' slots, in the
-/// operand order giving the smaller key, so terms that contract the same blocks in the same way
-/// share one key. The kept labels are those the evaluator keeps at that step.
-/// # Arguments:
-/// - `term`: Generated term.
-/// - `map`: Representative of every label.
-/// - `blocks`: Table-local block of every tensor factor.
-/// - `masks`: Label mask of every tensor factor.
-/// - `steps`: Planned contraction steps.
-/// - `kept`: Bit mask of labels kept in the final result.
-/// - `sizes`: Joint index-space sizes of label masks.
-/// # Returns:
-/// - `Option<(SharedKey, u8, Vec<u16>)>`: Canonical key, step number, and term label of every
-///   canonical label, or `None` when no step contracts two factor blocks.
-fn shared_step(
-    term: &GeneratedTerm,
-    map: &[u16; 64],
-    blocks: &[u32],
-    masks: &[u64],
-    steps: &[(u8, u8)],
-    kept: u64,
-    sizes: &LabelSizes,
-) -> Option<(SharedKey, u8, Vec<u16>)> {
-    // Replay the steps with the evaluator's kept labels, recording block-by-block steps.
-    let leaves = masks.len();
-    let mut ops = masks.to_vec();
-    let mut live = (1u64 << ops.len()) - 1;
-    let mut best: Option<(f64, u8, usize, usize, u64)> = None;
-    for (s, &(i, j)) in steps.iter().enumerate() {
-        live &= !((1 << i) | (1 << j));
-        let rest = (0..ops.len())
-            .filter(|&k| live & (1 << k) != 0)
-            .fold(kept, |m, k| m | ops[k]);
-        let joint = ops[i as usize] | ops[j as usize];
-        let result = joint & rest;
-        if (i as usize) < leaves && (j as usize) < leaves {
-            let cost = sizes.size(joint);
-            if best.is_none_or(|b| cost > b.0) {
-                best = Some((cost, s as u8, i as usize, j as usize, result));
-            }
-        }
-        live |= 1 << ops.len();
-        ops.push(result);
-    }
-    let (_, step, i, j) = best.map(|b| (b.0, b.1, b.2, b.3))?;
-    let keep = best?.4;
-
-    // Canonical labels in order of first appearance over the two operands' slots.
-    let slots = |f: usize| {
-        let x = &term.3[f];
-        x.1.iter()
-            .chain(&x.2)
-            .map(|&l| map[l as usize])
-            .collect::<Vec<_>>()
+        graph: TableGraph::default(),
     };
-    let canonical = |a: usize, b: usize| {
-        let mut names = Vec::<u16>::new();
-        let mut rename = |l: u16| {
-            let k = names.iter().position(|&x| x == l).unwrap_or_else(|| {
-                names.push(l);
-                names.len() - 1
-            });
-            k as u16
-        };
-        let la = slots(a).into_iter().map(&mut rename).collect::<Vec<_>>();
-        let lb = slots(b).into_iter().map(&mut rename).collect::<Vec<_>>();
-        let keep_c = names
-            .iter()
-            .enumerate()
-            .filter(|&(_, &l)| keep & (1 << l) != 0)
-            .fold(0u64, |m, (k, _)| m | (1 << k));
-        ((blocks[a], la, blocks[b], lb, keep_c), names)
-    };
-    let (x, y) = (canonical(i, j), canonical(j, i));
-    let (key, names) = if x.0 <= y.0 { x } else { y };
-    Some((key, step, names))
+    plan.graph = build_table_graph(table, &plan, &extent);
+    plan
 }
 
 /// Resolve the Kronecker deltas of one term into label substitutions. Labels joined by deltas

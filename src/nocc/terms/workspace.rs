@@ -131,8 +131,6 @@ pub(super) enum Source {
     Block(usize, usize),
     /// An intermediate buffer of the current term.
     Buffer(usize),
-    /// The product shared by the current term's group, viewed from an element offset.
-    Shared(usize),
 }
 
 /// Reusable per-worker storage for contracting terms.

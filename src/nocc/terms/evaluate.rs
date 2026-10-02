@@ -5,12 +5,13 @@
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::maths::contract::{MAXLABELS, strided_tensor_shape};
+use crate::maths::contract::MAXLABELS;
 
 // Parent/sibling imports.
 use super::factors::FactorBlocks;
+use super::graph::evaluate_graph;
 use super::plan::{TablePlan, TermTable, label_map};
-use super::term::{PlannedTerm, accumulate_term, contract_views};
+use super::term::{PlannedTerm, accumulate_term};
 use super::workspace::{Out, Values, Workspace};
 
 /// Smallest output block, in elements, evaluated as slices over its leading free indices.
@@ -99,7 +100,6 @@ pub(super) fn evaluate_dense_table(
                     &term,
                     (&data, &extent),
                     (&free[lead..], &fixed[..lead]),
-                    None,
                     &mut chunk,
                     ws,
                 );
@@ -123,54 +123,24 @@ pub(super) fn evaluate_dense_table(
         return DenseBlock { data: out, dims };
     }
 
-    // A small block is accumulated once per split of the groups and the splits summed; each
-    // group contracts its shared product once for all its terms.
-    let out = plan
-        .groups
+    // A small block is evaluated over the table's shared contraction graph, with the terms
+    // outside the graph contracted one by one.
+    let mut out = evaluate_graph(&plan.graph, &data, &extent, free, (size, complex));
+    let direct = plan
+        .graph
+        .direct
         .par_iter()
         .fold(
             || (Workspace::new(), Values::zeros(size, complex)),
-            |(mut ws, mut out), (range, product)| {
-                let shared = product.map(|id| {
-                    let sp = &plan.shared[id as usize];
-                    let a = strided_tensor_shape(&sp.labels[0], &sp.extent);
-                    let b = strided_tensor_shape(&sp.labels[1], &sp.extent);
-                    let len = sp
-                        .extent
-                        .iter()
-                        .enumerate()
-                        .filter(|&(l, _)| sp.keep & (1 << l) != 0)
-                        .map(|(_, &d)| d)
-                        .product();
-                    contract_views(
-                        (data[sp.blocks[0] as usize], &a),
-                        (data[sp.blocks[1] as usize], &b),
-                        sp.keep,
-                        len,
-                        (&mut ws.pool, &mut ws.complex_pool),
-                    )
-                });
-                for &t in &plan.order[range.clone()] {
-                    let t = t as usize;
-                    let term = planned(t, plan.terms[t]);
-                    let use_shared = shared
-                        .as_ref()
-                        .zip(plan.anchors[t].as_ref())
-                        .map(|((values, shape), anchor)| (values.view(0), shape, anchor));
-                    accumulate_term(
-                        &term,
-                        (&data, &extent),
-                        (free, &[]),
-                        use_shared,
-                        &mut out.out(),
-                        &mut ws,
-                    );
-                }
-                if let Some((values, _)) = shared {
-                    ws.buffers.push(values);
-                    let start = ws.buffers.len() - 1;
-                    ws.release(start);
-                }
+            |(mut ws, mut out), &t| {
+                let term = planned(t as usize, plan.terms[t as usize]);
+                accumulate_term(
+                    &term,
+                    (&data, &extent),
+                    (free, &[]),
+                    &mut out.out(),
+                    &mut ws,
+                );
                 (ws, out)
             },
         )
@@ -182,6 +152,7 @@ pub(super) fn evaluate_dense_table(
                 a
             },
         );
+    out.add_assign(direct);
 
     DenseBlock { data: out, dims }
 }
