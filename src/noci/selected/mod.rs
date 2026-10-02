@@ -35,7 +35,6 @@
 //!   [doi:10.1021/acs.jctc.0c00468](https://doi.org/10.1021/acs.jctc.0c00468).
 
 mod candidate;
-mod gmres;
 mod operators;
 mod step;
 mod types;
@@ -49,12 +48,10 @@ pub use step::snoci_step;
 // Restricted type re-exports.
 pub(in crate::noci::selected) use candidate::CandidatePool;
 pub(in crate::noci::selected) use types::{
-    ArnoldiCycle, ArnoldiParams, GMRESResult, PT2ProjectedOperator, PT2Projection, Preconditioner,
-    SNOCIFocks, SNOCIOverlaps,
+    PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks, SNOCIOverlaps,
 };
 
 // Restricted function re-exports.
-pub(in crate::noci::selected) use gmres::gmres;
 pub(in crate::noci::selected) use operators::{
     apply_factorised_shifted_omega_m, apply_factorised_shifted_omega_m_mpi, apply_shifted_omega_m,
     apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,

@@ -751,37 +751,27 @@ fn read_qmc(
 fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
     snoci_tbl.map(|snoci_tbl| {
         let defaults = SNOCIOptions::default();
-        let gmres_defaults = GMRESOptions::default();
-
-        // Nested GMRES settings inherit defaults independently of the outer
-        // SNOCI table, including its two storage modes.
+        // The nested GMRES table also holds the SNOCI operator storage and metric settings.
         let gmres_tbl: Option<Table> = snoci_tbl.get::<_, Option<Table>>("gmres").unwrap_or(None);
-
-        let gmres = if let Some(gmres_tbl) = gmres_tbl {
-            let full_m = read_snoci_storage(
-                "snoci.gmres.full_m",
-                gmres_tbl.get::<_, Value>("full_m"),
-                gmres_defaults.full_m,
-            );
-            let factor_tables = read_snoci_storage(
-                "snoci.gmres.factor_tables",
-                gmres_tbl.get::<_, Value>("factor_tables"),
-                gmres_defaults.factor_tables,
-            );
-
-            GMRESOptions {
-                max_iter: gmres_tbl.get("max_iter").unwrap_or(gmres_defaults.max_iter),
-                res_tol: gmres_tbl.get("res_tol").unwrap_or(gmres_defaults.res_tol),
-                metric_tol: gmres_tbl
-                    .get("metric_tol")
-                    .unwrap_or(gmres_defaults.metric_tol),
-                restart: gmres_tbl.get("restart").unwrap_or(gmres_defaults.restart),
-                full_m,
-                factor_tables,
-            }
-        } else {
-            gmres_defaults
-        };
+        let full_m = read_snoci_storage(
+            "snoci.gmres.full_m",
+            gmres_tbl
+                .as_ref()
+                .map_or(Ok(Value::Nil), |t| t.get::<_, Value>("full_m")),
+            defaults.full_m,
+        );
+        let factor_tables = read_snoci_storage(
+            "snoci.gmres.factor_tables",
+            gmres_tbl
+                .as_ref()
+                .map_or(Ok(Value::Nil), |t| t.get::<_, Value>("factor_tables")),
+            defaults.factor_tables,
+        );
+        let metric_tol = gmres_tbl
+            .as_ref()
+            .and_then(|t| t.get("metric_tol").ok())
+            .unwrap_or(defaults.metric_tol);
+        let gmres = read_gmres(gmres_tbl.as_ref(), GMRESOptions::default());
 
         // Validate the preconditioner name before assembling the final options.
         let preconditioner_str: String = snoci_tbl
@@ -813,6 +803,9 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
             max_dim: snoci_tbl.get("max_dim").unwrap_or(defaults.max_dim),
             preconditioner,
             gmres,
+            metric_tol,
+            full_m,
+            factor_tables,
         }
     })
 }
@@ -832,19 +825,41 @@ fn read_noccmc(noccmc_tbl: Option<Table>) -> Option<NOCCMCOptions> {
             max_cumulant: t.get("max_cumulant").unwrap_or(defaults.max_cumulant),
             fois_tol: t.get("fois_tol").unwrap_or(defaults.fois_tol),
             max_macro: t.get("max_macro").unwrap_or(defaults.max_macro),
-            max_micro: t.get("max_micro").unwrap_or(defaults.max_micro),
             residual_tol: t.get("residual_tol").unwrap_or(defaults.residual_tol),
-            micro_tol: t.get("micro_tol").unwrap_or(defaults.micro_tol),
             level_shift: t.get("level_shift").unwrap_or(defaults.level_shift),
-            diis_space: t.get("diis_space").unwrap_or(defaults.diis_space),
             // A missing key reads as `nil`, which a plain `bool` would take as `false`.
             holomorphic: t
                 .get::<_, Option<bool>>("holomorphic")
                 .ok()
                 .flatten()
                 .unwrap_or(defaults.holomorphic),
+            gmres: read_gmres(
+                t.get::<_, Option<Table>>("gmres").ok().flatten().as_ref(),
+                defaults.gmres,
+            ),
         }
     })
+}
+
+/// Read GMRES options from an optional nested Lua table, keeping the given defaults for missing
+/// keys.
+/// # Arguments:
+/// - `gmres_tbl`: Optional Lua gmres table.
+/// - `defaults`: Method-specific default GMRES options.
+/// # Returns:
+/// - `GMRESOptions`: Parsed GMRES options.
+fn read_gmres(
+    gmres_tbl: Option<&Table>,
+    defaults: GMRESOptions,
+) -> GMRESOptions {
+    match gmres_tbl {
+        Some(t) => GMRESOptions {
+            max_iter: t.get("max_iter").unwrap_or(defaults.max_iter),
+            restart: t.get("restart").unwrap_or(defaults.restart),
+            res_tol: t.get("res_tol").unwrap_or(defaults.res_tol),
+        },
+        None => defaults,
+    }
 }
 
 /// Read excitation options from optional Lua table.

@@ -131,33 +131,6 @@ pub(crate) fn normal_ordered_hamiltonian() -> Vec<Component> {
     out
 }
 
-/// Return the normal-ordered spin-orbital Dyall Hamiltonian.
-/// Normal ordering `\hat H_0 = \sum_{ij} f^j_i\hat E^i_j + \sum_{ab} f^b_a\hat E^a_b +
-/// \sum_{tu} f^u_t\hat E^t_u + \tfrac12\sum_{tuvw} g^{vw}_{tu}\hat E^{tu}_{vw}` with respect to the
-/// reference turns the active one-body part into the generalised Fock operator, so `\hat H_0`
-/// keeps the core-core, active-active and virtual-virtual Fock blocks and the all-active
-/// two-body block of the normal-ordered Hamiltonian.
-/// # Arguments:
-/// - None.
-/// # Returns:
-/// - `Vec<Component>`: Diagonal-block Fock and active two-body components.
-/// # References
-/// - Dyall, *J. Chem. Phys.* **102**, 4909 (1995); Lee and Tew, arXiv:2507.13472 (2025),
-///   Eq. (59).
-pub(crate) fn dyall_hamiltonian() -> Vec<Component> {
-    let mut out = SPACES
-        .iter()
-        .map(|&s| operator_component(Kind::Fock, &[s], &[s]))
-        .collect::<Vec<_>>();
-    out.push(operator_component(
-        Kind::Eri,
-        &[Space::Active, Space::Active],
-        &[Space::Active, Space::Active],
-    ));
-
-    out
-}
-
 /// Return the spin-orbital cluster operator over every supported excitation type.
 /// # Arguments:
 /// - None.

@@ -22,7 +22,6 @@ pub(super) type ClassTables = BTreeMap<ExcitationClass, &'static ResidualClassTe
 /// the order of the generated table.
 pub(super) type BlockTables = Vec<(ExcitationClass, ExcitationClass, &'static OverlapBlockTerms)>;
 
-static DYALL_TERMS: OnceLock<OverlapTermSet> = OnceLock::new();
 static E1_TERMS: OnceLock<ResidualClassTerms> = OnceLock::new();
 static E2_TERMS: OnceLock<ResidualClassTerms> = OnceLock::new();
 static OVERLAP_TERMS: OnceLock<OverlapTermSet> = OnceLock::new();
@@ -30,7 +29,6 @@ static R0_TERMS: OnceLock<ResidualTermSet> = OnceLock::new();
 static R1_TERMS: OnceLock<ResidualTermSet> = OnceLock::new();
 static R2_TERMS: OnceLock<ResidualTermSet> = OnceLock::new();
 static RESIDUAL_CLASSES: OnceLock<[ClassTables; 3]> = OnceLock::new();
-static DYALL_BLOCKS: OnceLock<BlockTables> = OnceLock::new();
 static OVERLAP_BLOCKS: OnceLock<BlockTables> = OnceLock::new();
 
 /// Decode one embedded residual class term table.
@@ -110,18 +108,6 @@ pub(in crate::nocc) fn residual_classes(order: usize) -> &'static ClassTables {
 /// - Panics if a generated class name is unknown.
 pub(in crate::nocc) fn overlap_blocks() -> &'static BlockTables {
     OVERLAP_BLOCKS.get_or_init(|| class_blocks(overlap_terms()))
-}
-
-/// Return the class-pair blocks of the zeroth-order Dyall coupling with their excitation
-/// classes.
-/// # Arguments:
-/// - None.
-/// # Returns:
-/// - `&'static BlockTables`: Dyall blocks in generated order.
-/// # Panics
-/// - Panics if a generated class name is unknown.
-pub(in crate::nocc) fn dyall_blocks() -> &'static BlockTables {
-    DYALL_BLOCKS.get_or_init(|| class_blocks(dyall_terms()))
 }
 
 /// Convert the class names of every block of an overlap-type table.

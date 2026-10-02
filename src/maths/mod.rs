@@ -10,7 +10,8 @@
 //! matrix-element implementations, and the `contract` submodule general pairwise contractions of
 //! strided, labelled tensors, whose large products run through the register-blocked kernels of
 //! `gemm`. The `eri` submodule transforms and contracts two-electron
-//! integrals. The `linalg` submodule provides determinant, adjugate, eigensolver and matrix-
+//! integrals. The `gmres` submodule solves general linear systems by restarted GMRES. The
+//! `linalg` submodule provides determinant, adjugate, eigensolver and matrix-
 //! vector utilities. The `wick` submodule contains the low-level contraction-determinant
 //! construction and column-mixing operations used by the nonorthogonal Wick evaluators.
 //!
@@ -20,6 +21,7 @@ pub mod contract;
 pub mod einsum;
 pub mod eri;
 pub mod gemm;
+pub mod gmres;
 pub mod linalg;
 pub mod wick;
 

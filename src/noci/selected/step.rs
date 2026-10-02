@@ -12,6 +12,7 @@ use crate::elements::nonorthogonalwicks::WicksShared;
 use crate::elements::{FockData, NOCIData};
 use crate::elements::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::input::{SNOCIPreconditioner, SNOCIStorage};
+use crate::maths::gmres::{GMRESPrint, gmres};
 use crate::noci::{OneBodyFactorisation, OneBodyScratch};
 use crate::scf::fock;
 use crate::time_call;
@@ -24,7 +25,7 @@ use super::{
     apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
     build_candidate_m_diag, build_candidate_m_disk, build_candidate_s_diag, build_candidate_v,
     build_factorised_candidate_diags, build_omega_v, build_preconditioner, build_snoci_focks,
-    build_snoci_overlaps, build_snoci_projection, gmres, select_candidates, solve_current_space,
+    build_snoci_overlaps, build_snoci_projection, select_candidates, solve_current_space,
 };
 
 /// Return the real component of a scalar used for printed and stored energies.
@@ -300,7 +301,7 @@ where
                 print_factor_table_storage(&operator_data, &fock);
             }
 
-            let one_body = if matches!(opts.gmres.full_m, SNOCIStorage::None)
+            let one_body = if matches!(opts.full_m, SNOCIStorage::None)
                 && input.wicks.enabled
                 && operator_data.wicks.is_some()
             {
@@ -311,7 +312,7 @@ where
                     std::path::Path::new(cache),
                     world.rank(),
                     it,
-                    opts.gmres.factor_tables,
+                    opts.factor_tables,
                 ))
             } else {
                 None
@@ -325,7 +326,7 @@ where
                 print_snoci_iteration_start(it, selected_space.len(), npoolpre, npoolpost);
             }
 
-            let m = match opts.gmres.full_m {
+            let m = match opts.full_m {
                 SNOCIStorage::None => None,
                 SNOCIStorage::RAM => {
                     if world.rank() == 0 {
@@ -436,11 +437,35 @@ where
                         }
                     };
 
-                    if let Some(prec) = prec.as_ref() {
-                        gmres(&mut apply, |x| prec.apply(x), &rhs, &opts.gmres, world)
+                    let g = &opts.gmres;
+                    let print = if world.rank() == 0 {
+                        GMRESPrint::Hylleraas
                     } else {
-                        gmres(&mut apply, |x| x.clone(), &rhs, &opts.gmres, world)
-                    }
+                        GMRESPrint::Silent
+                    };
+                    time_call!(crate::timers::selected::add_gmres, {
+                        if let Some(prec) = prec.as_ref() {
+                            gmres(
+                                &mut apply,
+                                |x| prec.apply(x),
+                                &rhs,
+                                g.restart,
+                                g.max_iter,
+                                g.res_tol,
+                                print,
+                            )
+                        } else {
+                            gmres(
+                                &mut apply,
+                                |x| x.clone(),
+                                &rhs,
+                                g.restart,
+                                g.max_iter,
+                                g.res_tol,
+                                print,
+                            )
+                        }
+                    })
                 };
 
                 let ma = if let (Some(one_body), Some(scratch)) =

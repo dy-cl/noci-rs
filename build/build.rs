@@ -209,10 +209,6 @@ mod nocc {
         src.push_str("    OVERLAP_TERMS.get_or_init(|| decode_overlap(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/overlapterms.bin\"))))\n");
         src.push_str("}\n\n");
 
-        src.push_str("pub(crate) fn dyall_terms() -> &'static OverlapTermSet {\n");
-        src.push_str("    DYALL_TERMS.get_or_init(|| decode_overlap(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/dyallterms.bin\"))))\n");
-        src.push_str("}\n\n");
-
         for order in 1..=2 {
             let _ = writeln!(
                 src,
@@ -252,13 +248,6 @@ mod nocc {
             &cache.join("overlapterms.bin"),
             &out.join("overlapterms.bin"),
             wick_build::emit::overlap_terms,
-        );
-
-        ensure(
-            "dyall",
-            &cache.join("dyallterms.bin"),
-            &out.join("dyallterms.bin"),
-            wick_build::emit::dyall_terms,
         );
 
         for order in 1..=2 {

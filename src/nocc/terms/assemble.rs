@@ -147,7 +147,7 @@ pub(in crate::nocc) fn assemble_vector<T: NOCIScalar>(
 /// - `excitations`: Raw spin-free excitation list.
 /// - `evaluator`: Term-table evaluator.
 /// - `plan`: Plan lookup, truncated or exact.
-/// - `set`: Generated class-pair blocks, such as the metric or the Dyall coupling.
+/// - `set`: Generated class-pair blocks, such as the metric.
 /// - `tensors`: Runtime tensors.
 /// # Returns:
 /// - `Array2<f64>`: Matrix over the raw excitation list.

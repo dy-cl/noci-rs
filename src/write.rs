@@ -252,9 +252,9 @@ pub fn print_input(input: &Input) {
             println!("  MAX_ITER: {}", s.gmres.max_iter);
             println!("  RESTART: {}", s.gmres.restart);
             println!("  RES_TOL: {}", s.gmres.res_tol);
-            println!("  METRIC_TOL: {}", s.gmres.metric_tol);
-            println!("  FULL_M: {}", s.gmres.full_m.as_str());
-            println!("  FACTOR_TABLES: {}", s.gmres.factor_tables.as_str());
+            println!("  METRIC_TOL: {}", s.metric_tol);
+            println!("  FULL_M: {}", s.full_m.as_str());
+            println!("  FACTOR_TABLES: {}", s.factor_tables.as_str());
         }
         None => {
             println!("ENABLED: false");
@@ -271,12 +271,13 @@ pub fn print_input(input: &Input) {
             println!("MAX_CUMULANT: {}", n.max_cumulant);
             println!("FOIS_TOL: {:e}", n.fois_tol);
             println!("MAX_MACRO: {}", n.max_macro);
-            println!("MAX_MICRO: {}", n.max_micro);
             println!("RESIDUAL_TOL: {:e}", n.residual_tol);
-            println!("MICRO_TOL: {:e}", n.micro_tol);
             println!("LEVEL_SHIFT: {}", n.level_shift);
-            println!("DIIS_SPACE: {}", n.diis_space);
             println!("HOLOMORPHIC: {}", n.holomorphic);
+            println!("GMRES:");
+            println!("  MAX_ITER: {}", n.gmres.max_iter);
+            println!("  RESTART: {}", n.gmres.restart);
+            println!("  RES_TOL: {:e}", n.gmres.res_tol);
         }
         None => {
             println!("ENABLED: false");

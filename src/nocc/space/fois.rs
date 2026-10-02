@@ -1,8 +1,8 @@
 // nocc/space/fois.rs
-//! Weighted, canonically orthogonalised first-order interacting space.
+//! Canonically orthogonalised first-order interacting space.
 
 // External crate imports.
-use ndarray::{Array1, Array2};
+use ndarray::Array2;
 
 // Crate-root imports.
 use crate::input::NOCCMCOptions;
@@ -19,23 +19,22 @@ use super::orbitals::Spaces;
 pub(crate) struct FoisBasis {
     /// Raw spin-free FOIS metric S.
     pub metric: Array2<f64>,
-    /// Canonical FOIS transformation `Y = w\tilde X`.
+    /// Canonical FOIS transformation `Y = X`, with `X^\dagger S X = I`.
     pub y: Array2<f64>,
 }
 
-/// Build the weighted FOIS basis from the full raw excitation list.
-/// The weights are the Hamiltonian couplings `h_\mu`, which exclude spectator excitations of
-/// separated fragments, whose `h_\mu` vanish exactly.
+/// Build the FOIS basis by canonical orthogonalisation of the raw excitation metric,
+/// `X = U_+ \Lambda_+^{-1/2}` over the eigenvalues of `S` above `fois_tol`.
 /// # Arguments:
 /// - `reference`: Normal-ordered reference state.
 /// - `spaces`: Core, active, and virtual orbital-space maps.
 /// - `excitations`: Raw spin-free excitation list.
 /// - `evaluator`: Term-table evaluator.
-/// - `options`: Weighted-metric eigenvalue threshold.
+/// - `options`: Metric eigenvalue threshold.
 /// # Returns:
 /// - `FoisBasis`: Raw metric and the orthogonalised FOIS basis `Y`.
 /// # References
-/// - Lee and Tew, arXiv:2507.13472 (2025), Eqs. (38)-(49).
+/// - Lee, Tew and Huynh, arXiv:2607.10007 (2026), Eqs. (19)-(21).
 pub(crate) fn build_fois_basis(
     reference: &ReferenceState<'_>,
     spaces: &Spaces,
@@ -46,89 +45,10 @@ pub(crate) fn build_fois_basis(
     // Raw FOIS metric `S_{\mu\nu} = \langle E_\mu^\dagger E_\nu\rangle` from its class-pair blocks.
     let s = metric_matrix(reference, spaces, excitations, evaluator);
 
-    // Form the weighted metric `\tilde S = \operatorname{diag}(h) S \operatorname{diag}(h)`.
-    let w = hamiltonian_weights(reference, spaces, excitations);
-    let mut stilde: Array2<f64> = Array2::zeros(s.raw_dim());
-
-    for i in 0..s.nrows() {
-        for j in 0..s.ncols() {
-            stilde[(i, j)] = w[i] * s[(i, j)] * w[j];
-        }
-    }
-
-    // The metric is block diagonal through its Kronecker deltas, and the weights only scale
-    // rows, so both are orthogonalised block by block without the excitations of zero weight.
+    // The metric is block diagonal through its Kronecker deltas, so Löwdin orthogonalisation
+    // removes its small eigenmodes block by block.
     let blocks = symmetric_blocks(&s);
-    let weighted_blocks = blocks
-        .iter()
-        .map(|b| {
-            b.iter()
-                .copied()
-                .filter(|&mu| w[mu] != 0.0)
-                .collect::<Vec<_>>()
-        })
-        .filter(|b| !b.is_empty())
-        .collect::<Vec<_>>();
-
-    // Löwdin orthogonalisation removes small weighted-metric eigenmodes;
-    // `Y = \operatorname{diag}(w) \tilde X` maps orthogonal columns to the raw FOIS basis.
-    let xtilde = block_loewdin_x(&stilde, &weighted_blocks, options.fois_tol);
-    let mut y = xtilde.clone();
-
-    for mu in 0..w.len() {
-        for col in 0..y.ncols() {
-            y[(mu, col)] *= w[mu];
-        }
-    }
+    let y = block_loewdin_x(&s, &blocks, options.fois_tol);
 
     FoisBasis { metric: s, y }
-}
-
-/// Build Hamiltonian coupling weights used for the weighted FOIS metric.
-/// # Arguments:
-/// - `reference`: Normal-ordered reference state, whose generalised Fock matrix is the
-///   spin-resolved Fock matrix of the equally split density.
-/// - `spaces`: NOCC orbital spaces.
-/// - `excitations`: Raw spin-free excitation list.
-/// # Returns:
-/// - `Array1<f64>`: One Hamiltonian weight per excitation.
-fn hamiltonian_weights(
-    reference: &ReferenceState<'_>,
-    spaces: &Spaces,
-    excitations: &[Excitation],
-) -> Array1<f64> {
-    let (f, eri) = (&reference.fock, &reference.ao.eri_coul);
-    let mut h = Array1::zeros(excitations.len());
-
-    // Weights are the coefficients of `\hat H = \sum_\mu h_\mu \hat\tau_\mu`: singles use `F_{qp}`
-    // and doubles `(pr|qs)`, halved when the pair swap `\hat E^{qp}_{sr}` is also in the list.
-    for (i, &ex) in excitations.iter().enumerate() {
-        h[i] = match ex {
-            Excitation::Single { p, q } => f[(q, p)],
-            Excitation::Double { p, q, r, s } => {
-                let same = spaces.class_of[p] == spaces.class_of[q]
-                    && spaces.class_of[r] == spaces.class_of[s];
-                let w = if same { 0.5 } else { 1.0 };
-                w * eri[(p, r, q, s)]
-            }
-        };
-    }
-
-    h
-}
-
-/// Project an amplitude change onto the FOIS, `P x = Y Y^\dagger S x`, keeping the amplitudes
-/// consistent with `t = Y\tilde t`.
-/// # Arguments:
-/// - `fois`: FOIS basis data.
-/// - `x`: Vector in the raw excitation basis.
-/// # Returns:
-/// - `Array1<f64>`: Projected vector.
-/// # References
-/// - Lee and Tew, arXiv:2507.13472 (2025), Eqs. (63)-(64).
-pub(in crate::nocc) fn project_onto_fois(
-    fois: &FoisBasis,
-    x: &Array1<f64>,
-) -> Array1<f64> {
-    fois.y.dot(&fois.y.t().dot(&fois.metric.dot(x)))
 }

@@ -3,36 +3,8 @@
 // Standard library imports.
 use std::str::FromStr;
 
-pub struct GMRESOptions {
-    /// Maximum GMRES iterations.
-    pub max_iter: usize,
-    /// GMRES residual tolerance.
-    pub res_tol: f64,
-    /// Metric singular-value tolerance.
-    pub metric_tol: f64,
-    /// GMRES restart dimension.
-    pub restart: usize,
-    /// Storage strategy for the full candidate-candidate shifted Fock matrix.
-    pub full_m: SNOCIStorage,
-    /// Storage strategy for spin-factorised one-body factor tables.
-    pub factor_tables: SNOCIStorage,
-}
-
-impl Default for GMRESOptions {
-    /// Return default GMRES options.
-    /// # Returns:
-    /// - `Self`: GMRES options with default iteration limit and residual tolerance.
-    fn default() -> Self {
-        Self {
-            max_iter: 100,
-            res_tol: 1e-8,
-            metric_tol: 1e-8,
-            restart: 200,
-            full_m: SNOCIStorage::None,
-            factor_tables: SNOCIStorage::RAM,
-        }
-    }
-}
+// Parent/sibling imports.
+use super::gmres::GMRESOptions;
 
 #[derive(Clone, Copy)]
 pub enum SNOCIStorage {
@@ -150,6 +122,12 @@ pub struct SNOCIOptions {
     pub preconditioner: SNOCIPreconditioner,
     /// Inner GMRES options.
     pub gmres: GMRESOptions,
+    /// Metric singular-value tolerance.
+    pub metric_tol: f64,
+    /// Storage strategy for the full candidate-candidate shifted Fock matrix.
+    pub full_m: SNOCIStorage,
+    /// Storage strategy for spin-factorised one-body factor tables.
+    pub factor_tables: SNOCIStorage,
 }
 
 impl Default for SNOCIOptions {
@@ -166,6 +144,9 @@ impl Default for SNOCIOptions {
             max_dim: 100,
             preconditioner: SNOCIPreconditioner::default(),
             gmres: GMRESOptions::default(),
+            metric_tol: 1e-8,
+            full_m: SNOCIStorage::None,
+            factor_tables: SNOCIStorage::RAM,
         }
     }
 }

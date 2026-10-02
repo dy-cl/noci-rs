@@ -15,5 +15,4 @@ pub(crate) use orbitals::Spaces;
 pub(crate) use excitations::build_excitations;
 pub(in crate::nocc) use excitations::{dense_amplitudes, excitation_class};
 pub(crate) use fois::build_fois_basis;
-pub(in crate::nocc) use fois::project_onto_fois;
 pub(crate) use orbitals::build_spaces;

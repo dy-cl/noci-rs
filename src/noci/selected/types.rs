@@ -2,7 +2,6 @@
 //! SNOCI projected operators and their low-rank preconditioners.
 
 // Standard library imports.
-use std::time::Instant;
 
 // External crate imports.
 use ndarray::{Array1, Array2};
@@ -49,18 +48,6 @@ pub struct SNOCIPT2Result {
     pub gmres_iterations: usize,
     /// Whether GMRES converged for this shifted solve.
     pub gmres_converged: bool,
-}
-
-/// Result of a GMRES linear solve.
-pub(in crate::noci::selected) struct GMRESResult<T: NOCIScalar> {
-    /// Approximate solution vector.
-    pub(in crate::noci::selected) x: Array1<T>,
-    /// Root-mean-square residual norm.
-    pub(in crate::noci::selected) residual_rms: f64,
-    /// Number of GMRES iterations performed.
-    pub(in crate::noci::selected) iterations: usize,
-    /// Whether the residual reached the requested tolerance.
-    pub(in crate::noci::selected) converged: bool,
 }
 
 /// Candidate-space overlap blocks required for projection out of the current selected space.
@@ -127,36 +114,6 @@ pub(in crate::noci::selected) struct PT2ProjectedOperator<'a, 'data, 'fock, T: N
     pub(in crate::noci::selected) candidates: &'a [NOCIIndex],
     /// Precomputed projection quantities.
     pub(in crate::noci::selected) projection: &'a PT2Projection<T>,
-}
-
-/// Storage for a single restarted Arnoldi cycle.
-pub(in crate::noci::selected) struct ArnoldiCycle<T: NOCIScalar> {
-    /// Right-preconditioned Krylov vectors used in the Arnoldi operator application.
-    pub(in crate::noci::selected) z: Vec<Array1<T>>,
-    /// Upper Hessenberg matrix after Givens rotations.
-    pub(in crate::noci::selected) h: Array2<T>,
-    /// Rotated residual right-hand side.
-    pub(in crate::noci::selected) g: Array1<T>,
-    /// Number of Arnoldi iterations completed in the current cycle.
-    pub(in crate::noci::selected) kfinal: usize,
-}
-
-/// Parameters for a single restarted Arnoldi cycle.
-pub(in crate::noci::selected) struct ArnoldiParams<'a, T: NOCIScalar> {
-    /// Maximum number of Arnoldi iterations in this restart cycle.
-    pub(in crate::noci::selected) inner_max: usize,
-    /// Right-hand side vector.
-    pub(in crate::noci::selected) b: &'a Array1<T>,
-    /// Solution vector at the start of the restart cycle.
-    pub(in crate::noci::selected) x_start: &'a Array1<T>,
-    /// GMRES restart cycle index.
-    pub(in crate::noci::selected) restart_id: usize,
-    /// Total number of GMRES iterations before this cycle.
-    pub(in crate::noci::selected) total_iter: usize,
-    /// Square-root of the vector length.
-    pub(in crate::noci::selected) rms: f64,
-    /// Wall-time for GMRES.
-    pub(in crate::noci::selected) gmres_start: &'a Instant,
 }
 
 /// Rank-2 Woodbury preconditioner for the projected NOCI-PT2 shifted Fock matrix.

@@ -496,27 +496,6 @@ pub(crate) fn metric_expression(
     sum_products(&[vec![(bra, 0), (ket, 1)]], Ratio::from_integer(1))
 }
 
-/// Derive the connected zeroth-order coupling
-/// `\langle\Phi|\hat\tau_\mu^\dagger\hat H_0\hat\tau_\nu|\Phi\rangle_c` of two excitation classes
-/// for the normal-ordered Dyall Hamiltonian `\hat H_0`.
-/// # Arguments:
-/// - `bra`: Left projector component.
-/// - `ket`: Right excitation component.
-/// # Returns:
-/// - `Expr`: Canonically combined spin-orbital coupling block.
-pub(crate) fn dyall_coupling_expression(
-    bra: &Component,
-    ket: &Component,
-) -> Expr {
-    let h0 = ops::dyall_hamiltonian();
-    let products = h0
-        .iter()
-        .map(|x| vec![(bra, 0u8), (x, 1u8), (ket, 2u8)])
-        .collect::<Vec<_>>();
-
-    sum_products(&products, Ratio::from_integer(1))
-}
-
 /// Append `order` cluster operators, sharing one normal-ordered string, to every product.
 /// # Arguments:
 /// - `products`: Component products with their normal-ordered string ids.

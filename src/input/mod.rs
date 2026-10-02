@@ -18,6 +18,7 @@
 
 mod det;
 mod excit;
+mod gmres;
 mod mol;
 mod nocc;
 mod parse;
@@ -32,12 +33,13 @@ mod write;
 // Public type re-exports.
 pub use det::DeterministicOptions;
 pub use excit::ExcitationOptions;
+pub use gmres::GMRESOptions;
 pub use mol::MolOptions;
 pub use nocc::NOCCMCOptions;
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, FriOptions, QMCOptions};
 pub use scf::{DiisOptions, SCFInfo};
-pub use selected::{GMRESOptions, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage};
+pub use selected::{SNOCIOptions, SNOCIPreconditioner, SNOCIStorage};
 pub use state::{Metadynamics, SCFExcitation, SpatialBias, Spin, SpinBias, StateRecipe, StateType};
 pub use wicks::{WicksOptions, WicksStorage};
 pub use write::WriteOptions;

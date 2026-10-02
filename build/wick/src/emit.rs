@@ -162,51 +162,6 @@ pub fn overlap_terms() -> OverlapTermSet {
     }
 }
 
-/// Generate one spin-free zeroth-order coupling block
-/// `\langle\Phi|\hat\tau_\mu^\dagger\hat H_0\hat\tau_\nu|\Phi\rangle_c` of the Dyall Hamiltonian.
-/// The blocks follow the metric blocks, since `\hat H_0` conserves the number of electrons in
-/// every orbital space.
-/// # Arguments:
-/// - `name`: Metric block name.
-/// # Returns:
-/// - `OverlapBlockTerms`: Runtime coupling terms.
-/// # Panics
-/// - Panics if `name` is not a known metric block.
-pub fn dyall_block_terms(name: &str) -> OverlapBlockTerms {
-    let b = specs::metric_block_spec(name);
-    let bra = so::ops::projector_for_class(spin_orbital_class(b.left))
-        .unwrap_or_else(|| panic!("unknown excitation class {}", b.left));
-    let ket = so::ops::excitation_for_class(spin_orbital_class(b.right))
-        .unwrap_or_else(|| panic!("unknown excitation class {}", b.right));
-
-    let mut block = spin::adapt_metric_block(
-        b.name,
-        b.left,
-        b.right,
-        &so::wick::dyall_coupling_expression(&bra, &ket),
-    );
-    reduce::reduce_by_cumulant_relations(&mut block);
-
-    encode_block(name, &block)
-}
-
-/// Generate every spin-free zeroth-order Dyall coupling block.
-/// # Arguments:
-/// - None.
-/// # Returns:
-/// - `OverlapTermSet`: Complete coupling term table.
-pub fn dyall_terms() -> OverlapTermSet {
-    OverlapTermSet {
-        version: 1,
-        space_kinds: space_kind_table(),
-        tensor_kinds: tensor_kind_table(),
-        blocks: specs::BLOCKS
-            .par_iter()
-            .map(|b| (b.name.to_string(), dyall_block_terms(b.name)))
-            .collect(),
-    }
-}
-
 /// Generate the spin-free correlation energy at one order in `T`,
 /// `E_1 = \langle\Phi|\hat H\hat T|\Phi\rangle_c` or
 /// `E_2 = \tfrac12\langle\Phi|\hat H\{\hat T\hat T\}|\Phi\rangle_c`.

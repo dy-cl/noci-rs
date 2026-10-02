@@ -1,5 +1,5 @@
-// noci/selected/gmres.rs
-//! Restarted GMRES for the NOCI-PT2 linear equations.
+// maths/gmres.rs
+//! Restarted right-preconditioned GMRES for general linear systems.
 //!
 //! # References
 //!
@@ -10,40 +10,97 @@
 use std::time::Instant;
 
 // External crate imports.
-use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::{input::GMRESOptions, time_call};
-
-// Parent/sibling imports.
-use super::{ArnoldiCycle, ArnoldiParams, GMRESResult};
 
 const SMALL: f64 = 1e-14_f64;
 const PRINT_STRIDE: usize = 1usize;
 
+/// Result of a GMRES linear solve.
+pub struct GMRESResult<T: NOCIScalar> {
+    /// Approximate solution vector.
+    pub x: Array1<T>,
+    /// Root-mean-square residual norm.
+    pub residual_rms: f64,
+    /// Number of GMRES iterations performed.
+    pub iterations: usize,
+    /// Whether the residual reached the requested tolerance.
+    pub converged: bool,
+}
+
+/// Storage for a single restarted Arnoldi cycle.
+struct ArnoldiCycle<T: NOCIScalar> {
+    /// Right-preconditioned Krylov vectors used in the Arnoldi operator application.
+    z: Vec<Array1<T>>,
+    /// Upper Hessenberg matrix after Givens rotations.
+    h: Array2<T>,
+    /// Rotated residual right-hand side.
+    g: Array1<T>,
+    /// Number of Arnoldi iterations completed in the current cycle.
+    kfinal: usize,
+}
+
+/// Parameters for a single restarted Arnoldi cycle.
+struct ArnoldiParams<'a, T: NOCIScalar> {
+    /// Maximum number of Arnoldi iterations in this restart cycle.
+    inner_max: usize,
+    /// Right-hand side vector.
+    b: &'a Array1<T>,
+    /// Solution vector at the start of the restart cycle.
+    x_start: &'a Array1<T>,
+    /// GMRES restart cycle index.
+    restart_id: usize,
+    /// Total number of GMRES iterations before this cycle.
+    total_iter: usize,
+    /// Square-root of the vector length.
+    rms: f64,
+    /// Wall-time for GMRES.
+    gmres_start: &'a Instant,
+}
+
+/// Iteration table printed by `gmres`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GMRESPrint {
+    /// No output.
+    Silent,
+    /// Residual estimates, true residuals and timings.
+    Residual,
+    /// As `Residual`, with the Hylleraas functional `-\Re(b^\dagger x) - \Re(x^\dagger r)` of the
+    /// current solution.
+    Hylleraas,
+}
+
 /// Print the GMRES iteration table header.
 /// # Arguments:
-/// None.
+/// - `print`: Table layout.
 /// # Returns:
 /// - `()`: Prints the GMRES iteration header to standard output.
-fn print_gmres_header() {
+fn print_gmres_header(print: GMRESPrint) {
     println!();
     println!("  GMRES solve");
-    println!("  {}", "-".repeat(148));
-    println!(
-        "  {:>8} {:>8} {:>16} {:>16} {:>18} {:>18} {:>16} {:>16}",
-        "restart",
-        "iter",
-        "Res (est.)",
-        "Res (true)",
-        "E2 (Hyl)",
-        "dE (Hyl-Proj)",
-        "Apply / s",
-        "Elapsed / s"
-    );
+    if print == GMRESPrint::Hylleraas {
+        println!("  {}", "-".repeat(148));
+        println!(
+            "  {:>8} {:>8} {:>16} {:>16} {:>18} {:>18} {:>16} {:>16}",
+            "restart",
+            "iter",
+            "Res (est.)",
+            "Res (true)",
+            "E2 (Hyl)",
+            "dE (Hyl-Proj)",
+            "Apply / s",
+            "Elapsed / s"
+        );
+    } else {
+        println!("  {}", "-".repeat(110));
+        println!(
+            "  {:>8} {:>8} {:>16} {:>16} {:>16} {:>16}",
+            "restart", "iter", "Res (est.)", "Res (true)", "Apply / s", "Elapsed / s"
+        );
+    }
 }
 
 /// Print a single GMRES iteration summary line.
@@ -51,8 +108,8 @@ fn print_gmres_header() {
 /// - `restart_id`: GMRES restart cycle index.
 /// - `iter`: Total GMRES iteration index.
 /// - `residual_est`: Arnoldi/Givens residual estimate for the current Krylov solve.
-/// - `e2_hyl`: Current Hylleraas energy estimate.
-/// - `delta_hyl_proj`: Difference between Hylleraas and projected energy estimates.
+/// - `hylleraas`: Hylleraas energy estimate and its difference from the projected estimate, if
+///   printed.
 /// - `apply_secs`: Time spent applying the matrix-free operator on this iteration.
 /// - `elapsed_secs`: Total elapsed GMRES wall time.
 /// # Returns:
@@ -61,19 +118,26 @@ fn print_gmres_iteration(
     restart_id: usize,
     iter: usize,
     residual_est: f64,
-    e2_hyl: f64,
-    delta_hyl_proj: f64,
+    hylleraas: Option<(f64, f64)>,
     apply_secs: f64,
     elapsed_secs: f64,
 ) {
-    println!(
-        "  {:>8} {:>8} {:>16.8e} {:>16} {:>18.10e} {:>18.10e} {:>16.6} {:>16.6}",
-        restart_id, iter, residual_est, "-", e2_hyl, delta_hyl_proj, apply_secs, elapsed_secs
-    );
+    if let Some((e2_hyl, delta_hyl_proj)) = hylleraas {
+        println!(
+            "  {:>8} {:>8} {:>16.8e} {:>16} {:>18.10e} {:>18.10e} {:>16.6} {:>16.6}",
+            restart_id, iter, residual_est, "-", e2_hyl, delta_hyl_proj, apply_secs, elapsed_secs
+        );
+    } else {
+        println!(
+            "  {:>8} {:>8} {:>16.8e} {:>16} {:>16.6} {:>16.6}",
+            restart_id, iter, residual_est, "-", apply_secs, elapsed_secs
+        );
+    }
 }
 
 /// Print a single GMRES restart summary line using the true residual.
 /// # Arguments:
+/// - `print`: Table layout.
 /// - `restart_id`: GMRES restart cycle index.
 /// - `iter`: Total GMRES iteration index after the restart.
 /// - `residual_true`: True residual RMS after updating the solution.
@@ -81,15 +145,23 @@ fn print_gmres_iteration(
 /// # Returns:
 /// - `()`: Prints the GMRES restart summary to standard output.
 fn print_gmres_restart_summary(
+    print: GMRESPrint,
     restart_id: usize,
     iter: usize,
     residual_true: f64,
     elapsed_secs: f64,
 ) {
-    println!(
-        "  {:>8} {:>8} {:>16} {:>16.8e} {:>18} {:>18} {:>16} {:>16.6}",
-        restart_id, iter, "-", residual_true, "-", "-", "-", elapsed_secs
-    );
+    if print == GMRESPrint::Hylleraas {
+        println!(
+            "  {:>8} {:>8} {:>16} {:>16.8e} {:>18} {:>18} {:>16} {:>16.6}",
+            restart_id, iter, "-", residual_true, "-", "-", "-", elapsed_secs
+        );
+    } else {
+        println!(
+            "  {:>8} {:>8} {:>16} {:>16.8e} {:>16} {:>16.6}",
+            restart_id, iter, "-", residual_true, "-", elapsed_secs
+        );
+    }
 }
 
 /// Build the true residual `b - A x`.
@@ -344,8 +416,8 @@ fn apply_current_givens<T: NOCIScalar>(
 /// - `precondition`: Right-preconditioner callback.
 /// - `rtrue`: True residual at the start of the restart cycle.
 /// - `params`: Parameters for the current Arnoldi cycle.
-/// - `opts`: GMRES options controlling restart size, iteration limit, and residual tolerance.
-/// - `print_iterations`: Whether to print each Arnoldi iteration.
+/// - `tol`: Residual RMS tolerance.
+/// - `print`: Table layout of each printed Arnoldi iteration.
 /// # Returns:
 /// - `ArnoldiCycle`: Krylov basis, Hessenberg matrix, rotated residual vector, and final inner iteration count.
 fn run_arnoldi_cycle<F, P, T>(
@@ -353,8 +425,8 @@ fn run_arnoldi_cycle<F, P, T>(
     precondition: &P,
     rtrue: &Array1<T>,
     params: &ArnoldiParams<'_, T>,
-    opts: &GMRESOptions,
-    print_iterations: bool,
+    tol: f64,
+    print: GMRESPrint,
 ) -> ArnoldiCycle<T>
 where
     F: FnMut(&Array1<T>) -> Array1<T>,
@@ -410,23 +482,22 @@ where
         let residual_est = g[k + 1].abs() / params.rms;
         let iter = params.total_iter + k + 1;
 
-        if print_iterations
-            && (k == 0 || iter.is_multiple_of(PRINT_STRIDE) || residual_est <= opts.res_tol)
+        if print != GMRESPrint::Silent
+            && (k == 0 || iter.is_multiple_of(PRINT_STRIDE) || residual_est <= tol)
         {
-            let (e2_hyl, delta_hyl_proj) =
-                hylleraas_diagnostic(params, &q, &z_basis, &h_raw, &h_rot, &g, beta);
+            let hylleraas = (print == GMRESPrint::Hylleraas)
+                .then(|| hylleraas_diagnostic(params, &q, &z_basis, &h_raw, &h_rot, &g, beta));
             print_gmres_iteration(
                 params.restart_id,
                 iter,
                 residual_est,
-                e2_hyl,
-                delta_hyl_proj,
+                hylleraas,
                 apply_secs,
                 params.gmres_start.elapsed().as_secs_f64(),
             );
         }
 
-        if residual_est <= opts.res_tol || h_next <= SMALL {
+        if residual_est <= tol || h_next <= SMALL {
             break;
         }
     }
@@ -498,124 +569,84 @@ fn back_solve<T: NOCIScalar>(
 /// - `apply`: Matrix-vector product callback.
 /// - `precondition`: Right-preconditioner callback.
 /// - `b`: Right-hand side vector.
-/// - `opts`: GMRES options controlling restart size, iteration limit, and residual tolerance.
-/// - `world`: MPI communicator used for distributed diagnostics.
+/// - `restart`: Krylov dimension of each restart cycle.
+/// - `max_iter`: Maximum total number of iterations.
+/// - `tol`: Residual RMS tolerance, accepted only on the true residual.
+/// - `print`: Iteration table to print, if any.
 /// # Returns:
-/// - `GMRES`: Approximate solution vector together with final residual RMS, number of
+/// - `GMRESResult<T>`: Approximate solution vector together with final residual RMS, number of
 ///   iterations performed, and convergence flag.
-pub(in crate::noci::selected) fn gmres<F, P, T>(
+pub fn gmres<F, P, T>(
     mut apply: F,
     precondition: P,
     b: &Array1<T>,
-    opts: &GMRESOptions,
-    world: &impl Communicator,
+    restart: usize,
+    max_iter: usize,
+    tol: f64,
+    print: GMRESPrint,
 ) -> GMRESResult<T>
 where
     F: FnMut(&Array1<T>) -> Array1<T>,
     P: Fn(&Array1<T>) -> Array1<T>,
     T: NOCIScalar + Into<Complex64>,
 {
-    time_call!(crate::timers::selected::add_gmres, {
-        let gmres_start = Instant::now();
-        let n = b.len();
-        let mut x = Array1::<T>::from_elem(n, T::from_real(0.0));
+    let gmres_start = Instant::now();
+    let n = b.len();
+    let mut x = Array1::<T>::from_elem(n, T::from_real(0.0));
 
-        if world.rank() == 0 {
-            print_gmres_header();
-        }
+    if print != GMRESPrint::Silent {
+        print_gmres_header(print);
+    }
 
-        // Empty systems are already solved.
-        if n == 0 {
-            return GMRESResult {
-                x,
-                residual_rms: 0.0,
-                iterations: 0,
-                converged: true,
-            };
-        }
+    // Empty systems are already solved.
+    if n == 0 {
+        return GMRESResult {
+            x,
+            residual_rms: 0.0,
+            iterations: 0,
+            converged: true,
+        };
+    }
 
-        let rms = (n as f64).sqrt();
+    let rms = (n as f64).sqrt();
 
-        // Start from the zero vector and compute the true residual.
-        let mut rtrue = true_residual(&mut apply, b, &x);
-        let mut residual_rms = calculate_residual_rms(&rtrue, rms);
+    // Start from the zero vector, whose true residual `b - A x` is `b` itself.
+    let mut rtrue = b.clone();
+    let mut residual_rms = calculate_residual_rms(&rtrue, rms);
 
-        if world.rank() == 0 {
-            print_gmres_restart_summary(0, 0, residual_rms, gmres_start.elapsed().as_secs_f64());
-        }
+    if print != GMRESPrint::Silent {
+        print_gmres_restart_summary(
+            print,
+            0,
+            0,
+            residual_rms,
+            gmres_start.elapsed().as_secs_f64(),
+        );
+    }
 
-        // Accept the zero initial guess if it already satisfies the true residual tolerance.
-        if residual_rms <= opts.res_tol {
-            return GMRESResult {
-                x,
-                residual_rms,
-                iterations: 0,
-                converged: true,
-            };
-        }
+    // Accept the zero initial guess if it already satisfies the true residual tolerance.
+    if residual_rms <= tol {
+        return GMRESResult {
+            x,
+            residual_rms,
+            iterations: 0,
+            converged: true,
+        };
+    }
 
-        let mut total_iter = 0usize;
-        let mut restart_id = 0usize;
+    let mut total_iter = 0usize;
+    let mut restart_id = 0usize;
 
-        while total_iter < opts.max_iter {
-            let beta = vector_norm(&rtrue);
+    while total_iter < max_iter {
+        let beta = vector_norm(&rtrue);
 
-            // Stop if the residual is numerically zero.
-            if beta <= SMALL {
-                residual_rms = beta / rms;
+        // Stop if the residual is numerically zero.
+        if beta <= SMALL {
+            residual_rms = beta / rms;
 
-                if world.rank() == 0 {
-                    print_gmres_restart_summary(
-                        restart_id,
-                        total_iter,
-                        residual_rms,
-                        gmres_start.elapsed().as_secs_f64(),
-                    );
-                }
-
-                return GMRESResult {
-                    x,
-                    residual_rms,
-                    iterations: total_iter,
-                    converged: residual_rms <= opts.res_tol,
-                };
-            }
-
-            // Build one Krylov subspace for the right-preconditioned operator A P^{-1}.
-            let inner_max = opts.restart.min(opts.max_iter - total_iter);
-            let arnoldi_params = ArnoldiParams {
-                inner_max,
-                b,
-                x_start: &x,
-                restart_id,
-                total_iter,
-                rms,
-                gmres_start: &gmres_start,
-            };
-
-            let cycle = run_arnoldi_cycle(
-                &mut apply,
-                &precondition,
-                &rtrue,
-                &arnoldi_params,
-                opts,
-                world.rank() == 0,
-            );
-
-            // Solve the small least-squares problem in the Krylov basis.
-            let y = back_solve(&cycle.h, &cycle.g, cycle.kfinal);
-
-            // Apply the right-preconditioned Krylov correction.
-            update_solution(&mut x, &cycle.z, &y);
-
-            total_iter += cycle.kfinal;
-
-            // Recompute the true residual after each restart as the Arnoldi residual is only an estimate.
-            rtrue = true_residual(&mut apply, b, &x);
-            residual_rms = calculate_residual_rms(&rtrue, rms);
-
-            if world.rank() == 0 {
+            if print != GMRESPrint::Silent {
                 print_gmres_restart_summary(
+                    print,
                     restart_id,
                     total_iter,
                     residual_rms,
@@ -623,24 +654,74 @@ where
                 );
             }
 
-            restart_id += 1;
-
-            // Only the true residual is accepted as final convergence.
-            if residual_rms <= opts.res_tol {
-                return GMRESResult {
-                    x,
-                    residual_rms,
-                    iterations: total_iter,
-                    converged: true,
-                };
-            }
+            return GMRESResult {
+                x,
+                residual_rms,
+                iterations: total_iter,
+                converged: residual_rms <= tol,
+            };
         }
 
-        GMRESResult {
-            x,
-            residual_rms,
-            iterations: total_iter,
-            converged: residual_rms <= opts.res_tol,
+        // Build one Krylov subspace for the right-preconditioned operator A P^{-1}.
+        let inner_max = restart.min(max_iter - total_iter);
+        let arnoldi_params = ArnoldiParams {
+            inner_max,
+            b,
+            x_start: &x,
+            restart_id,
+            total_iter,
+            rms,
+            gmres_start: &gmres_start,
+        };
+
+        let cycle = run_arnoldi_cycle(
+            &mut apply,
+            &precondition,
+            &rtrue,
+            &arnoldi_params,
+            tol,
+            print,
+        );
+
+        // Solve the small least-squares problem in the Krylov basis.
+        let y = back_solve(&cycle.h, &cycle.g, cycle.kfinal);
+
+        // Apply the right-preconditioned Krylov correction.
+        update_solution(&mut x, &cycle.z, &y);
+
+        total_iter += cycle.kfinal;
+
+        // Recompute the true residual after each restart as the Arnoldi residual is only an estimate.
+        rtrue = true_residual(&mut apply, b, &x);
+        residual_rms = calculate_residual_rms(&rtrue, rms);
+
+        if print != GMRESPrint::Silent {
+            print_gmres_restart_summary(
+                print,
+                restart_id,
+                total_iter,
+                residual_rms,
+                gmres_start.elapsed().as_secs_f64(),
+            );
         }
-    })
+
+        restart_id += 1;
+
+        // Only the true residual is accepted as final convergence.
+        if residual_rms <= tol {
+            return GMRESResult {
+                x,
+                residual_rms,
+                iterations: total_iter,
+                converged: true,
+            };
+        }
+    }
+
+    GMRESResult {
+        x,
+        residual_rms,
+        iterations: total_iter,
+        converged: residual_rms <= tol,
+    }
 }

@@ -675,29 +675,31 @@ Set `storage = "disk"` to use a disk-backed cache. When `compare = true`, Wick-b
 
 ### NOCC
 
-The `noccmc` table enables the spin-free generalised-normal-ordered coupled-cluster calculation on the NOCI reference. The amplitude equations are solved by macro-micro iteration: each macro-iteration evaluates the energy and residual, the micro-iterations solve the linearised update using the Dyall zeroth-order Hamiltonian with level-shifted orbital-energy denominators, and DIIS accelerates both.
+The `noccmc` table enables the spin-free generalised-normal-ordered coupled-cluster calculation on the NOCI reference. The amplitude equations are solved by inexact Newton iteration: each macro-iteration evaluates the energy and residual, and GMRES solves the Newton equation with the exact Jacobian in the orthonormal first-order interacting space, preconditioned by level-shifted orbital-energy denominators.
 
 ```lua
 noccmc = {
     active_space_tol = 1e-6,
     max_cumulant = 4,
 
-    fois_tol = 1e-8,
+    fois_tol = 4e-2,
 
     max_macro = 100,
-    max_micro = 200,
-
     residual_tol = 1e-8,
-    micro_tol = 1e-10,
 
     level_shift = 0.5,
-    diis_space = 8,
 
     holomorphic = true,
+
+    gmres = {
+        max_iter = 200,
+        restart = 200,
+        res_tol = 1e-10,
+    },
 }
 ```
 
-Natural orbitals within `active_space_tol` of two or zero electrons are treated as core or virtual, and all others as active. `max_cumulant` selects the GNOCCSD(`k`) truncation: every term containing a cumulant of rank above `k` is dropped from the energy and residual equations, while the metric and the zeroth-order coupling are always evaluated exactly. The FOIS metric is weighted by the Hamiltonian couplings, `hSh`, before canonical orthogonalisation, as in Lee and Tew, which removes the spectator excitations of separated fragments. `fois_tol` is the eigenvalue threshold of the weighted FOIS metric below which redundant excitation directions are discarded. `residual_tol` is the convergence threshold on the norm of the residual projected onto the first-order interacting space, and `micro_tol` the threshold on the linearised update equation. `level_shift` is added to every orbital-energy denominator, and `diis_space` sets the number of vectors kept in both DIIS subspaces. By default, `holomorphic = true`, the amplitudes are complex and the equations are continued analytically, without complex conjugation, from a small imaginary starting vector. Where the truncated equations lose their real solution, as two real roots merge into a complex-conjugate pair, the iteration follows the solution onto the complex plane and reports the real and imaginary parts of the energy; where a real solution exists, the imaginary part decays to zero.
+Natural orbitals within `active_space_tol` of two or zero electrons are treated as core or virtual, and all others as active. `max_cumulant` selects the GNOCCSD(`k`) truncation: every term containing a cumulant of rank above `k` is dropped from the energy and residual equations, while the metric is always evaluated exactly. Redundant excitations are removed by canonical orthogonalisation of the FOIS metric [26], and `fois_tol` is the eigenvalue threshold below which metric directions are discarded. Its default of `4e-2` keeps the singular values of the orthogonaliser below 5, the pruning of Appendix A of [26]: near-null directions amplify the error of the cumulant truncation and stall the iteration, while removing them leaves the energy unchanged. `residual_tol` is the convergence threshold on the norm of the residual projected onto the first-order interacting space. Each Newton step is solved by GMRES to a tenth of that norm, never more tightly than the residual RMS `gmres.res_tol`, with at most `gmres.max_iter` iterations restarted every `gmres.restart`, as in the SNOCI `gmres` table. `level_shift` is added to every orbital-energy denominator of the preconditioner. By default, `holomorphic = true`, the amplitudes are complex and the equations are continued analytically, without complex conjugation, from a small imaginary starting vector. Where the truncated equations lose their real solution, as two real roots merge into a complex-conjugate pair, the iteration follows the solution onto the complex plane and reports the real and imaginary parts of the energy; where a real solution exists, the imaginary part decays to zero.
 
 ### Defaults
 
@@ -761,6 +763,8 @@ Markers [1]–[24] refer to method publications; [S1]–[S2] refer to software a
 24. Boris T. Polyak. Some methods of speeding up the convergence of iteration methods. *USSR Computational Mathematics and Mathematical Physics* **4**, 1–17 (1964). [doi:10.1016/0041-5553(64)90137-5](https://doi.org/10.1016/0041-5553(64)90137-5).
 
 25. Oskar Weser, Ali Alavi, and Giovanni Li Manni. Exploiting locality in full configuration interaction quantum Monte Carlo for fast excitation generation. *Journal of Chemical Theory and Computation* **19**, 9118 (2023). [doi:10.1021/acs.jctc.3c00546](https://doi.org/10.1021/acs.jctc.3c00546).
+
+26. Nicholas Lee, David P. Tew, and Bang C. Huynh. Symmetry-adapted generalised normal-ordered coupled-cluster theory for excited states. arXiv:2607.10007 (2026). [arXiv:2607.10007](https://arxiv.org/abs/2607.10007).
 
 ### Software and Data References
 
