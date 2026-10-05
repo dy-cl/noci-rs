@@ -13,9 +13,9 @@ use crate::{Error, Result};
 // Parent/sibling imports.
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
-    Input, Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,
-    SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin,
-    SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
+    InitialShift, Input, Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator,
+    QMCOptions, SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage,
+    SpatialBias, Spin, SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -85,6 +85,50 @@ fn read_snoci_storage(
             std::process::exit(1);
         }
     }
+}
+
+/// Read the initial population-control shift from an optional Lua value.
+/// Accepts the names `"hf"` and `"noci"` or a finite number in Hartree.
+/// # Arguments:
+/// - `value`: Raw Lua value for `qmc.initial_shift`.
+/// - `default`: Initial shift used when the value is absent.
+/// # Returns:
+/// - `InitialShift`: Parsed initial shift.
+fn read_initial_shift(
+    value: rlua::Result<Value>,
+    default: InitialShift,
+) -> InitialShift {
+    let message = "qmc.initial_shift must be 'hf', 'noci', or a finite number";
+    let shift = match value {
+        Ok(Value::String(s)) => s
+            .to_str()
+            .unwrap_or_else(|msg| {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            })
+            .parse()
+            .unwrap_or_else(|msg| {
+                eprintln!("qmc.initial_shift: {msg}");
+                std::process::exit(1);
+            }),
+        Ok(Value::Number(x)) => InitialShift::Value(x),
+        Ok(Value::Integer(x)) => InitialShift::Value(x as f64),
+        Ok(Value::Nil) | Err(_) => default,
+        Ok(_) => {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+    };
+
+    // Reject non-finite user shifts before they reach the propagator.
+    if let InitialShift::Value(x) = shift
+        && !x.is_finite()
+    {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
+
+    shift
 }
 
 /// Read basis state recipe from Lua table.
@@ -724,6 +768,10 @@ fn read_qmc(
                 .get("target_population")
                 .unwrap_or(defaults.target_population),
             n_projected,
+            initial_shift: read_initial_shift(
+                qmc_tbl.get::<_, Value>("initial_shift"),
+                defaults.initial_shift,
+            ),
             shift_damping: qmc_tbl
                 .get("shift_damping")
                 .unwrap_or(defaults.shift_damping),

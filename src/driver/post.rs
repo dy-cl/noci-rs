@@ -118,6 +118,7 @@ pub fn run_real_post_reference(
             &post,
             input,
             &reference.c0,
+            reference.e_noci,
             world,
             wicks,
         ));

@@ -11,7 +11,7 @@ use ndarray::{Array1, Array2};
 
 // Crate-root imports.
 use crate::AoData;
-use crate::input::{ExcitationGen, Input, Spin, StateType, WicksStorage};
+use crate::input::{ExcitationGen, InitialShift, Input, Spin, StateType, WicksStorage};
 
 const CAMEL: &str = r#"
                                                            .:=+#%%%%%#*+:
@@ -212,6 +212,11 @@ pub fn print_input(input: &Input) {
                 "FRI_SHIFT_TANGENT_TARGET_NNZ_PER_RANK: {}",
                 q.fri.shift_tangent_target_nnz
             );
+            match q.initial_shift {
+                InitialShift::Hf => println!("INITIAL_SHIFT: hf"),
+                InitialShift::Noci => println!("INITIAL_SHIFT: noci"),
+                InitialShift::Value(x) => println!("INITIAL_SHIFT: {}", x),
+            }
             println!("SHIFT_DAMPING: {}", q.shift_damping);
             println!("POPULATION_RESTORING: {}", q.population_restoring);
             println!("MOMENTUM_BETA: {}", q.momentum_beta);

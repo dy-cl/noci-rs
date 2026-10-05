@@ -12,7 +12,7 @@ use crate::PostSCFData;
 use crate::determinant::NOCIIndex;
 use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WicksView;
-use crate::input::Input;
+use crate::input::{InitialShift, Input};
 use crate::noci::stochastic::qmc_step;
 use crate::time_call;
 
@@ -21,6 +21,7 @@ use crate::time_call;
 /// - `post`: Data shared by post-SCF methods.
 /// - `input`: User input specifications.
 /// - `c0`: Initial coefficient vector of basis states.
+/// - `e_noci`: Energy of the reference NOCI state.
 /// - `world`: MPI communicator object.
 /// - `wicks`: Optional precomputed Wick's intermediates.
 /// # Returns:
@@ -29,6 +30,7 @@ pub fn run_qmc_stochastic_noci(
     post: &PostSCFData<'_, f64>,
     input: &mut Input,
     c0: &[f64],
+    e_noci: f64,
     world: &impl Communicator,
     wicks: Option<&WicksView<f64>>,
 ) -> f64 {
@@ -77,8 +79,14 @@ pub fn run_qmc_stochastic_noci(
             println!("Running stochastic NOCI-QMC propagation....");
         }
 
+        // Start population control from the requested shift; a restart overrides it.
+        let mut es = match input.qmc.as_ref().unwrap().initial_shift {
+            InitialShift::Hf => basis.parents[0].e,
+            InitialShift::Noci => e_noci,
+            InitialShift::Value(x) => x,
+        };
+
         // Construct matrix-element data and run distributed stochastic propagation.
-        let mut es = basis.parents[0].e;
         let data = NOCIData::new(post.ao, &basis, input, post.tol, wicks).withmocache(post.mocache);
         let (e, local_hist) = time_call!(crate::timers::stochastic::add_qmc_step, {
             qmc_step(&data, &c0qmc, &mut es, &ref_indices, world)

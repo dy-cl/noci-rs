@@ -46,6 +46,45 @@ impl Default for ExcitationGen {
     }
 }
 
+/// Population-control shift `E_s` used before the first shift update.
+#[derive(Clone, Copy, PartialEq)]
+pub enum InitialShift {
+    /// Energy of the first parent reference, normally RHF.
+    Hf,
+    /// Energy `E_{\text{NOCI}}` of the reference NOCI state.
+    Noci,
+    /// User-supplied shift in Hartree.
+    Value(f64),
+}
+
+impl FromStr for InitialShift {
+    type Err = String;
+
+    /// Parse a named initial shift from input string.
+    /// # Arguments:
+    /// - `s`: String naming the initial shift.
+    /// # Returns:
+    /// - `Result<Self, Self::Err>`: Parsed initial shift if valid string, otherwise error message.
+    /// # Errors
+    /// - Returns an error if `s` does not name a supported initial shift.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "hf" => Ok(Self::Hf),
+            "noci" => Ok(Self::Noci),
+            _ => Err(format!("invalid initial shift: {s}")),
+        }
+    }
+}
+
+impl Default for InitialShift {
+    /// Return default initial shift.
+    /// # Returns:
+    /// - `Self`: Reference NOCI energy, the closest available estimate of the ground state.
+    fn default() -> Self {
+        Self::Noci
+    }
+}
+
 pub struct QMCOptions {
     /// Initial persistent population 1-norm.
     pub initial_population: f64,
@@ -56,6 +95,8 @@ pub struct QMCOptions {
     pub n_projected: Option<usize>,
     /// FRI configuration for each stochastic compression site.
     pub fri: FriOptions,
+    /// Population-control shift `E_s` before the first shift update.
+    pub initial_shift: InitialShift,
     /// Damping `\zeta` of the population-control Newton update.
     pub shift_damping: f64,
     /// Dimensionless target-restoring strength `\kappa` for range propagators.
@@ -126,6 +167,7 @@ impl Default for QMCOptions {
             target_population: 100000.0,
             n_projected: None,
             fri: FriOptions::default(),
+            initial_shift: InitialShift::default(),
             shift_damping: 5e-4,
             population_restoring: 0.0,
             momentum_beta: 0.0,

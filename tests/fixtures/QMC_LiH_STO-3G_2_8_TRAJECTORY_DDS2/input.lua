@@ -57,6 +57,8 @@ prop = {
 }
 
 qmc = {
+    initial_shift = "hf",
+
     initial_population = 200,
     target_population = 500,
 

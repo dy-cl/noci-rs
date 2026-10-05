@@ -37,7 +37,7 @@ pub use gmres::GMRESOptions;
 pub use mol::MolOptions;
 pub use nocc::NOCCMCOptions;
 pub use prop::{PropagationOptions, Propagator};
-pub use qmc::{ExcitationGen, FriOptions, QMCOptions};
+pub use qmc::{ExcitationGen, FriOptions, InitialShift, QMCOptions};
 pub use scf::{DiisOptions, SCFInfo};
 pub use selected::{SNOCIOptions, SNOCIPreconditioner, SNOCIStorage};
 pub use state::{Metadynamics, SCFExcitation, SpatialBias, Spin, SpinBias, StateRecipe, StateType};

@@ -543,6 +543,7 @@ qmc = {
     initial_population = 1e2,
     target_population = 1e5,
 
+    initial_shift = "noci",
     shift_damping = 5e-4,
     population_restoring = 0.0,
     momentum_beta = 0.0,
@@ -586,6 +587,11 @@ The `overlap-weighted` generator mixes uniform sampling with a factorised propos
 For `s-apply`, omitted `excitation_gen` selects overlap/uniform mixture with `overlap_weight = 0.5`.
 SApply rejects heat-bath generation because tangent needs separately realised overlap elements.
 BApply supports `uniform` and `pchb`; `pchb` is rejected by every other propagator.
+
+`initial_shift` sets the shift $E_s$ used until population control starts: `"hf"` uses the energy of the first
+reference (normally RHF), `"noci"` (default) uses the reference NOCI energy, and a number gives the shift in
+Hartree. A shift closer to the ground-state energy slows the initial growth, so the population overshoots
+`target_population` less before the controller catches up. A restart file overrides it.
 
 `shift_damping` damps Newton range-population shift updates. `population_restoring` is dimensionless
 target-restoring strength $\kappa$ in Newton range-population controller: `0` gives zero-growth
