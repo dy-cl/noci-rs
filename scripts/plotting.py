@@ -2043,25 +2043,11 @@ def plotTrialOverlap(args):
                 continue
 
             overlap = df["EProjDen"] / df[population]
-            average = overlap.rolling(window=args.window, min_periods=1).mean()
-            (rawLine,) = plt.plot(
-                df["Iter"],
-                overlap,
-                linewidth=1,
-                alpha=0.18 if args.overlay else 0.25,
-                label=None if args.overlay else defaultLabel,
-            )
-            averageLabel = (
-                rf"{label}, rolling mean"
-                if args.overlay
-                else rf"Rolling mean, ${args.window}$ samples"
-            )
             plt.plot(
                 df["Iter"],
-                average,
+                overlap,
                 linewidth=LINEWIDTH,
-                color=rawLine.get_color(),
-                label=averageLabel,
+                label=label,
             )
 
         formatAxes(
@@ -2071,8 +2057,8 @@ def plotTrialOverlap(args):
                 r"\Psi(\tau) \rangle}"
                 r"{N_w(\tau)}$"
             ),
-            legend=True,
-            legendLoc="best" if args.overlay else None,
+            legend=args.overlay,
+            legendLoc="best",
         )
 
         plt.grid(True)
@@ -2085,25 +2071,8 @@ def plotTrialOverlap(args):
     (lineOverlap,) = ax.plot(
         [],
         [],
-        linewidth=1,
-        alpha=0.7,
-        color="tab:blue",
-        label=(
-            r"$\frac{\langle \Psi_{\mathrm{Ref}} | "
-            r"\Psi(\tau) \rangle}"
-            r"{N_w(\tau)}$"
-        ),
-    )
-
-    (lineAverage,) = ax.plot(
-        [],
-        [],
         linewidth=LINEWIDTH,
-        color="tab:orange",
-        label=(
-            r"$\overline{\frac{\langle \Psi_{\mathrm{Ref}}"
-            r" | \Psi(\tau) \rangle}{N_w(\tau)}}$"
-        ),
+        color="tab:blue",
     )
 
     formatAxes(
@@ -2113,7 +2082,6 @@ def plotTrialOverlap(args):
             r"\Psi(\tau) \rangle}"
             r"{N_w(\tau)}$"
         ),
-        legend=True,
     )
 
     ax.grid(True)
@@ -2140,19 +2108,9 @@ def plotTrialOverlap(args):
 
         overlap = df["EProjDen"] / df[population]
 
-        average = overlap.rolling(
-            window=args.window,
-            min_periods=1,
-        ).mean()
-
         lineOverlap.set_data(
             x,
             overlap.to_numpy(),
-        )
-
-        lineAverage.set_data(
-            x,
-            average.to_numpy(),
         )
 
         ax.relim()
@@ -2597,13 +2555,6 @@ def buildParser():
         "paths",
         nargs="+",
         type=Path,
-    )
-
-    p.add_argument(
-        "--window",
-        type=int,
-        default=1000,
-        help=("Number of output samples used in the rolling mean."),
     )
 
     addTrajectoryArgs(p, overlay=True)
