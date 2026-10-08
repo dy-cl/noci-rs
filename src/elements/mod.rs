@@ -42,9 +42,7 @@ pub(crate) use types::{DetPair, FockData};
 // Crate-visible function re-exports.
 pub(crate) use cache::build_fock_mo_cache;
 pub(crate) use fock::{calculate_f_pair, compare_f_pair_wicks_naive};
-pub(crate) use hs::{
-    calculate_hs_pair, calculate_hs_pairs_wicks_batched, compare_hs_pair_wicks_naive,
-};
+pub(crate) use hs::{calculate_hs_pair, compare_hs_pair_wicks_naive};
 pub(crate) use m::calculate_m_pair;
 pub(crate) use naive::{build_s_pair, calculate_s_pair_naive, occ_coeffs, pair_density};
 pub(crate) use nonorthogonalwicks::update_wicks_fock;

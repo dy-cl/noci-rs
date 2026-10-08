@@ -27,6 +27,9 @@ use crate::{AoData, input::Input};
 // Parent/sibling imports.
 use super::{PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks, SNOCIOverlaps};
 
+/// Number of diagonal candidate pairs evaluated per batched dispatch.
+const DIAGCHUNK: usize = 256;
+
 pub(in crate::noci::selected) enum CandidateM<T: NOCIScalar> {
     /// Packed candidate-candidate matrix stored in process memory.
     Ram(Vec<T>),
@@ -288,9 +291,9 @@ fn fill_candidate_m<T: NOCIScalar>(
     let n = op.candidates.len();
     let m_addr = m.as_mut_ptr() as usize;
 
-    (0..n)
-        .into_par_iter()
-        .for_each_init(WickScratchSpin::new, |scratch, a| {
+    (0..n).into_par_iter().for_each_init(
+        || (WickScratchSpin::new(), Vec::new()),
+        |(scratch, pairs), a| {
             let ldet = op.candidates[a];
             let row = a * (2 * n - a + 1) / 2;
             let row_len = n - a;
@@ -298,17 +301,23 @@ fn fill_candidate_m<T: NOCIScalar>(
             let row =
                 unsafe { std::slice::from_raw_parts_mut((m_addr as *mut T).add(row), row_len) };
 
-            for (db, m_ab) in row.iter_mut().enumerate() {
-                let gdet = op.candidates[a + db];
-                *m_ab = calculate_m_pair(
-                    op.data,
-                    op.fock,
-                    DetPair::new(ldet, gdet),
-                    op.projection.e0,
-                    Some(scratch),
-                );
-            }
-        });
+            // Evaluate the packed row as one batch of `(a, b)` pairs.
+            pairs.clear();
+            pairs.extend(
+                op.candidates[a..]
+                    .iter()
+                    .map(|&gdet| DetPair::new(ldet, gdet)),
+            );
+            calculate_m_pair(
+                op.data,
+                op.fock,
+                pairs,
+                op.projection.e0,
+                Some(scratch),
+                row,
+            );
+        },
+    );
 }
 
 /// Build the diagonal of the unprojected candidate-candidate shifted Fock matrix `M`.
@@ -338,19 +347,25 @@ pub(in crate::noci::selected) fn build_candidate_m_diag<T: NOCIScalar>(
             return diag;
         }
 
-        let diag: Vec<T> = (0..n)
-            .into_par_iter()
-            .map_init(WickScratchSpin::new, |scratch, a| {
-                let det = op.candidates[a];
-                calculate_m_pair(
-                    op.data,
-                    op.fock,
-                    DetPair::new(det, det),
-                    op.projection.e0,
-                    Some(scratch),
-                )
-            })
-            .collect();
+        // Evaluate diagonal pairs `(a, a)` in batched chunks.
+        let mut diag = vec![T::from_real(0.0); n];
+        diag.par_chunks_mut(DIAGCHUNK)
+            .zip(op.candidates.par_chunks(DIAGCHUNK))
+            .for_each_init(
+                || (WickScratchSpin::new(), Vec::new()),
+                |(scratch, pairs), (diag, dets)| {
+                    pairs.clear();
+                    pairs.extend(dets.iter().map(|&det| DetPair::new(det, det)));
+                    calculate_m_pair(
+                        op.data,
+                        op.fock,
+                        pairs,
+                        op.projection.e0,
+                        Some(scratch),
+                        diag,
+                    );
+                },
+            );
 
         Array1::from_vec(diag)
     })
@@ -364,13 +379,18 @@ pub(in crate::noci::selected) fn build_candidate_m_diag<T: NOCIScalar>(
 pub(in crate::noci::selected) fn build_candidate_s_diag<T: NOCIScalar>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>
 ) -> Array1<T> {
-    let diag: Vec<T> = op
-        .candidates
-        .par_iter()
-        .map_init(WickScratchSpin::new, |scratch, det| {
-            calculate_s_pair(op.data, DetPair::new(*det, *det), Some(scratch))
-        })
-        .collect();
+    // Evaluate diagonal pairs `(a, a)` in batched chunks.
+    let mut diag = vec![T::from_real(0.0); op.candidates.len()];
+    diag.par_chunks_mut(DIAGCHUNK)
+        .zip(op.candidates.par_chunks(DIAGCHUNK))
+        .for_each_init(
+            || (WickScratchSpin::new(), Vec::new()),
+            |(scratch, pairs), (diag, dets)| {
+                pairs.clear();
+                pairs.extend(dets.iter().map(|&det| DetPair::new(det, det)));
+                calculate_s_pair(op.data, pairs, Some(scratch), diag);
+            },
+        );
 
     Array1::from_vec(diag)
 }
@@ -466,26 +486,40 @@ where
             .into_par_iter()
             .with_min_len(min_len)
             .fold(
-                || (WickScratchSpin::new(), vec![zero; n]),
-                |(mut scratch, mut y), a| {
+                || {
+                    (
+                        WickScratchSpin::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        vec![zero; n],
+                    )
+                },
+                |(mut scratch, mut pairs, mut values, mut y), a| {
                     let xa = xs[a];
                     let ldet = op.candidates[a];
 
-                    for b in a..n {
-                        let xb = xs[b];
-
+                    // Evaluate the row's contributing pairs as one batch.
+                    pairs.clear();
+                    for (&xb, &gdet) in xs[a..].iter().zip(&op.candidates[a..]) {
                         if xa == zero && xb == zero {
                             continue;
                         }
+                        pairs.push(DetPair::new(ldet, gdet));
+                    }
+                    values.clear();
+                    values.resize(pairs.len(), T::from_real(0.0));
+                    calculate_m_pair(
+                        op.data,
+                        op.fock,
+                        &pairs,
+                        op.projection.e0,
+                        Some(&mut scratch),
+                        &mut values,
+                    );
 
-                        let gdet = op.candidates[b];
-                        let m_ab = calculate_m_pair(
-                            op.data,
-                            op.fock,
-                            DetPair::new(ldet, gdet),
-                            op.projection.e0,
-                            Some(&mut scratch),
-                        );
+                    let cols = (a..n).filter(|&b| xa != zero || xs[b] != zero);
+                    for (b, &m_ab) in cols.zip(&values) {
+                        let xb = xs[b];
                         let m_ab = <R as From<T>>::from(m_ab);
 
                         if xb != zero {
@@ -497,10 +531,10 @@ where
                         }
                     }
 
-                    (scratch, y)
+                    (scratch, pairs, values, y)
                 },
             )
-            .map(|(_, y)| y)
+            .map(|(_, _, _, y)| y)
             .reduce(
                 || vec![zero; n],
                 |mut lhs, rhs| {
@@ -572,27 +606,36 @@ where
         }
 
         let mut scratch = WickScratchSpin::new();
+        let mut pairs = Vec::new();
+        let mut values = Vec::new();
 
-        // Without a packed matrix, evaluate each owned upper-triangle pair
-        // once and scatter `M_{ab} x_b` and `M_{ab}^* x_a` to both output rows.
+        // Without a packed matrix, evaluate each owned upper-triangle row as one batch
+        // and scatter `M_{ab} x_b` and `M_{ab}^* x_a` to both output rows.
         for a in (irank..n).step_by(nranks) {
             let xa = xs[a];
             let ldet = op.candidates[a];
 
-            for b in a..n {
-                let xb = xs[b];
+            pairs.clear();
+            for (&xb, &gdet) in xs[a..].iter().zip(&op.candidates[a..]) {
                 if xa == zero && xb == zero {
                     continue;
                 }
+                pairs.push(DetPair::new(ldet, gdet));
+            }
+            values.clear();
+            values.resize(pairs.len(), T::from_real(0.0));
+            calculate_m_pair(
+                op.data,
+                op.fock,
+                &pairs,
+                op.projection.e0,
+                Some(&mut scratch),
+                &mut values,
+            );
 
-                let gdet = op.candidates[b];
-                let m_ab = calculate_m_pair(
-                    op.data,
-                    op.fock,
-                    DetPair::new(ldet, gdet),
-                    op.projection.e0,
-                    Some(&mut scratch),
-                );
+            let cols = (a..n).filter(|&b| xa != zero || xs[b] != zero);
+            for (b, &m_ab) in cols.zip(&values) {
+                let xb = xs[b];
                 let m_ab = <R as From<T>>::from(m_ab);
 
                 if xb != zero {
@@ -639,21 +682,33 @@ where
         .into_par_iter()
         .with_min_len(min_len)
         .fold(
-            || (WickScratchSpin::new(), vec![zero; n]),
-            |(mut scratch, mut y), a| {
+            || {
+                (
+                    WickScratchSpin::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    vec![zero; n],
+                )
+            },
+            |(mut scratch, mut pairs, mut values, mut y), a| {
                 let xa = xs[a];
                 let ldet = op.candidates[a];
 
-                for b in a..n {
-                    let xb = xs[b];
-
+                // Evaluate the row's contributing pairs as one batch.
+                pairs.clear();
+                for (&xb, &gdet) in xs[a..].iter().zip(&op.candidates[a..]) {
                     if xa == zero && xb == zero {
                         continue;
                     }
+                    pairs.push(DetPair::new(ldet, gdet));
+                }
+                values.clear();
+                values.resize(pairs.len(), T::from_real(0.0));
+                calculate_s_pair(op.data, &pairs, Some(&mut scratch), &mut values);
 
-                    let gdet = op.candidates[b];
-                    let s_ab =
-                        calculate_s_pair(op.data, DetPair::new(ldet, gdet), Some(&mut scratch));
+                let cols = (a..n).filter(|&b| xa != zero || xs[b] != zero);
+                for (b, &s_ab) in cols.zip(&values) {
+                    let xb = xs[b];
                     let s_ab = <R as From<T>>::from(s_ab);
 
                     if xb != zero {
@@ -665,10 +720,10 @@ where
                     }
                 }
 
-                (scratch, y)
+                (scratch, pairs, values, y)
             },
         )
-        .map(|(_, y)| y)
+        .map(|(_, _, _, y)| y)
         .reduce(
             || vec![zero; n],
             |mut lhs, rhs| {
@@ -711,21 +766,29 @@ where
 
     let mut y = vec![zero; n];
     let mut scratch = WickScratchSpin::new();
+    let mut pairs = Vec::new();
+    let mut values = Vec::new();
 
-    // Partition upper-triangle pairs by their first index. Each rank adds
-    // `S_{ab} x_b` and, for `a \ne b`, the Hermitian partner `S_{ab}^* x_a`.
+    // Partition upper-triangle pairs by their first index. Each rank evaluates its rows as
+    // batches and adds `S_{ab} x_b` and, for `a \ne b`, the Hermitian partner `S_{ab}^* x_a`.
     for a in (irank..n).step_by(nranks) {
         let xa = xs[a];
         let ldet = op.candidates[a];
 
-        for b in a..n {
-            let xb = xs[b];
+        pairs.clear();
+        for (&xb, &gdet) in xs[a..].iter().zip(&op.candidates[a..]) {
             if xa == zero && xb == zero {
                 continue;
             }
+            pairs.push(DetPair::new(ldet, gdet));
+        }
+        values.clear();
+        values.resize(pairs.len(), T::from_real(0.0));
+        calculate_s_pair(op.data, &pairs, Some(&mut scratch), &mut values);
 
-            let gdet = op.candidates[b];
-            let s_ab = calculate_s_pair(op.data, DetPair::new(ldet, gdet), Some(&mut scratch));
+        let cols = (a..n).filter(|&b| xa != zero || xs[b] != zero);
+        for (b, &s_ab) in cols.zip(&values) {
+            let xb = xs[b];
             let s_ab = <R as From<T>>::from(s_ab);
 
             if xb != zero {

@@ -16,9 +16,7 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::determinant::AuxiliarySpace;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
-use crate::elements::{
-    DetPair, NOCIData, calculate_hs_pair, calculate_hs_pairs_wicks_batched, calculate_s_pair,
-};
+use crate::elements::{DetPair, NOCIData, calculate_hs_pair, calculate_s_pair};
 use crate::input::{Input, Propagator};
 use crate::maths::general_evp;
 use crate::mpiutils::broadcast;
@@ -977,14 +975,13 @@ pub(in crate::noci::stochastic) fn find_s(
     }
 
     // Otherwise calculate normally.
-    calculate_s_pair(
-        data,
-        DetPair::new(
-            crate::determinant::NOCIIndex(a),
-            crate::determinant::NOCIIndex(b),
-        ),
-        Some(scratch),
-    )
+    let pair = DetPair::new(
+        crate::determinant::NOCIIndex(a),
+        crate::determinant::NOCIIndex(b),
+    );
+    let mut s = 0.0;
+    calculate_s_pair(data, &[pair], Some(scratch), std::slice::from_mut(&mut s));
+    s
 }
 
 /// `Find Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.`
@@ -1005,53 +1002,32 @@ pub(in crate::noci::stochastic) fn find_hs(
     let (a, b) = if i <= j { (i, j) } else { (j, i) };
 
     // Calculate the matrix element.
-    calculate_hs_pair(
-        data,
-        DetPair::new(
-            crate::determinant::NOCIIndex(a),
-            crate::determinant::NOCIIndex(b),
-        ),
-        Some(scratch),
-    )
+    let pair = DetPair::new(
+        crate::determinant::NOCIIndex(a),
+        crate::determinant::NOCIIndex(b),
+    );
+    let mut hs = (0.0, 0.0);
+    calculate_hs_pair(data, &[pair], Some(scratch), std::slice::from_mut(&mut hs));
+    hs
 }
 
 /// Find batched Hamiltonian and overlap matrix elements for canonically ordered determinant pairs.
-/// Extended nonorthogonal Wick evaluation uses the batched NOCI path. Without Wick evaluation,
-/// requests fall back to the existing scalar matrix-element evaluator.
+/// The matrix-element dispatcher groups same-parent pairs for the orthogonal SIMD kernels and
+/// Wick pairs by ordered reference pair for the nonorthogonal SIMD kernels.
 /// # Arguments:
 /// - `data`: Immutable stochastic propagation data.
-/// - `pairs`: Canonically ordered determinant-index pairs `(a, b)` with `a <= b`.
+/// - `pairs`: Canonically ordered determinant pairs `(a, b)` with `a <= b`.
 /// - `scratch`: Reusable Wick scratch space for scalar and generic-rank evaluation.
 /// - `out`: Hamiltonian and overlap results in the same order as `pairs`.
 /// # Returns:
 /// - `()`: Writes every requested `(H, S)` pair into `out`.
 pub(in crate::noci::stochastic) fn find_hs_batched(
     data: &NOCIData<'_, f64>,
-    pairs: &[(usize, usize)],
+    pairs: &[DetPair],
     scratch: &mut WickScratchSpin<f64>,
     out: &mut [(f64, f64)],
 ) {
-    if data.input.wicks.enabled && data.wicks.is_some() {
-        calculate_hs_pairs_wicks_batched(data, pairs, scratch, out);
-        return;
-    }
-
-    for (i, &(a, b)) in pairs.iter().enumerate() {
-        let ldet = data.space.state(crate::determinant::NOCIIndex(a));
-        let gdet = data.space.state(crate::determinant::NOCIIndex(b));
-        let loa = data.space.occupations(crate::determinant::NOCIIndex(a));
-        let goa = data.space.occupations(crate::determinant::NOCIIndex(b));
-
-        // A one- or two-body Hamiltonian cannot connect same-parent states
-        // differing by more than two excitations (four occupation bits).
-        if ldet.parent == gdet.parent
-            && (loa.0 ^ goa.0).count_ones() + (loa.1 ^ goa.1).count_ones() > 4
-        {
-            out[i] = (0.0, 0.0);
-        } else {
-            out[i] = find_hs(data, a, b, scratch);
-        }
-    }
+    calculate_hs_pair(data, pairs, Some(scratch), out);
 }
 
 /// Determine the maximum scratch sizes required for computation of matrix elements using extended

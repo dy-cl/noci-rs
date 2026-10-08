@@ -1800,27 +1800,36 @@ impl SpinFactorisation {
             .values
             .par_iter_mut()
             .zip(target.targets.par_iter())
-            .for_each_init(WickScratchSpin::new, |wick_scratch, (value, target)| {
-                let mut dp = 0.0;
-                for (&det, entry) in source.dets.iter().zip(source.entries.iter()) {
-                    let (a, b) = if target.det <= det {
-                        (target.det, det)
+            .for_each_init(
+                || (WickScratchSpin::new(), Vec::new(), Vec::new()),
+                |(wick_scratch, pairs, values), (value, target)| {
+                    // Canonically order every target-source pair and evaluate the row as one batch.
+                    pairs.clear();
+                    pairs.extend(source.dets.iter().map(|&det| {
+                        let (a, b) = if target.det <= det {
+                            (target.det, det)
+                        } else {
+                            (det, target.det)
+                        };
+                        DetPair::new(NOCIIndex(a), NOCIIndex(b))
+                    }));
+                    values.clear();
+                    values.resize(pairs.len(), 0.0);
+                    if data.input.wicks.enabled && data.wicks.is_none() {
+                        for (pair, s) in pairs.iter().zip(values.iter_mut()) {
+                            *s = calculate_s_pair_naive(data, pair.ldet, pair.gdet);
+                        }
                     } else {
-                        (det, target.det)
-                    };
-                    let s = if data.input.wicks.enabled && data.wicks.is_none() {
-                        calculate_s_pair_naive(data, NOCIIndex(a), NOCIIndex(b))
-                    } else {
-                        calculate_s_pair(
-                            data,
-                            DetPair::new(NOCIIndex(a), NOCIIndex(b)),
-                            Some(wick_scratch),
-                        )
-                    };
-                    dp += s * entry.dn;
-                }
-                *value = dp;
-            });
+                        calculate_s_pair(data, pairs, Some(wick_scratch), values);
+                    }
+
+                    let mut dp = 0.0;
+                    for (s, entry) in values.iter().zip(source.entries.iter()) {
+                        dp += s * entry.dn;
+                    }
+                    *value = dp;
+                },
+            );
 
         for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
             if *value != 0.0 {

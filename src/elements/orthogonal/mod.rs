@@ -1,6 +1,6 @@
 // elements/orthogonal/mod.rs
 
-//! Prepared Slater-Condon evaluation in one parent's orthonormal MO determinant basis.
+//! Fixed-rank Slater-Condon evaluation in one parent's orthonormal MO determinant basis.
 //!
 //! # References
 //!
@@ -16,11 +16,16 @@ pub(crate) use pairs::OrthogonalHamiltonianScratch;
 
 // Crate-visible function re-exports.
 pub(crate) use eval::{
-    xw_hamiltonian_orthogonal_prepared, xw_hamiltonian_orthogonal_prepared_batched,
+    xw_fock_orthogonal, xw_fock_orthogonal_batched, xw_hamiltonian_orthogonal,
+    xw_hamiltonian_orthogonal_batched, xw_overlap_orthogonal, xw_overlap_orthogonal_batched,
 };
 pub(crate) use pairs::{
     calculate_f_pair_orthogonal, calculate_h_pairs_orthogonal_batched, calculate_s_pair_orthogonal,
 };
 
 // Restricted function re-exports.
-pub(in crate::elements) use pairs::{calculate_hs_pair_orthogonal, calculate_m_pair_orthogonal};
+pub(in crate::elements) use pairs::{
+    calculate_f_pairs_orthogonal_batched, calculate_hs_pair_orthogonal,
+    calculate_hs_pairs_orthogonal_batched, calculate_m_pair_orthogonal,
+    calculate_m_pairs_orthogonal_batched, calculate_s_pairs_orthogonal_batched,
+};

@@ -8,7 +8,7 @@ use rand::{Rng, SeedableRng};
 use crate::determinant::{AuxiliaryIndex, AuxiliarySpace, NOCIIndex, OrthogonalConnection};
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{
-    NOCIData, OrthogonalHamiltonianScratch, calculate_h_pairs_orthogonal_batched,
+    DetPair, NOCIData, OrthogonalHamiltonianScratch, calculate_h_pairs_orthogonal_batched,
 };
 use crate::input::{ExcitationGen, Propagator};
 use crate::noci::OverlapFactors;
@@ -675,7 +675,7 @@ pub(in crate::noci::stochastic) struct NOCIThreadPropagation {
     /// Raw off-diagonal spawn events awaiting one worker-batch pivotal compression.
     raw_spawn_updates: Vec<NOCIPopulationUpdate>,
     /// Canonically ordered determinant pairs corresponding to `spawn_requests`.
-    spawn_pairs: Vec<(usize, usize)>,
+    spawn_pairs: Vec<DetPair>,
     /// Hamiltonian and overlap elements corresponding to `spawn_requests`.
     spawn_hs: Vec<(f64, f64)>,
     /// Per thread scratch space for extended non-orthogonal Wick's theorem.
@@ -829,12 +829,13 @@ impl NOCIThreadPropagation {
 
         self.spawn_pairs.clear();
         for request in &self.spawn_requests {
-            let pair = if request.child <= request.parent {
+            let (a, b) = if request.child <= request.parent {
                 (request.child, request.parent)
             } else {
                 (request.parent, request.child)
             };
-            self.spawn_pairs.push(pair);
+            self.spawn_pairs
+                .push(DetPair::new(NOCIIndex(a), NOCIIndex(b)));
         }
 
         self.spawn_hs.clear();

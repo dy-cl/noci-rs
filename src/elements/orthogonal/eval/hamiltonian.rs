@@ -1,4 +1,4 @@
-// elements/orthogonal/eval/preparehamiltonian.rs
+// elements/orthogonal/eval/hamiltonian.rs
 
 // Standard library imports.
 #[cfg(target_arch = "x86_64")]
@@ -19,18 +19,18 @@ use crate::{AoData, ReducedTwoSpinState};
 // Parent/sibling imports.
 use super::dispatch::dispatch_orthogonal_ranks;
 
-/// Evaluate `\langle D|\hat H|\Phi_x\rangle` from a prepared orthogonal excitation.
+/// Evaluate `\langle D|\hat H|\Phi_x\rangle` from a reduced orthogonal excitation.
 /// The fixed rank `(R_\alpha,R_\beta)` is restricted by the one- plus two-body Hamiltonian to
 /// `(0,0)`, `(1,0)`, `(0,1)`, `(2,0)`, `(1,1)`, or `(0,2)`.
 /// # Arguments:
 /// - `ao`: AO data containing the nuclear-repulsion energy.
 /// - `cache`: Parent-specific orthogonal MO Hamiltonian integrals.
 /// - `source`: Source alpha and beta occupation bitstrings.
-/// - `state`: Prepared phase and fixed-rank excitation labels connecting source to child.
+/// - `state`: Reduced phase and fixed-rank excitation labels connecting source to child.
 /// # Returns
 /// - `T`: Orthogonal Slater-Condon Hamiltonian matrix element.
 #[inline(always)]
-pub(crate) fn xw_hamiltonian_orthogonal_prepared<T: NOCIScalar>(
+pub(crate) fn xw_hamiltonian_orthogonal<T: NOCIScalar>(
     ao: &AoData,
     cache: &MOCache<T>,
     source: (u128, u128),
@@ -45,7 +45,7 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared<T: NOCIScalar>(
     // specialised while returning zero for ranks unsupported by a two-body Hamiltonian.
     dispatch_orthogonal_ranks!(
         ranks,
-        |RA, RB| xw_hamiltonian_orthogonal_prepared_const::<T, RA, RB>(ao, cache, source, state,),
+        |RA, RB| xw_hamiltonian_orthogonal_const::<T, RA, RB>(ao, cache, source, state,),
         T::from_real(0.0),
     )
 }
@@ -59,11 +59,11 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared<T: NOCIScalar>(
 /// - `ao`: AO data containing `E_\mathrm{nuc}`.
 /// - `cache`: Parent-specific one- and two-electron MO integrals.
 /// - `source`: Source alpha and beta occupation bitstrings.
-/// - `state`: Prepared phase and fixed-rank orbital labels.
+/// - `state`: Reduced phase and fixed-rank orbital labels.
 /// # Returns
 /// - `T`: Fixed-rank Hamiltonian matrix element.
 #[inline(always)]
-fn xw_hamiltonian_orthogonal_prepared_const<T: NOCIScalar, const RA: usize, const RB: usize>(
+fn xw_hamiltonian_orthogonal_const<T: NOCIScalar, const RA: usize, const RB: usize>(
     ao: &AoData,
     cache: &MOCache<T>,
     source: (u128, u128),
@@ -217,18 +217,18 @@ fn xw_hamiltonian_orthogonal_prepared_const<T: NOCIScalar, const RA: usize, cons
     T::from_real(0.0)
 }
 
-/// Evaluate a parent-local batch of prepared orthogonal Hamiltonian matrix elements.
+/// Evaluate a parent-local batch of orthogonal Hamiltonian matrix elements.
 /// Double-excitation requests are packetised by `(R_\alpha,R_\beta)` for SIMD gather kernels;
 /// diagonal and single requests use the fixed-rank scalar implementation.
 /// # Arguments:
 /// - `ao`: AO data containing the nuclear-repulsion energy.
 /// - `cache`: Parent-specific orthogonal MO Hamiltonian integrals.
 /// - `occupations`: `\alpha` and `\beta` occupations aligned with `states` and `out`.
-/// - `states`: Prepared phase/cache payloads for source-relative excitations.
+/// - `states`: Reduced phase/cache payloads for source-relative excitations.
 /// - `out`: Hamiltonian results in request order.
 /// # Returns
 /// - `()`: Writes every parent-local matrix element into `out`.
-pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
+pub(crate) fn xw_hamiltonian_orthogonal_batched<T: NOCIScalar>(
     ao: &AoData,
     cache: &MOCache<T>,
     occupations: &[(u128, u128)],
@@ -243,24 +243,24 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
             let cache_f64 = &*std::ptr::from_ref(cache).cast::<MOCache<f64>>();
             let out_f64 = std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<f64>(), out.len());
             if is_x86_feature_detected!("avx512f") {
-                xw_hamiltonian_orthogonal_prepared_simd(
+                xw_hamiltonian_orthogonal_simd(
                     ao,
                     cache_f64,
                     occupations,
                     states,
                     out_f64,
-                    xw_hamiltonian_orthogonal_prepared_f64x8,
+                    xw_hamiltonian_orthogonal_f64x8,
                 );
                 return;
             }
             if is_x86_feature_detected!("avx2") {
-                xw_hamiltonian_orthogonal_prepared_simd(
+                xw_hamiltonian_orthogonal_simd(
                     ao,
                     cache_f64,
                     occupations,
                     states,
                     out_f64,
-                    xw_hamiltonian_orthogonal_prepared_f64x4,
+                    xw_hamiltonian_orthogonal_f64x4,
                 );
                 return;
             }
@@ -271,24 +271,24 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
             let out_c64 =
                 std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<Complex64>(), out.len());
             if is_x86_feature_detected!("avx512f") {
-                xw_hamiltonian_orthogonal_prepared_simd(
+                xw_hamiltonian_orthogonal_simd(
                     ao,
                     cache_c64,
                     occupations,
                     states,
                     out_c64,
-                    xw_hamiltonian_orthogonal_prepared_c64x8,
+                    xw_hamiltonian_orthogonal_c64x8,
                 );
                 return;
             }
             if is_x86_feature_detected!("avx2") {
-                xw_hamiltonian_orthogonal_prepared_simd(
+                xw_hamiltonian_orthogonal_simd(
                     ao,
                     cache_c64,
                     occupations,
                     states,
                     out_c64,
-                    xw_hamiltonian_orthogonal_prepared_c64x4,
+                    xw_hamiltonian_orthogonal_c64x4,
                 );
                 return;
             }
@@ -297,18 +297,18 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
 
     // Scalar fallback handles unsupported CPUs and any request not accepted by packed kernels.
     for ((&occupation, state), value) in occupations.iter().zip(states).zip(out) {
-        *value = xw_hamiltonian_orthogonal_prepared(ao, cache, occupation, state);
+        *value = xw_hamiltonian_orthogonal(ao, cache, occupation, state);
     }
 }
 
-/// Evaluate one prepared orthogonal batch through fixed-width double-excitation kernels.
+/// Evaluate one orthogonal batch through fixed-width double-excitation kernels.
 /// Requests in `(2,0)`, `(1,1)`, and `(0,2)` bins use packed ERI gathers; all other ranks use
 /// the scalar fixed-rank evaluator without changing request order.
 /// # Arguments:
 /// - `ao`: AO data containing the nuclear-repulsion energy.
 /// - `cache`: Parent-specific orthogonal MO Hamiltonian integrals.
 /// - `occupations`: `\alpha` and `\beta` occupations aligned with `states` and `out`.
-/// - `states`: Prepared excitation phases and caches.
+/// - `states`: Reduced excitation phases and caches.
 /// - `out`: Hamiltonian results in request order.
 /// - `kernel`: CPU-specific fixed-width double-excitation dispatcher.
 /// # Returns
@@ -317,7 +317,7 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
 /// - The caller must provide a kernel supported by the current CPU.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::type_complexity)]
-unsafe fn xw_hamiltonian_orthogonal_prepared_simd<T: NOCIScalar, const N: usize>(
+unsafe fn xw_hamiltonian_orthogonal_simd<T: NOCIScalar, const N: usize>(
     ao: &AoData,
     cache: &MOCache<T>,
     occupations: &[(u128, u128)],
@@ -346,7 +346,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd<T: NOCIScalar, const N: usize>
             (0, 2) => 2,
             _ => {
                 // Diagonal and single sectors need occupied-orbital sums, so evaluate them scalar.
-                out[output] = xw_hamiltonian_orthogonal_prepared(ao, cache, occupation, state);
+                out[output] = xw_hamiltonian_orthogonal(ao, cache, occupation, state);
                 continue;
             }
         };
@@ -395,7 +395,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd<T: NOCIScalar, const N: usize>
 /// one lane-wise real phase multiplication.
 /// # Arguments:
 /// - `cache`: Parent-specific orthogonal MO Hamiltonian integrals.
-/// - `states`: Prepared excitation labels and phases in lane order.
+/// - `states`: Reduced excitation labels and phases in lane order.
 /// - `out`: Hamiltonian outputs in lane order.
 /// # Returns
 /// - `()`: Writes one packet of fixed-rank double-excitation elements.
@@ -403,7 +403,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd<T: NOCIScalar, const N: usize>
 /// - `V` must be supported by the current CPU and every cached orbital label must index `cache`.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn xw_hamiltonian_orthogonal_prepared_simd_const<
+unsafe fn xw_hamiltonian_orthogonal_simd_const<
     T: NOCIScalar,
     V: Simd<N, Scalar = T>,
     const N: usize,
@@ -485,7 +485,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd_const<
 /// # Arguments:
 /// - `cache`: Parent-specific real MO integrals.
 /// - `ranks`: Common alpha and beta excitation ranks.
-/// - `states`: Four prepared excitation states.
+/// - `states`: Four reduced excitation states.
 /// - `out`: Four Hamiltonian outputs.
 /// # Returns
 /// - `()`: Writes four real matrix elements.
@@ -493,7 +493,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd_const<
 /// - The current CPU must support AVX2.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn xw_hamiltonian_orthogonal_prepared_f64x4(
+unsafe fn xw_hamiltonian_orthogonal_f64x4(
     cache: &MOCache<f64>,
     ranks: (usize, usize),
     states: &[ReducedTwoSpinState; 4],
@@ -501,9 +501,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_f64x4(
 ) {
     dispatch_orthogonal_ranks!(
         ranks,
-        |RA, RB| unsafe {
-            xw_hamiltonian_orthogonal_prepared_f64x4_const::<RA, RB>(cache, states, out)
-        },
+        |RA, RB| unsafe { xw_hamiltonian_orthogonal_f64x4_const::<RA, RB>(cache, states, out) },
         (),
     );
 }
@@ -511,7 +509,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_f64x4(
 /// Evaluate four real fixed-rank orthogonal double-excitation values with AVX2.
 /// # Arguments:
 /// - `cache`: Parent-specific real MO integrals.
-/// - `states`: Four prepared excitation states.
+/// - `states`: Four reduced excitation states.
 /// - `out`: Four Hamiltonian outputs.
 /// # Returns
 /// - `()`: Writes four real matrix elements.
@@ -519,13 +517,13 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_f64x4(
 /// - The current CPU must support AVX2 and cached labels must match `(RA,RB)`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn xw_hamiltonian_orthogonal_prepared_f64x4_const<const RA: usize, const RB: usize>(
+unsafe fn xw_hamiltonian_orthogonal_f64x4_const<const RA: usize, const RB: usize>(
     cache: &MOCache<f64>,
     states: &[ReducedTwoSpinState; 4],
     out: &mut [f64; 4],
 ) {
     unsafe {
-        xw_hamiltonian_orthogonal_prepared_simd_const::<f64, F64x4, 4, RA, RB>(cache, states, out);
+        xw_hamiltonian_orthogonal_simd_const::<f64, F64x4, 4, RA, RB>(cache, states, out);
     }
 }
 
@@ -533,7 +531,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_f64x4_const<const RA: usize, const 
 /// # Arguments:
 /// - `cache`: Parent-specific real MO integrals.
 /// - `ranks`: Common alpha and beta excitation ranks.
-/// - `states`: Eight prepared excitation states.
+/// - `states`: Eight reduced excitation states.
 /// - `out`: Eight Hamiltonian outputs.
 /// # Returns
 /// - `()`: Writes eight real matrix elements.
@@ -541,7 +539,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_f64x4_const<const RA: usize, const 
 /// - The current CPU must support AVX-512F.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_hamiltonian_orthogonal_prepared_f64x8(
+unsafe fn xw_hamiltonian_orthogonal_f64x8(
     cache: &MOCache<f64>,
     ranks: (usize, usize),
     states: &[ReducedTwoSpinState; 8],
@@ -549,9 +547,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_f64x8(
 ) {
     dispatch_orthogonal_ranks!(
         ranks,
-        |RA, RB| unsafe {
-            xw_hamiltonian_orthogonal_prepared_f64x8_const::<RA, RB>(cache, states, out)
-        },
+        |RA, RB| unsafe { xw_hamiltonian_orthogonal_f64x8_const::<RA, RB>(cache, states, out) },
         (),
     );
 }
@@ -559,7 +555,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_f64x8(
 /// Evaluate eight real fixed-rank orthogonal double-excitation values with AVX-512F.
 /// # Arguments:
 /// - `cache`: Parent-specific real MO integrals.
-/// - `states`: Eight prepared excitation states.
+/// - `states`: Eight reduced excitation states.
 /// - `out`: Eight Hamiltonian outputs.
 /// # Returns
 /// - `()`: Writes eight real matrix elements.
@@ -567,13 +563,13 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_f64x8(
 /// - The current CPU must support AVX-512F and cached labels must match `(RA,RB)`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_hamiltonian_orthogonal_prepared_f64x8_const<const RA: usize, const RB: usize>(
+unsafe fn xw_hamiltonian_orthogonal_f64x8_const<const RA: usize, const RB: usize>(
     cache: &MOCache<f64>,
     states: &[ReducedTwoSpinState; 8],
     out: &mut [f64; 8],
 ) {
     unsafe {
-        xw_hamiltonian_orthogonal_prepared_simd_const::<f64, F64x8, 8, RA, RB>(cache, states, out);
+        xw_hamiltonian_orthogonal_simd_const::<f64, F64x8, 8, RA, RB>(cache, states, out);
     }
 }
 
@@ -581,7 +577,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_f64x8_const<const RA: usize, const 
 /// # Arguments:
 /// - `cache`: Parent-specific complex MO integrals.
 /// - `ranks`: Common alpha and beta excitation ranks.
-/// - `states`: Four prepared excitation states.
+/// - `states`: Four reduced excitation states.
 /// - `out`: Four Hamiltonian outputs.
 /// # Returns
 /// - `()`: Writes four complex matrix elements.
@@ -589,7 +585,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_f64x8_const<const RA: usize, const 
 /// - The current CPU must support AVX2.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn xw_hamiltonian_orthogonal_prepared_c64x4(
+unsafe fn xw_hamiltonian_orthogonal_c64x4(
     cache: &MOCache<Complex64>,
     ranks: (usize, usize),
     states: &[ReducedTwoSpinState; 4],
@@ -597,9 +593,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_c64x4(
 ) {
     dispatch_orthogonal_ranks!(
         ranks,
-        |RA, RB| unsafe {
-            xw_hamiltonian_orthogonal_prepared_c64x4_const::<RA, RB>(cache, states, out)
-        },
+        |RA, RB| unsafe { xw_hamiltonian_orthogonal_c64x4_const::<RA, RB>(cache, states, out) },
         (),
     );
 }
@@ -607,7 +601,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_c64x4(
 /// Evaluate four complex fixed-rank orthogonal double-excitation values with AVX2.
 /// # Arguments:
 /// - `cache`: Parent-specific complex MO integrals.
-/// - `states`: Four prepared excitation states.
+/// - `states`: Four reduced excitation states.
 /// - `out`: Four Hamiltonian outputs.
 /// # Returns
 /// - `()`: Writes four complex matrix elements.
@@ -615,15 +609,13 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_c64x4(
 /// - The current CPU must support AVX2 and cached labels must match `(RA,RB)`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn xw_hamiltonian_orthogonal_prepared_c64x4_const<const RA: usize, const RB: usize>(
+unsafe fn xw_hamiltonian_orthogonal_c64x4_const<const RA: usize, const RB: usize>(
     cache: &MOCache<Complex64>,
     states: &[ReducedTwoSpinState; 4],
     out: &mut [Complex64; 4],
 ) {
     unsafe {
-        xw_hamiltonian_orthogonal_prepared_simd_const::<Complex64, C64x4, 4, RA, RB>(
-            cache, states, out,
-        );
+        xw_hamiltonian_orthogonal_simd_const::<Complex64, C64x4, 4, RA, RB>(cache, states, out);
     }
 }
 
@@ -631,7 +623,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_c64x4_const<const RA: usize, const 
 /// # Arguments:
 /// - `cache`: Parent-specific complex MO integrals.
 /// - `ranks`: Common alpha and beta excitation ranks.
-/// - `states`: Eight prepared excitation states.
+/// - `states`: Eight reduced excitation states.
 /// - `out`: Eight Hamiltonian outputs.
 /// # Returns
 /// - `()`: Writes eight complex matrix elements.
@@ -639,7 +631,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_c64x4_const<const RA: usize, const 
 /// - The current CPU must support AVX-512F.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_hamiltonian_orthogonal_prepared_c64x8(
+unsafe fn xw_hamiltonian_orthogonal_c64x8(
     cache: &MOCache<Complex64>,
     ranks: (usize, usize),
     states: &[ReducedTwoSpinState; 8],
@@ -647,9 +639,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_c64x8(
 ) {
     dispatch_orthogonal_ranks!(
         ranks,
-        |RA, RB| unsafe {
-            xw_hamiltonian_orthogonal_prepared_c64x8_const::<RA, RB>(cache, states, out)
-        },
+        |RA, RB| unsafe { xw_hamiltonian_orthogonal_c64x8_const::<RA, RB>(cache, states, out) },
         (),
     );
 }
@@ -657,7 +647,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_c64x8(
 /// Evaluate eight complex fixed-rank orthogonal double-excitation values with AVX-512F.
 /// # Arguments:
 /// - `cache`: Parent-specific complex MO integrals.
-/// - `states`: Eight prepared excitation states.
+/// - `states`: Eight reduced excitation states.
 /// - `out`: Eight Hamiltonian outputs.
 /// # Returns
 /// - `()`: Writes eight complex matrix elements.
@@ -665,14 +655,12 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_c64x8(
 /// - The current CPU must support AVX-512F and cached labels must match `(RA,RB)`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_hamiltonian_orthogonal_prepared_c64x8_const<const RA: usize, const RB: usize>(
+unsafe fn xw_hamiltonian_orthogonal_c64x8_const<const RA: usize, const RB: usize>(
     cache: &MOCache<Complex64>,
     states: &[ReducedTwoSpinState; 8],
     out: &mut [Complex64; 8],
 ) {
     unsafe {
-        xw_hamiltonian_orthogonal_prepared_simd_const::<Complex64, C64x8, 8, RA, RB>(
-            cache, states, out,
-        );
+        xw_hamiltonian_orthogonal_simd_const::<Complex64, C64x8, 8, RA, RB>(cache, states, out);
     }
 }
