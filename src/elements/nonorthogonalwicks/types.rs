@@ -40,7 +40,7 @@ pub(crate) struct SameSpinMeta<T: NOCIScalar> {
     /// Hamiltonian.
     pub(crate) f0h: [T; 2],
     /// Scalar same-spin two-body intermediates `{}^x V_0^{(m_1,m_2)}`, stored by
-    /// `m_1 + m_2`. The middle entry contains the combined `(0,1)` and `(1,0)` contribution.
+    /// `m_1 + m_2`. The middle entry holds one of the equal `(0,1)` and `(1,0)` assignments.
     pub(crate) v0: [T; 3],
 }
 

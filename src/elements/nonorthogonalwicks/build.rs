@@ -244,12 +244,13 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         // `({}^{xx}X_{rp}^{(m_i)}{}^{xx}X_{sq}^{(m_j)}`
         // `- {}^{xx}X_{rq}^{(m_i)}{}^{xx}X_{sp}^{(m_j)})`.
         // The three stored entries correspond to `m_i + m_j = 0, 1, 2`. The `m_i + m_j = 1`
-        // entry contains both symmetry-equivalent assignments `(0,1)` and `(1,0)`.
+        // entry holds one of the equal assignments `(0,1)` and `(1,0)`; the evaluator visits both.
         let mut v0 = [<T as From<f64>>::from(0.0); 3];
         v0[0] = T::einsum_ba_ab(&jkao[0], &mao[0]);
         if m >= 1 {
-            // The assignments (0,1) and (1,0) are equal and are therefore combined.
-            v0[1] = <T as From<f64>>::from(2.0) * T::einsum_ba_ab(&jkao[0], &mao[1]);
+            // The assignments (0,1) and (1,0) are equal. The evaluator visits both, so a single
+            // assignment is stored.
+            v0[1] = T::einsum_ba_ab(&jkao[0], &mao[1]);
         }
         if m >= 2 {
             // Both operator contractions contain one zero-overlap orbital pair.
