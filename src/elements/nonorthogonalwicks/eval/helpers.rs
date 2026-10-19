@@ -488,10 +488,10 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
 /// - `scratch`: Mixed determinant, cofactor and work storage for both spin spaces.
 /// - `deta`: `Alpha-spin all-m_i = 0 and all-m_i = 1 endpoint determinants.`
 /// - `detb`: `Beta-spin all-m_i = 0 and all-m_i = 1 endpoint determinants.`
-/// - `tol`: Numerical threshold applied independently to both determinant values.
+/// - `tol`: Singular-value threshold used by the determinant and cofactor evaluation.
 /// - `f`: Receives both complete assignments, scratch storage and the two determinant values.
 /// # Returns
-/// - `()`: Calls `f` when both mixed determinant magnitudes exceed `tol`.
+/// - `()`: Calls `f` for every pair of distributions whose determinants evaluate successfully.
 #[inline(always)]
 pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -560,10 +560,10 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
 /// - `minor`: `Full dimension and removed row \eta and column z.`
 /// - `minorb`: `Scratch storage for \mathbf D[\eta|z].`
 /// - `adjtb`: `Scratch storage for \operatorname{cof}[\mathbf D[\eta|z]].`
-/// - `tol`: `Numerical threshold applied to \det\mathbf D[\eta|z].`
+/// - `tol`: Singular-value threshold used by the determinant and cofactor evaluation.
 /// - `f`: Receives the minor dimension, entries, cofactor matrix and determinant.
 /// # Returns
-/// - `()`: Calls `f` when the minor determinant magnitude exceeds `tol`.
+/// - `()`: Calls `f` when the minor determinant evaluates successfully.
 #[inline(always)]
 pub(super) fn minor_adjt<T: NOCIScalar>(
     full: &[T],
@@ -628,15 +628,16 @@ pub(super) fn for_each_m_combination(
     }
 }
 
-/// `Evaluate \det\mathbf D and its cofactor matrix:`
-/// Evaluate a runtime-rank determinant and cofactor matrix and reject values below `tol`.
+/// `Evaluate \det\mathbf D and its cofactor matrix \operatorname{cof}[\mathbf D]` for a
+/// runtime rank. A singular `\mathbf D` is not rejected: when its rank is `n - 1` the cofactors,
+/// and hence every column-replaced determinant, are nonzero although `\det\mathbf D = 0`.
 /// # Arguments:
 /// - `adjt`: Row-major cofactor matrix to write.
 /// - `full`: Input row-major square matrix.
 /// - `n`: Runtime matrix rank.
-/// - `tol`: Magnitude threshold.
+/// - `tol`: Singular-value threshold used by the SVD fallback.
 /// # Returns
-/// - `Option<T>`: Determinant when evaluation succeeds and exceeds `tol`.
+/// - `Option<T>`: Determinant, or `None` when the evaluation fails.
 #[inline(always)]
 pub(super) fn adjugate_transpose_generic<T: NOCIScalar>(
     adjt: &mut [T],
@@ -646,11 +647,5 @@ pub(super) fn adjugate_transpose_generic<T: NOCIScalar>(
 ) -> Option<T> {
     let mut invs = vec![0.0; n];
     let mut lu = vec![T::from_real(0.0); n * n];
-    let determinant = adjugate_transpose_dynamic(adjt, &mut invs, &mut lu, full, n, tol)?;
-
-    if determinant.abs() > tol {
-        Some(determinant)
-    } else {
-        None
-    }
+    adjugate_transpose_dynamic(adjt, &mut invs, &mut lu, full, n, tol)
 }

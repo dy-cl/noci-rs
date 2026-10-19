@@ -1938,8 +1938,7 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
 
                     h2aa += contrib;
                 } else if m1 == 0 && m2 == 0 {
-                    // Preserve overlap evaluation when the adjugate path rejects a singular mixed
-                    // determinant.
+                    // Preserve the overlap determinant if the adjugate evaluation fails.
                     sa += det_dynamic(scratch.det_mix.as_slice(), la).unwrap_or(zero);
                 }
             });

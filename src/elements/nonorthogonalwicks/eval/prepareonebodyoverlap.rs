@@ -1426,7 +1426,7 @@ fn xw_f_overlap_gen_prepared<T: NOCIScalar>(
 
                 fock_acc += contrib;
             } else if mi == 0 {
-                // Singular cofactors still contribute to the ordinary overlap determinant.
+                // Preserve the overlap determinant if the adjugate evaluation fails.
                 overlap_acc += det_dynamic(scratch.det_mix.as_slice(), l).unwrap_or(zero);
             }
         });
