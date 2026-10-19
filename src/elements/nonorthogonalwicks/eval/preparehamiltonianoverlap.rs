@@ -1769,7 +1769,7 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
 /// - `x_ex`: Full bra excitation.
 /// - `w_ex`: Full ket excitation.
 /// - `excitation_phase`: Product of the alpha- and beta-spin excitation phases.
-/// - `_enuc`: Unused nuclear repulsion energy retained for the common interface.
+/// - `enuc`: Nuclear repulsion energy, added as `E_{\mathrm{nuc}} S`.
 /// - `scratch`: Reusable spin-resolved Wick workspace.
 /// - `tol`: Numerical tolerance used by generic determinant and adjugate evaluation.
 /// # Returns:
@@ -1780,7 +1780,7 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
     x_ex: &Excitation,
     w_ex: &Excitation,
     excitation_phase: f64,
-    _enuc: f64,
+    enuc: f64,
     scratch: &mut WickScratchSpin<T>,
     tol: f64,
 ) -> (T, T) {
@@ -2197,8 +2197,10 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
                 * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod));
             let pref = <T as From<f64>>::from(excitation_phase) * ref_pref;
 
+            // As in the `m = 0` paths, the nuclear repulsion contributes `E_{\mathrm{nuc}} S`.
             let s = pref * sa * sb;
-            let h = pref * (h1a * sb + h1b * sa + half * h2aa * sb + half * h2bb * sa + h2ab);
+            let h = pref * (h1a * sb + h1b * sa + half * h2aa * sb + half * h2bb * sa + h2ab)
+                + <T as From<f64>>::from(enuc) * s;
 
             (h, s)
         }
