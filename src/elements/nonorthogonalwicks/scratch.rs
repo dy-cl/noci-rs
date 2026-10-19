@@ -481,7 +481,7 @@ impl<T: NOCIScalar> WickScratch<T> {
         self.v1.ensure(l);
         self.dv1.ensure(l);
         self.invs.ensure(l);
-        self.lu.ensure(6, 6);
+        self.lu.ensure(l, l);
 
         let lm1 = l.saturating_sub(1);
         self.dv1m.ensure(lm1);
@@ -520,7 +520,7 @@ impl<T: NOCIScalar> WickScratch<T> {
         self.dv1a.ensure(la);
         self.iislicea.ensure(la, la);
         self.invsla.ensure(la);
-        self.lua.ensure(6, 6);
+        self.lua.ensure(la, la);
 
         let lam1 = la.saturating_sub(1);
         self.deta_mix_minor.ensure(lam1, lam1);
@@ -535,7 +535,7 @@ impl<T: NOCIScalar> WickScratch<T> {
         self.dv1b.ensure(lb);
         self.iisliceb.ensure(lb, lb);
         self.invslb.ensure(lb);
-        self.lub.ensure(6, 6);
+        self.lub.ensure(lb, lb);
 
         let lbm1 = lb.saturating_sub(1);
         self.detb_mix_minor.ensure(lbm1, lbm1);
