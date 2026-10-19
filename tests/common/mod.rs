@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 // External crate imports.
+use ndarray::Array2;
 use noci_rs::AoData;
 use noci_rs::input::{Input, load_input};
 use noci_rs::integrals::generate_ao_data;
@@ -68,4 +69,34 @@ pub fn assert_close(
         err < tol,
         "{label}: expected {y}, got {x}, |Δ|: {err}, tol: {tol}"
     );
+}
+
+/// Assert that Hamiltonian and overlap matrices from the extended nonorthogonal Wick's theorem
+/// agree element by element with those from the naive generalised Slater-Condon rules.
+/// # Arguments:
+/// - `wicks`: Hamiltonian and overlap matrices from Wick's theorem.
+/// - `naive`: Hamiltonian and overlap matrices from the naive rules.
+/// - `tol`: Maximum allowed absolute error.
+/// - `label`: Description printed if assertion fails.
+// Only the Wick agreement tests compare matrix elements.
+#[allow(dead_code)]
+pub fn assert_wicks_naive_agree(
+    wicks: (&Array2<f64>, &Array2<f64>),
+    naive: (&Array2<f64>, &Array2<f64>),
+    tol: f64,
+    label: &str,
+) {
+    let (h_wicks, s_wicks) = wicks;
+    let (h_naive, s_naive) = naive;
+    assert_eq!(h_wicks.shape(), h_naive.shape(), "{label}: H shapes differ");
+    assert_eq!(s_wicks.shape(), s_naive.shape(), "{label}: S shapes differ");
+    for ((i, j), &h) in h_wicks.indexed_iter() {
+        assert_close(h, h_naive[(i, j)], tol, &format!("{label} H[{i}, {j}]"));
+        assert_close(
+            s_wicks[(i, j)],
+            s_naive[(i, j)],
+            tol,
+            &format!("{label} S[{i}, {j}]"),
+        );
+    }
 }

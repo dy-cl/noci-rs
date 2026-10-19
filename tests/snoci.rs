@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serial_test::serial;
 
 // Parent/sibling imports.
-use self::common::{assert_close, load_test, mpi_universe};
+use self::common::{assert_close, assert_wicks_naive_agree, load_test, mpi_universe};
 
 /// Expected exact energies for a selected NOCI fixture.
 #[derive(Deserialize)]
@@ -869,21 +869,10 @@ fn snoci_h4_sto_3g_1_5_ang_double_excitation_pair_wicks() {
             assert!(s[(i, j)].is_finite());
             assert_close(h[(i, j)], h[(j, i)], 1e-10, &format!("H4 H {i},{j}"));
             assert_close(s[(i, j)], s[(j, i)], 1e-10, &format!("H4 S {i},{j}"));
-            assert_close(
-                h[(i, j)],
-                h_wicks[(i, j)],
-                1e-9,
-                &format!("H4 rank-two H Wicks {i},{j}"),
-            );
-            assert_close(
-                s[(i, j)],
-                s_wicks[(i, j)],
-                1e-9,
-                &format!("H4 rank-two S Wicks {i},{j}"),
-            );
         }
         assert_close(s[(i, i)], 1.0, 1e-10, &format!("H4 S diagonal {i}"));
     }
+    assert_wicks_naive_agree((&h_wicks, &s_wicks), (&h, &s), 1e-9, "H4 rank-two Wicks");
     assert!(h[(0, 1)].abs() > 1e-12 || s[(0, 1)].abs() > 1e-12);
 }
 
