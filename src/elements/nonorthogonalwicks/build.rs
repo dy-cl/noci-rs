@@ -346,6 +346,11 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
             .enumerate()
             .filter(|&(_, branch)| branch.0 + branch.1 + branch.2 + branch.3 <= m)
             .collect();
+        // The exchange transformation pairs the two row-side `\mathcal C` and the two column-side
+        // `\mathcal A` factors, so pass conjugated copies to conjugate both `\mathcal C` factors
+        // and neither `\mathcal A` factor.
+        let cx_conj = [cx[0].mapv(|z| z.conj()), cx[1].mapv(|z| z.conj())];
+        let xc_conj = [xc[0].mapv(|z| z.conj()), xc[1].mapv(|z| z.conj())];
         let j: Vec<(usize, Array4<T>)> = combos
             .into_par_iter()
             .map_init(
@@ -367,8 +372,8 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
                     T::eri_ao2mo_hermitian_into(
                         eri,
                         &cx[mi],
-                        &cx[mk],
-                        &xc[mj],
+                        &cx_conj[mk],
+                        &xc_conj[mj],
                         &xc[ml],
                         exch.view_mut(),
                         scratch,

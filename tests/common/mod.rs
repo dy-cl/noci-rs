@@ -6,9 +6,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 // External crate imports.
 use ndarray::Array2;
-use noci_rs::AoData;
 use noci_rs::input::{Input, load_input};
 use noci_rs::integrals::generate_ao_data;
+use noci_rs::{AoData, NOCIScalar};
 use serde::de::DeserializeOwned;
 
 /// Return name of a directory containing a test fixture.
@@ -80,9 +80,9 @@ pub fn assert_close(
 /// - `label`: Description printed if assertion fails.
 // Only the Wick agreement tests compare matrix elements.
 #[allow(dead_code)]
-pub fn assert_wicks_naive_agree(
-    wicks: (&Array2<f64>, &Array2<f64>),
-    naive: (&Array2<f64>, &Array2<f64>),
+pub fn assert_wicks_naive_agree<T: NOCIScalar>(
+    wicks: (&Array2<T>, &Array2<T>),
+    naive: (&Array2<T>, &Array2<T>),
     tol: f64,
     label: &str,
 ) {
@@ -91,12 +91,16 @@ pub fn assert_wicks_naive_agree(
     assert_eq!(h_wicks.shape(), h_naive.shape(), "{label}: H shapes differ");
     assert_eq!(s_wicks.shape(), s_naive.shape(), "{label}: S shapes differ");
     for ((i, j), &h) in h_wicks.indexed_iter() {
-        assert_close(h, h_naive[(i, j)], tol, &format!("{label} H[{i}, {j}]"));
-        assert_close(
-            s_wicks[(i, j)],
-            s_naive[(i, j)],
-            tol,
-            &format!("{label} S[{i}, {j}]"),
+        let s = s_wicks[(i, j)];
+        let (hn, sn) = (h_naive[(i, j)], s_naive[(i, j)]);
+        let (dh, ds) = ((h - hn).abs(), (s - sn).abs());
+        assert!(
+            dh < tol,
+            "{label} H[{i}, {j}]: expected {hn}, got {h}, |Δ|: {dh}, tol: {tol}"
+        );
+        assert!(
+            ds < tol,
+            "{label} S[{i}, {j}]: expected {sn}, got {s}, |Δ|: {ds}, tol: {tol}"
         );
     }
 }

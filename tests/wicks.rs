@@ -5,11 +5,13 @@ use std::sync::Arc;
 
 // External crate imports.
 use ndarray::Array2;
+use noci_rs::HSCFState;
 use noci_rs::basis::generate_reference_noci_basis;
 use noci_rs::determinant::{NOCIIndex, NOCISpace};
 use noci_rs::elements::{NOCIData, build_mo_cache, build_wicks_shared};
 use noci_rs::noci::build_noci_hs;
 use noci_rs::scf::occ_first;
+use num_complex::Complex64;
 use serde::Deserialize;
 use serial_test::serial;
 
@@ -52,6 +54,34 @@ fn rotate_pairs(
             c.column_mut(vir)
                 .assign(&(&phi_vir * theta.cos() - &phi_occ * theta.sin()));
         }
+    }
+    c
+}
+
+/// Rotate the occupied-virtual orbital pairs `(\mathrm{HOMO}-j, \mathrm{LUMO}+j)` of one spin by
+/// the complex unitary rotation with angle `\theta_j` and phase `\phi_j`, which keeps the
+/// orbitals Hermitian-orthonormal and makes them genuinely complex.
+/// # Arguments:
+/// - `c`: MO coefficients with occupied orbitals first.
+/// - `nocc`: Number of occupied orbitals.
+/// - `rotations`: Angle `\theta_j` and phase `\phi_j` of each rotated pair.
+/// # Returns
+/// - `Array2<Complex64>`: Rotated MO coefficients.
+fn rotate_pairs_complex(
+    c: &Array2<Complex64>,
+    nocc: usize,
+    rotations: &[(f64, f64)],
+) -> Array2<Complex64> {
+    let mut c = c.clone();
+    for (j, &(theta, phi)) in rotations.iter().enumerate() {
+        let (occ, vir) = (nocc - 1 - j, nocc + j);
+        let phi_occ = c.column(occ).to_owned();
+        let phi_vir = c.column(vir).to_owned();
+        let cos = Complex64::new(theta.cos(), 0.0);
+        let sin = Complex64::from_polar(theta.sin(), phi);
+        c.column_mut(occ).assign(&(&phi_occ * cos + &phi_vir * sin));
+        c.column_mut(vir)
+            .assign(&(&phi_vir * cos - &phi_occ * sin.conj()));
     }
     c
 }
@@ -275,5 +305,68 @@ fn wicks_beh2_sto_3g_1_3_ang_near_zero_pairs_both_spins_agree() {
         (&h_naive, &s_naive),
         1e-10,
         "BeH2 near-zero alpha and beta pairs Wicks agreement",
+    );
+}
+
+/// Test that the BeH2 STO-3G 1.3 Angstrom fixture gives Wick matrix elements that agree with
+/// the naive elements between two complex references, both obtained by complex rotations of
+/// the RHF orbitals. Single and double excitations give same-spin contraction determinants with
+/// `L \ge 2`, which use the exchange part of the same-spin `\mathcal J` intermediate.
+/// # Panics
+/// - If the SCF energy differs from the known good value outside tolerance.
+/// - If any Wick H or S element differs from the naive element outside tolerance.
+#[test]
+#[serial]
+fn wicks_beh2_sto_3g_1_3_ang_complex_references_agree() {
+    let (mut input, ao, expected): (_, _, ExpectedWicks) = load_test("WICKS_BeH2_STO-3G_1_3_C1");
+    let basis = generate_reference_noci_basis(&ao, &mut input, None, None);
+    let rhf = HSCFState::from_real(&occ_first(&basis.states[0]));
+    assert_close(rhf.e.re, expected.scf_energies[0], 1e-8, "BeH2 SCF energy");
+    let na = rhf.oa.count_ones() as usize;
+    let nb = rhf.ob.count_ones() as usize;
+
+    // Rotate the RHF orbitals into two complex references.
+    let rotate = |label: &str, rot_a: &[(f64, f64)], rot_b: &[(f64, f64)]| {
+        let mut st = rhf.clone();
+        st.ca = Arc::new(rotate_pairs_complex(&rhf.ca, na, rot_a));
+        st.cb = Arc::new(rotate_pairs_complex(&rhf.cb, nb, rot_b));
+        st.label = label.to_string();
+        st
+    };
+    let x = rotate("x", &[(0.3, 0.7), (0.2, -1.1)], &[(0.25, 0.4)]);
+    let w = rotate("w", &[(0.9, 1.3), (0.4, 0.5)], &[(0.7, -0.6), (0.3, 2.5)]);
+
+    // Build the excited space and the intermediates for every ordered reference pair.
+    let reference_space = NOCISpace::from_scf(&[x, w]);
+    let sources = (0..reference_space.len())
+        .map(NOCIIndex)
+        .collect::<Vec<_>>();
+    let space = reference_space.excited_from(&sources, &input, true);
+    let mocache = build_mo_cache(&ao, space.parents(), input.scf.d_tol);
+    let (_mpi_lock, universe) = mpi_universe();
+    let world = universe.world();
+    let wicks = build_wicks_shared::<Complex64>(&world, &ao, space.parents(), 1e-12, &input);
+    let select = |parent: usize| -> Vec<NOCIIndex> {
+        (0..space.len())
+            .map(NOCIIndex)
+            .filter(|&i| space.state(i).parent == parent)
+            .collect()
+    };
+    let left = select(0);
+    let right = select(1);
+
+    // Evaluate the cross block with Wick's theorem and with the naive rules.
+    input.wicks.enabled = true;
+    let data = NOCIData::new(&ao, &space, &input, 1e-12, Some(wicks.view())).withmocache(&mocache);
+    let (h_wicks, s_wicks, _) = build_noci_hs(&data, &left, &right, false);
+    input.wicks.enabled = false;
+    let data = NOCIData::new(&ao, &space, &input, 1e-12, None).withmocache(&mocache);
+    let (h_naive, s_naive, _) = build_noci_hs(&data, &left, &right, false);
+
+    assert_wicks_naive_agree(
+        (&h_wicks, &s_wicks),
+        (&h_naive, &s_naive),
+        1e-10,
+        "BeH2 complex references Wicks agreement",
     );
 }
