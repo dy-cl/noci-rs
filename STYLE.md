@@ -90,6 +90,11 @@ use super::types::{FockMOCache, MOCache, NOCIScalar};
 In `mod.rs` files, keep the module-header order above. Private imports used only by the
 `mod.rs` implementation come after submodules and re-exports.
 
+## Rust Constants
+
+Name constants as one upper-case word without underscores, joining the parts of a compound name,
+for example `MAXEXCIT`, `HAMRADIX` and `SINGULARTOL`.
+
 ## References
 
 Place literature references at the narrowest scope that covers their use:
