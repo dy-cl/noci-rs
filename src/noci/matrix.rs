@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 // External crate imports.
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Axis};
 use rayon::prelude::*;
 
 // Crate-root imports.
@@ -158,39 +158,32 @@ fn calculate_matrix_elements_dense<T: NOCIScalar>(
         runs[run_of[gp]].1.push(j);
     }
 
-    // Evaluate each row's upper-triangle and diagonal, or full, columns.
+    // Evaluate each row's upper-triangle and diagonal, or full, columns into a reused row buffer
+    // and copy them into H and S. Every requested column belongs to one run, so the buffer needs
+    // no clearing between rows.
     let use_wicks_scratch = data.input.wicks.enabled;
-    let rows: Vec<Vec<(T, T)>> = (0..nl)
-        .into_par_iter()
-        .map_init(
-            || use_wicks_scratch.then(WickScratchSpin::<T>::new),
-            |scratch, i| {
-                let first = if symmetric { i } else { 0 };
-                let mut row = vec![zero; nr];
-                calculate_hs_pair_dense(
-                    data,
-                    left[i],
-                    right,
-                    &runs,
-                    first,
-                    scratch.as_mut(),
-                    &mut row,
-                );
-                row
-            },
-        )
-        .collect();
-
-    // Copy the rows into H and S.
     let mut h = Array2::<T>::zeros((nl, nr));
     let mut s = Array2::<T>::zeros((nl, nr));
-    for (i, row) in rows.iter().enumerate() {
-        let first = if symmetric { i } else { 0 };
-        for (j, &(hij, sij)) in row.iter().enumerate().skip(first) {
-            h[(i, j)] = hij;
-            s[(i, j)] = sij;
-        }
-    }
+    h.axis_iter_mut(Axis(0))
+        .into_par_iter()
+        .zip(s.axis_iter_mut(Axis(0)).into_par_iter())
+        .enumerate()
+        .for_each_init(
+            || {
+                (
+                    use_wicks_scratch.then(WickScratchSpin::<T>::new),
+                    vec![zero; nr],
+                )
+            },
+            |(scratch, row), (i, (mut hrow, mut srow))| {
+                let first = if symmetric { i } else { 0 };
+                calculate_hs_pair_dense(data, left[i], right, &runs, first, scratch.as_mut(), row);
+                for j in first..nr {
+                    hrow[j] = row[j].0;
+                    srow[j] = row[j].1;
+                }
+            },
+        );
 
     let dt = t0.elapsed();
 
