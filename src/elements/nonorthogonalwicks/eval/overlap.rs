@@ -91,6 +91,13 @@ pub(crate) fn xw_overlap_prepared<T: NOCIScalar>(
     g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
 ) -> T {
+    // A spin sector with near-zero orbital pairs is the sum of its branches.
+    if w.nbranches() > 1 {
+        return (0..w.nbranches()).fold(<T as From<f64>>::from(0.0), |acc, k| {
+            acc + xw_overlap_prepared(&w.branch(k), l_ex, g_ex, scratch)
+        });
+    }
+
     // Determine the contraction-determinant dimension `L = L_x + L_w`.
     let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
 
@@ -270,6 +277,28 @@ pub(crate) fn xw_overlap_orthogonal_prepared_batched(
         out,
     } = batch;
 
+    // A spin sector with near-zero orbital pairs is the sum of its branches.
+    if w.nbranches() > 1 {
+        out.fill(0.0);
+        let mut part = vec![0.0; out.len()];
+        for k in 0..w.nbranches() {
+            let batch = SameSpinOrthogonalOverlapBatch {
+                basis,
+                target,
+                sources,
+                source_excitations,
+                target_left,
+                alpha,
+                out: &mut part,
+            };
+            xw_overlap_orthogonal_prepared_batched(&w.branch(k), batch, scratch);
+            for (value, branch) in out.iter_mut().zip(&part) {
+                *value += *branch;
+            }
+        }
+        return;
+    }
+
     // Orthogonal-source batches still evaluate the nonorthogonal reference-pair factor
     // `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`; only source metadata is transient.
     #[cfg(target_arch = "x86_64")]
@@ -331,6 +360,28 @@ pub(crate) fn xw_overlap_prepared_batched<T: NOCIScalar>(
         alpha,
         out,
     } = batch;
+
+    // A spin sector with near-zero orbital pairs is the sum of its branches.
+    if w.nbranches() > 1 {
+        let zero = <T as From<f64>>::from(0.0);
+        out.fill(zero);
+        let mut part = vec![zero; out.len()];
+        for k in 0..w.nbranches() {
+            let batch = SameSpinOverlapBatch {
+                basis,
+                target,
+                sources,
+                target_left,
+                alpha,
+                out: &mut part,
+            };
+            xw_overlap_prepared_batched(&w.branch(k), batch, scratch);
+            for (value, branch) in out.iter_mut().zip(&part) {
+                *value += *branch;
+            }
+        }
+        return;
+    }
 
     // The `m = 0` path may use fixed-width kernels; every other case retains the scalar
     // prepared evaluator so arbitrary excitation rank and zero-overlap distributions remain valid.

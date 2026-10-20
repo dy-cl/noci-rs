@@ -13,8 +13,7 @@ use crate::{ExcitationSpin, NOCIScalar};
 // Parent/sibling imports.
 use super::super::rdm::{RDM1, RDM2, RDM3, RDM4, resolve_rdm_determinant};
 use super::{
-    SameSpinView, WickScratch, WickScratchSpin, prepare_same, xw_overlap,
-    xw_rdmk_same_prepared_batched,
+    SameSpinView, WickScratch, WickScratchSpin, xw_overlap_prepared, xw_rdmk_same_prepared_batched,
 };
 
 /// Largest number of transition-density requests evaluated in one batch.
@@ -195,13 +194,11 @@ pub(in crate::elements) fn rdm1_pair_wicks<T: NOCIScalar>(
     let mut sb = <T as From<f64>>::from(0.0);
 
     if dosa {
-        prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-        sa = xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+        sa = xw_overlap_prepared(&w.aa, ex_la, ex_ga, &mut scratch.aa);
     }
 
     if dosb {
-        prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-        sb = xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+        sb = xw_overlap_prepared(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
     }
 
     // Allocate the AO-basis spin-free tensor and its complete rank-one request batch.
@@ -304,13 +301,11 @@ pub(in crate::elements) fn rdm2_pair_wicks<T: NOCIScalar>(
     let mut sb = <T as From<f64>>::from(0.0);
 
     if dosa {
-        prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-        sa = xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+        sa = xw_overlap_prepared(&w.aa, ex_la, ex_ga, &mut scratch.aa);
     }
 
     if dosb {
-        prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-        sb = xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+        sb = xw_overlap_prepared(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
     }
 
     // Allocate the spin-free transition tensor and retain the phased pair overlap.
@@ -496,28 +491,14 @@ pub(in crate::elements) fn rdm3_pair_wicks<T: NOCIScalar>(
     let wicks = data.wicks.unwrap();
     let w = wicks.pair(ldet.parent, gdet.parent);
 
-    // Prepare the alpha and beta contraction determinants for repeated RDM queries.
-    prepare_same(
-        &w.aa,
-        &ldet.excitation.alpha,
-        &gdet.excitation.alpha,
-        &mut scratch.aa,
-    );
-    prepare_same(
-        &w.bb,
-        &ldet.excitation.beta,
-        &gdet.excitation.beta,
-        &mut scratch.bb,
-    );
-
     // Evaluate spin-sector overlaps and the determinant excitation phase.
-    let sa = xw_overlap(
+    let sa = xw_overlap_prepared(
         &w.aa,
         &ldet.excitation.alpha,
         &gdet.excitation.alpha,
         &mut scratch.aa,
     );
-    let sb = xw_overlap(
+    let sb = xw_overlap_prepared(
         &w.bb,
         &ldet.excitation.beta,
         &gdet.excitation.beta,
@@ -611,28 +592,14 @@ pub(in crate::elements) fn rdm4_pair_wicks<T: NOCIScalar>(
     let wicks = data.wicks.unwrap();
     let w = wicks.pair(ldet.parent, gdet.parent);
 
-    // Prepare both spin contraction determinants for repeated rank-four queries.
-    prepare_same(
-        &w.aa,
-        &ldet.excitation.alpha,
-        &gdet.excitation.alpha,
-        &mut scratch.aa,
-    );
-    prepare_same(
-        &w.bb,
-        &ldet.excitation.beta,
-        &gdet.excitation.beta,
-        &mut scratch.bb,
-    );
-
     // Evaluate spin-sector overlaps and the determinant excitation phase.
-    let sa = xw_overlap(
+    let sa = xw_overlap_prepared(
         &w.aa,
         &ldet.excitation.alpha,
         &gdet.excitation.alpha,
         &mut scratch.aa,
     );
-    let sb = xw_overlap(
+    let sb = xw_overlap_prepared(
         &w.bb,
         &ldet.excitation.beta,
         &gdet.excitation.beta,

@@ -123,6 +123,38 @@ pub(crate) fn xw_f_overlap_prepared_batched<T: NOCIScalar>(
         fock,
     } = batch;
 
+    // A spin sector with near-zero orbital pairs is the sum of its branches.
+    if w.nbranches() > 1 {
+        let zero = <T as From<f64>>::from(0.0);
+        overlap.fill(zero);
+        fock.fill(zero);
+        let mut part_overlap = vec![zero; overlap.len()];
+        let mut part_fock = vec![zero; fock.len()];
+        for k in 0..w.nbranches() {
+            let batch = SameSpinOneBodyBatch {
+                basis,
+                target,
+                sources,
+                source_order,
+                source_groups,
+                source_caches,
+                source_phases,
+                target_left,
+                alpha,
+                overlap: &mut part_overlap,
+                fock: &mut part_fock,
+            };
+            xw_f_overlap_prepared_batched(&w.branch(k), batch, scratch, tol);
+            for (value, branch) in overlap.iter_mut().zip(&part_overlap) {
+                *value += *branch;
+            }
+            for (value, branch) in fock.iter_mut().zip(&part_fock) {
+                *value += *branch;
+            }
+        }
+        return;
+    }
+
     // Each request evaluates overlap and one-body factors from augmented determinant
     // `\mathbf D_f^{(pq)}`. Grouped `m = 0` requests may use SIMD; unsupported requests use the
     // scalar Laplace-expansion path below, preserving output order.
@@ -700,6 +732,15 @@ pub(crate) fn xw_f_overlap_prepared<T: NOCIScalar>(
     tol: f64,
 ) -> (T, T) {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_f_overlap, {
+        // A spin sector with near-zero orbital pairs is the sum of its branches.
+        if w.nbranches() > 1 {
+            let zero = <T as From<f64>>::from(0.0);
+            return (0..w.nbranches()).fold((zero, zero), |(s, f), k| {
+                let (sk, fk) = xw_f_overlap_prepared(&w.branch(k), x_ex, w_ex, scratch, tol);
+                (s + sk, f + fk)
+            });
+        }
+
         // With `m = 0`, one determinant and its cofactors suffice. Nonzero nullity requires the
         // constrained sum over binary fundamental-contraction assignments.
         if w.m == 0 {

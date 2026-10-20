@@ -13,6 +13,7 @@ use ndarray::Array2;
 use crate::AoData;
 use crate::NOCIScalar;
 use crate::determinant::ParentDeterminant;
+use crate::elements::nonorthogonalwicks::types::{PairBranches, PairOffset};
 use crate::elements::nonorthogonalwicks::{
     DiffSpinBuild, DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinBuild, SameSpinMeta,
     WICKS_DISK_CACHE_VERSION, WicksDiskMeta, WicksRma, WicksShared, WicksView,
@@ -26,69 +27,96 @@ use crate::input::Spin;
 use crate::mpiutils::Sharedffi;
 use crate::mpiutils::broadcast;
 
-/// Build all Wick's intermediates and metadata for one reference pair.
+/// Build all Wick's intermediates and metadata for one reference pair and write them into the
+/// tensor slab. Every near-zero corner of each spin sector is built once, and every combination
+/// of alpha- and beta-spin corners receives its own different-spin intermediates and metadata.
 /// # Arguments:
+/// - `slab`: Contiguous tensor storage.
+/// - `meta`: Metadata of every ordinary pair followed by that of the branch combinations.
+/// - `off`: Offset tables of every ordinary pair followed by those of the branch combinations.
+/// - `branches`: Location of the branch combinations of this pair.
+/// - `idx`: Flattened index of the ordered reference pair.
 /// - `ao`: Contains AO integrals and other system data.
 /// - `ri`: Left/reference state.
 /// - `rj`: Right/reference state.
 /// - `tol`: Tolerance for a number being zero.
 /// # Returns
-/// - `(SameSpinBuild<T>, SameSpinBuild<T>, DiffSpinBuild<T>, PairMeta<T>)`: Alpha-alpha, beta-beta, and alpha-beta Wick's intermediates together with the corresponding per-pair metadata.
-fn build_wicks_pair<T: NOCIScalar>(
+/// - `()`: Writes the intermediates of every branch combination into `slab` and `meta`.
+#[allow(clippy::too_many_arguments)]
+fn build_wicks_pair_into<T: NOCIScalar>(
+    slab: &mut [T],
+    meta: &mut [PairMeta<T>],
+    off: &[PairOffset],
+    branches: &PairBranches,
+    idx: usize,
     ao: &AoData,
     ri: &ParentDeterminant<T>,
     rj: &ParentDeterminant<T>,
     tol: f64,
-) -> (
-    SameSpinBuild<T>,
-    SameSpinBuild<T>,
-    DiffSpinBuild<T>,
-    PairMeta<T>,
 ) {
-    // Build `\alpha`, `\beta`, and mixed-spin contractions for one ordered parent
-    // pair; the evaluator reads them through the paired metadata below.
-    let aa = SameSpinBuild::new(ao, rj, ri, Spin::Alpha, tol);
-    let bb = SameSpinBuild::new(ao, rj, ri, Spin::Beta, tol);
-    let ab = DiffSpinBuild::new(ao, rj, ri, tol);
+    // Build `\alpha` and `\beta` contractions once per branch of each spin sector.
+    let aa: Vec<_> = (0..branches.na)
+        .map(|ia| SameSpinBuild::new(ao, rj, ri, Spin::Alpha, tol, ia))
+        .collect();
+    let bb: Vec<_> = (0..branches.nb)
+        .map(|ib| SameSpinBuild::new(ao, rj, ri, Spin::Beta, tol, ib))
+        .collect();
+    for (ia, build) in aa.iter().enumerate() {
+        write_same_spin(slab, &off[branches.index(idx, ia, 0)].aa, build);
+    }
+    for (ib, build) in bb.iter().enumerate() {
+        write_same_spin(slab, &off[branches.index(idx, 0, ib)].bb, build);
+    }
 
-    let meta = PairMeta {
-        aa: SameSpinMeta {
-            tilde_s_prod: aa.tilde_s_prod,
-            phase: aa.phase,
-            m: aa.m,
-            nmo: aa.nmo,
-            nocc: ri.oa.count_ones() as usize,
-            f0h: aa.f0h,
-            f0f: aa.f0f,
-            v0: aa.v0,
-        },
-        bb: SameSpinMeta {
-            tilde_s_prod: bb.tilde_s_prod,
-            phase: bb.phase,
-            m: bb.m,
-            nmo: bb.nmo,
-            nocc: ri.ob.count_ones() as usize,
-            f0h: bb.f0h,
-            f0f: bb.f0f,
-            v0: bb.v0,
-        },
-        ab: DiffSpinMeta {
-            nmo: ab.vab[0][0][0].nrows(),
-            vab0: ab.vab0,
-            vba0: ab.vba0,
-        },
-    };
+    // Build the mixed-spin contractions of every branch combination; the evaluator reads them
+    // through the paired metadata below.
+    for (ia, aa) in aa.iter().enumerate() {
+        for (ib, bb) in bb.iter().enumerate() {
+            let k = branches.index(idx, ia, ib);
+            let ab = DiffSpinBuild::new(ao, rj, ri, tol, ia, ib);
+            write_diff_spin(slab, &off[k].ab, &ab);
 
-    (aa, bb, ab, meta)
+            // The precombined one-column intermediates exist only for all-zero pairs.
+            write_hcol0(slab, &off[k], aa.nmo);
+
+            meta[k] = PairMeta {
+                aa: SameSpinMeta {
+                    tilde_s_prod: aa.tilde_s_prod,
+                    phase: aa.phase,
+                    m: aa.m,
+                    nmo: aa.nmo,
+                    nocc: ri.oa.count_ones() as usize,
+                    f0h: aa.f0h,
+                    f0f: aa.f0f,
+                    v0: aa.v0,
+                },
+                bb: SameSpinMeta {
+                    tilde_s_prod: bb.tilde_s_prod,
+                    phase: bb.phase,
+                    m: bb.m,
+                    nmo: bb.nmo,
+                    nocc: ri.ob.count_ones() as usize,
+                    f0h: bb.f0h,
+                    f0f: bb.f0f,
+                    v0: bb.v0,
+                },
+                ab: DiffSpinMeta {
+                    nmo: ab.vab[0][0][0].nrows(),
+                    vab0: ab.vab0,
+                    vba0: ab.vba0,
+                },
+            };
+        }
+    }
 }
 
-/// Determine pair-specific alpha and beta zero-overlap counts needed to allocate only reachable rank-four intermediates.
+/// Determine pair-specific alpha and beta zero-overlap and near-zero counts needed to allocate only reachable rank-four intermediates.
 /// # Arguments:
 /// - `ao`: Contains AO integrals and overlap matrix.
 /// - `refs`: Reference determinants in the flattened pair ordering.
 /// - `tol`: Tolerance for whether a singular value is considered zero.
 /// # Returns
-/// - `Vec<PairZeroCounts>`: Pair-adaptive zero counts ordered by `idx = i * nref + j`.
+/// - `Vec<PairZeroCounts>`: Pair-adaptive zero-overlap and near-zero counts ordered by `idx = i * nref + j`.
 fn plan_wicks_pairs<T: NOCIScalar>(
     ao: &AoData,
     refs: &[ParentDeterminant<T>],
@@ -99,7 +127,7 @@ fn plan_wicks_pairs<T: NOCIScalar>(
 
     for ri in refs {
         for rj in refs {
-            let ma = SameSpinBuild::count_zero_overlap_pairs(
+            let (ma, na) = SameSpinBuild::count_zero_overlap_pairs(
                 &ao.s,
                 rj.ca.as_ref(),
                 rj.oa,
@@ -107,7 +135,7 @@ fn plan_wicks_pairs<T: NOCIScalar>(
                 ri.oa,
                 tol,
             );
-            let mb = SameSpinBuild::count_zero_overlap_pairs(
+            let (mb, nb) = SameSpinBuild::count_zero_overlap_pairs(
                 &ao.s,
                 rj.cb.as_ref(),
                 rj.ob,
@@ -115,7 +143,7 @@ fn plan_wicks_pairs<T: NOCIScalar>(
                 ri.ob,
                 tol,
             );
-            plans.push(PairZeroCounts { ma, mb });
+            plans.push(PairZeroCounts { ma, mb, na, nb });
         }
     }
 
@@ -145,7 +173,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
     let irank = world.rank();
 
     let plans = plan_wicks_pairs(ao, parents, tol);
-    let (offset, tensor_len) = assign_offsets(&plans, nmo, ao.n);
+    let (offset, branches, tensor_len) = assign_offsets(&plans, nmo, ao.n);
     drop(plans);
     let nbytes = tensor_len * std::mem::size_of::<T>();
 
@@ -165,7 +193,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
             let shared_rank = shared.shared_rank;
 
             let tensor_ptr = shared.base as *mut T;
-            let mut meta = vec![PairMeta::<T>::default(); nref * nref];
+            let mut meta = vec![PairMeta::<T>::default(); offset.len()];
 
             if shared_rank == 0 {
                 // Build every ordered parent pair directly into its assigned slab slices.
@@ -184,13 +212,17 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                         );
 
                         let idx = i * nref + j;
-                        let (aa, bb, ab, pair_meta) = build_wicks_pair(ao, ri, rj, tol);
-
-                        meta[idx] = pair_meta;
-                        write_same_spin(tensor, &offset[idx].aa, &aa);
-                        write_same_spin(tensor, &offset[idx].bb, &bb);
-                        write_diff_spin(tensor, &offset[idx].ab, &ab);
-                        write_hcol0(tensor, &offset[idx], nmo);
+                        build_wicks_pair_into(
+                            tensor,
+                            &mut meta,
+                            &offset,
+                            &branches[idx],
+                            idx,
+                            ao,
+                            ri,
+                            rj,
+                            tol,
+                        );
                     }
                 }
             }
@@ -213,6 +245,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                 nref,
                 off: offset,
                 meta,
+                branches,
             };
 
             WicksShared::from_shared(rma, view)
@@ -244,8 +277,15 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                     cache_dir
                 );
 
-                let mut wicks =
-                    create_wicks_mmap::<T>(&slab_path, nref, offset.clone(), tensor_len).unwrap();
+                let mut wicks = create_wicks_mmap::<T>(
+                    &slab_path,
+                    nref,
+                    offset.clone(),
+                    branches.clone(),
+                    tensor_len,
+                )
+                .unwrap();
+                let mut meta = vec![PairMeta::<T>::default(); offset.len()];
 
                 for i in 0..nref {
                     let ri = &parents[i];
@@ -258,17 +298,20 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                         );
 
                         let idx = i * nref + j;
-                        let (aa, bb, ab, pair_meta) = build_wicks_pair(ao, ri, rj, tol);
-
-                        wicks.view_mut().meta[idx] = pair_meta;
-
-                        let slab = wicks.slab_mut();
-                        write_same_spin(slab, &offset[idx].aa, &aa);
-                        write_same_spin(slab, &offset[idx].bb, &bb);
-                        write_diff_spin(slab, &offset[idx].ab, &ab);
-                        write_hcol0(slab, &offset[idx], nmo);
+                        build_wicks_pair_into(
+                            wicks.slab_mut(),
+                            &mut meta,
+                            &offset,
+                            &branches[idx],
+                            idx,
+                            ao,
+                            ri,
+                            rj,
+                            tol,
+                        );
                     }
                 }
+                wicks.view_mut().meta = meta;
 
                 // Flush numerical data before publishing the matching serialized layout metadata.
                 wicks.flush_mmap().unwrap();
@@ -280,6 +323,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                     slab_len: view.slab_len,
                     off: view.off.clone(),
                     meta: view.meta.clone(),
+                    branches: view.branches.clone(),
                 };
                 std::fs::write(&meta_path, bincode::serialize(&disk_meta).unwrap()).unwrap();
             }
@@ -312,36 +356,41 @@ pub(crate) fn update_wicks_fock<T: NOCIScalar>(
 ) {
     let nref = parents.len();
 
-    // Refresh only Fock-dependent scalars and rank-two contractions for each
-    // ordered parent pair; overlap and Coulomb intermediates remain reusable.
+    // Refresh only Fock-dependent scalars and rank-two contractions for every branch
+    // combination of each ordered parent pair; overlap and Coulomb intermediates remain reusable.
     for (i, ri) in parents.iter().enumerate().take(nref) {
         for (j, rj) in parents.iter().enumerate().take(nref) {
             let idx = i * nref + j;
+            let branches = wicks.view().branches[idx];
 
-            let (off_aa, off_bb) = {
-                let view = wicks.view();
-                let off_aa = view.off[idx].aa;
-                let off_bb = view.off[idx].bb;
+            for ia in 0..branches.na {
+                for ib in 0..branches.nb {
+                    let k = branches.index(idx, ia, ib);
+                    let (off_aa, off_bb) = {
+                        let view = wicks.view();
+                        (view.off[k].aa, view.off[k].bb)
+                    };
 
-                (off_aa, off_bb)
-            };
+                    let (f0fa, ffa) =
+                        SameSpinBuild::construct_f_scalar(s, fa, rj, ri, Spin::Alpha, tol, ia);
+                    let (f0fb, ffb) =
+                        SameSpinBuild::construct_f_scalar(s, fb, rj, ri, Spin::Beta, tol, ib);
 
-            let (f0fa, ffa) = SameSpinBuild::construct_f_scalar(s, fa, rj, ri, Spin::Alpha, tol);
-            let (f0fb, ffb) = SameSpinBuild::construct_f_scalar(s, fb, rj, ri, Spin::Beta, tol);
+                    {
+                        let view = wicks.view_mut();
+                        view.meta[k].aa.f0f = f0fa;
+                        view.meta[k].bb.f0f = f0fb;
+                    }
 
-            {
-                let view = wicks.view_mut();
-                view.meta[idx].aa.f0f = f0fa;
-                view.meta[idx].bb.f0f = f0fb;
-            }
-
-            // Store all binary fundamental-contraction assignments in the
-            // existing pair slab offsets.
-            let slab = wicks.slab_mut();
-            for mi in 0..2 {
-                for mj in 0..2 {
-                    write2t(slab, off_aa.ff[mi][mj], &ffa[mi][mj]);
-                    write2t(slab, off_bb.ff[mi][mj], &ffb[mi][mj]);
+                    // Store all binary fundamental-contraction assignments in the
+                    // existing pair slab offsets.
+                    let slab = wicks.slab_mut();
+                    for mi in 0..2 {
+                        for mj in 0..2 {
+                            write2t(slab, off_aa.ff[mi][mj], &ffa[mi][mj]);
+                            write2t(slab, off_bb.ff[mi][mj], &ffb[mi][mj]);
+                        }
+                    }
                 }
             }
         }

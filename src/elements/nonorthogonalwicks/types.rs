@@ -14,6 +14,49 @@ pub(crate) struct PairZeroCounts {
     pub(crate) ma: usize,
     /// `Number m_\beta of beta-spin zero-overlap occupied-orbital pairs.`
     pub(crate) mb: usize,
+    /// Number of alpha-spin near-zero occupied-orbital pairs.
+    pub(crate) na: usize,
+    /// Number of beta-spin near-zero occupied-orbital pairs.
+    pub(crate) nb: usize,
+}
+
+/// Location of the near-zero corners of an ordered reference pair (x,w). Each near-zero
+/// occupied-orbital pair enters the fundamental contractions either with unit weight or not at
+/// all, so a spin sector with `n` near-zero pairs has `2^n` corners, and a matrix element is the
+/// sum over all combinations of alpha- and beta-spin corners. The combination `(0, 0)`, with every
+/// near-zero pair removed, is stored at the ordinary pair index; the others are stored from
+/// `start`.
+#[derive(Clone, Copy, Default, Serialize, Deserialize, Debug)]
+pub(crate) struct PairBranches {
+    /// Index of the first additional branch combination in the offset and metadata tables.
+    pub(crate) start: usize,
+    /// Number of alpha-spin branches, `2^{n_\alpha}`.
+    pub(crate) na: usize,
+    /// Number of beta-spin branches, `2^{n_\beta}`.
+    pub(crate) nb: usize,
+}
+
+impl PairBranches {
+    /// Return the offset and metadata index of one branch combination.
+    /// # Arguments:
+    /// - `self`: Branch location of the reference pair.
+    /// - `idx`: Ordinary index of the reference pair.
+    /// - `ia`: Alpha-spin branch.
+    /// - `ib`: Beta-spin branch.
+    /// # Returns
+    /// - `usize`: Index of the combination `(ia, ib)`.
+    pub(crate) fn index(
+        &self,
+        idx: usize,
+        ia: usize,
+        ib: usize,
+    ) -> usize {
+        if ia == 0 && ib == 0 {
+            idx
+        } else {
+            self.start + ia * self.nb + ib - 1
+        }
+    }
 }
 
 /// Metadata and scalar same-spin intermediates stored outside the shared tensor slab for one

@@ -12,7 +12,7 @@ use crate::NOCIScalar;
 
 // Parent/sibling imports.
 use super::types::{
-    DiffSpinMeta, DiffSpinOffset, PairMeta, PairOffset, SameSpinMeta, SameSpinOffset,
+    DiffSpinMeta, DiffSpinOffset, PairBranches, PairMeta, PairOffset, SameSpinMeta, SameSpinOffset,
 };
 
 /// Read-only address, offset and metadata view over the contiguous slab of precomputed
@@ -29,6 +29,8 @@ pub struct WicksView<T: NOCIScalar> {
     pub(crate) off: Vec<PairOffset>,
     /// Per-reference-pair scalar metadata stored outside the tensor slab.
     pub(crate) meta: Vec<PairMeta<T>>,
+    /// Location of the near-zero branch combinations of every ordered reference pair.
+    pub(crate) branches: Vec<PairBranches>,
 }
 
 // The backing allocation is kept alive by `WicksShared`, and this view exposes only immutable slab access.
@@ -124,19 +126,45 @@ impl<T: NOCIScalar> WicksView<T> {
         lp: usize,
         gp: usize,
     ) -> WicksPairView<'_, T> {
-        let idx = self.idx(lp, gp);
-        let meta = &self.meta[idx];
-        let off = &self.off[idx];
+        self.combination(self.idx(lp, gp), 0, 0, true)
+    }
+
+    /// Return grouped views of one near-zero branch combination of an ordered reference pair.
+    /// # Arguments:
+    /// - `self`: View over the stored Wick intermediates.
+    /// - `idx`: Flattened index of the ordered reference pair (x,w).
+    /// - `ia`: Alpha-spin branch.
+    /// - `ib`: Beta-spin branch.
+    /// - `whole`: Whether the views stand for the sum over all branches of the pair, rather than
+    ///   for the single combination `(ia, ib)`.
+    /// # Returns
+    /// - `WicksPairView<'_, T>`: Grouped spin-resolved views of the combination `(ia, ib)`.
+    fn combination(
+        &self,
+        idx: usize,
+        ia: usize,
+        ib: usize,
+        whole: bool,
+    ) -> WicksPairView<'_, T> {
+        let k = self.branches[idx].index(idx, ia, ib);
+        let meta = &self.meta[k];
+        let off = &self.off[k];
 
         let aa = SameSpinView {
             meta: &meta.aa,
             w: self,
             off: &off.aa,
+            pair: idx,
+            alpha: true,
+            whole,
         };
         let bb = SameSpinView {
             meta: &meta.bb,
             w: self,
             off: &off.bb,
+            pair: idx,
+            alpha: false,
+            whole,
         };
         let ab = DiffSpinView {
             meta: &meta.ab,
@@ -144,7 +172,13 @@ impl<T: NOCIScalar> WicksView<T> {
             off: &off.ab,
         };
 
-        WicksPairView { aa, bb, ab }
+        WicksPairView {
+            aa,
+            bb,
+            ab,
+            pair: idx,
+            whole,
+        }
     }
 }
 
@@ -157,6 +191,12 @@ pub(crate) struct SameSpinView<'a, T: NOCIScalar> {
     pub(crate) w: &'a WicksView<T>,
     /// Offsets locating the same-spin matrices and tensors in the slab.
     pub(crate) off: &'a SameSpinOffset,
+    /// Flattened index of the ordered reference pair.
+    pair: usize,
+    /// Whether this is the alpha-spin sector.
+    alpha: bool,
+    /// Whether this view stands for the sum over all near-zero branches of the spin sector.
+    whole: bool,
 }
 
 impl<T: NOCIScalar> Deref for SameSpinView<'_, T> {
@@ -173,6 +213,38 @@ impl<T: NOCIScalar> Deref for SameSpinView<'_, T> {
 }
 
 impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
+    /// Return the number of near-zero branches this view stands for. A spin-sector factor of a
+    /// matrix element is the sum of its values over all branches; a single branch reports one.
+    /// # Arguments:
+    /// - `self`: Same-spin Wick view.
+    /// # Returns
+    /// - `usize`: Number of branches, `2^n` for `n` near-zero pairs, or one for a single branch.
+    #[inline(always)]
+    pub(crate) fn nbranches(&self) -> usize {
+        if !self.whole {
+            return 1;
+        }
+        let branches = &self.w.branches[self.pair];
+        if self.alpha { branches.na } else { branches.nb }
+    }
+
+    /// Return one near-zero branch of this spin sector.
+    /// # Arguments:
+    /// - `self`: Same-spin Wick view.
+    /// - `k`: Branch index, below `nbranches()`.
+    /// # Returns
+    /// - `SameSpinView<'a, T>`: Same-spin view of branch `k`.
+    pub(crate) fn branch(
+        &self,
+        k: usize,
+    ) -> SameSpinView<'a, T> {
+        if self.alpha {
+            self.w.combination(self.pair, k, 0, false).aa
+        } else {
+            self.w.combination(self.pair, 0, k, false).bb
+        }
+    }
+
     /// Return the molecular-orbital dimension of each stored same-spin matrix or tensor axis.
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
@@ -457,4 +529,40 @@ pub(crate) struct WicksPairView<'a, T: NOCIScalar> {
     pub(crate) bb: SameSpinView<'a, T>,
     /// Different-spin alpha-beta intermediates.
     pub(crate) ab: DiffSpinView<'a, T>,
+    /// Flattened index of the ordered reference pair.
+    pair: usize,
+    /// Whether this view stands for the sum over all near-zero branch combinations.
+    whole: bool,
+}
+
+impl<'a, T: NOCIScalar> WicksPairView<'a, T> {
+    /// Return the number of combinations of alpha- and beta-spin near-zero branches this view
+    /// stands for. A matrix element is the sum of its values over all combinations; a single
+    /// combination reports one.
+    /// # Arguments:
+    /// - `self`: Grouped pair view.
+    /// # Returns
+    /// - `usize`: Number of branch combinations, or one for a single combination.
+    #[inline(always)]
+    pub(crate) fn ncombinations(&self) -> usize {
+        if !self.whole {
+            return 1;
+        }
+        let branches = &self.aa.w.branches[self.pair];
+        branches.na * branches.nb
+    }
+
+    /// Return one combination of alpha- and beta-spin near-zero branches.
+    /// # Arguments:
+    /// - `self`: Grouped pair view.
+    /// - `k`: Combination index, below `ncombinations()`.
+    /// # Returns
+    /// - `WicksPairView<'a, T>`: Grouped views of combination `k`.
+    pub(crate) fn combination(
+        &self,
+        k: usize,
+    ) -> WicksPairView<'a, T> {
+        let nb = self.aa.w.branches[self.pair].nb;
+        self.aa.w.combination(self.pair, k / nb, k % nb, false)
+    }
 }

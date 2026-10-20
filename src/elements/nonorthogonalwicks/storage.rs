@@ -13,11 +13,11 @@ use crate::NOCIScalar;
 use crate::mpiutils::Sharedffi;
 
 // Parent/sibling imports.
-use super::types::{PairMeta, PairOffset};
+use super::types::{PairBranches, PairMeta, PairOffset};
 use super::view::WicksView;
 
 /// Current Wick disk-cache metadata and slab-layout version.
-pub(crate) const WICKS_DISK_CACHE_VERSION: u32 = 2;
+pub(crate) const WICKS_DISK_CACHE_VERSION: u32 = 3;
 
 /// Backing allocation used by the contiguous slab of precomputed nonorthogonal Wick intermediates.
 #[allow(dead_code)]
@@ -178,6 +178,8 @@ pub(crate) struct WicksDiskMeta<T: NOCIScalar> {
     pub(crate) off: Vec<PairOffset>,
     /// Per-reference-pair scalar metadata stored outside the tensor slab.
     pub(crate) meta: Vec<PairMeta<T>>,
+    /// Location of the near-zero branch combinations of every ordered reference pair.
+    pub(crate) branches: Vec<PairBranches>,
 }
 
 /// Create a writable file-backed memory map for the contiguous Wick tensor slab. The associated
@@ -185,7 +187,8 @@ pub(crate) struct WicksDiskMeta<T: NOCIScalar> {
 /// # Arguments:
 /// - `slab_path`: Path to the raw file storing the contiguous tensor slab.
 /// - `nref`: Number of reference determinants.
-/// - `off`: Per-reference-pair offset tables into the tensor slab.
+/// - `off`: Offset tables of every ordinary pair followed by those of the branch combinations.
+/// - `branches`: Location of the near-zero branch combinations of every ordinary pair.
 /// - `slab_len`: Total slab length in units of `T`.
 /// # Returns
 /// - `std::io::Result<WicksShared<T>>`: Writable file-backed Wick storage and slab view.
@@ -195,6 +198,7 @@ pub(crate) fn create_wicks_mmap<T: NOCIScalar>(
     slab_path: &std::path::Path,
     nref: usize,
     off: Vec<PairOffset>,
+    branches: Vec<PairBranches>,
     slab_len: usize,
 ) -> std::io::Result<WicksShared<T>> {
     let nbytes = slab_len * std::mem::size_of::<T>();
@@ -211,13 +215,14 @@ pub(crate) fn create_wicks_mmap<T: NOCIScalar>(
     let slab = unsafe { std::slice::from_raw_parts_mut(ptr, slab_len) };
     slab.fill(<T as From<f64>>::from(f64::NAN));
 
-    let meta = vec![PairMeta::<T>::default(); nref * nref];
+    let meta = vec![PairMeta::<T>::default(); off.len()];
     let view = WicksView {
         slab: NonNull::new(ptr).unwrap(),
         slab_len,
         nref,
         off,
         meta,
+        branches,
     };
 
     Ok(WicksShared::from_mmap_cow(mmap, view))
@@ -258,6 +263,7 @@ pub(crate) fn load_wicks_mmap<T: NOCIScalar>(
         nref: disk_meta.nref,
         off: disk_meta.off,
         meta: disk_meta.meta,
+        branches: disk_meta.branches,
     };
 
     Ok(WicksShared::from_mmap(mmap, view))

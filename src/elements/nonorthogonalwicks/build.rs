@@ -15,6 +15,51 @@ use crate::elements::occ_coeffs;
 use crate::input::Spin;
 use crate::maths::{ERIAO2MOScratch, adjoint, real2_as};
 
+/// `Nonzero occupied-orbital singular values {}^{xw}\tilde S_k below this value are near-zero.`
+/// A near-zero pair would put `\tilde S_k^{-1}` into the fundamental contractions, and the large
+/// terms it generates cancel in the matrix elements. Every matrix element is affine in
+/// `t_k = \tilde S_k^{-1}`, because the rank-one contribution of pair k vanishes whenever it enters
+/// two contractions, so it is evaluated exactly from the corners `t_k = 0` and `t_k = 1`:
+/// `\tilde S_k F(t_k = \tilde S_k^{-1}) = (\tilde S_k - 1) F(0) + F(1)`.
+/// Both corners have `O(1)` intermediates.
+pub(crate) const SINGULARTOL: f64 = 1e-1;
+
+/// Partition the Löwdin-paired occupied orbitals for one near-zero corner. Pairs with
+/// `|\tilde S_k| \le \mathtt{tol}` are zero-overlap pairs. The `j`-th near-zero pair,
+/// `\mathtt{tol} < |\tilde S_k| <` `SINGULARTOL`, enters the fundamental contractions with unit
+/// weight in place of `\tilde S_k^{-1}` when bit `j` of `branch` is set, and is removed
+/// otherwise.
+/// # Arguments:
+/// - `tilde_s`: `Singular values {}^{xw}\tilde S_k of the occupied orbital overlap matrix.`
+/// - `tol`: `Singular values satisfying |\tilde S_k| \le \mathtt{tol} are treated as zero.`
+/// - `branch`: Bit mask selecting the near-zero pairs with unit weight.
+/// # Returns
+/// - `(Vec<usize>, Vec<usize>, Vec<usize>)`: Zero-overlap pairs, removed near-zero pairs and
+///   near-zero pairs with unit weight.
+pub(crate) fn branch_pairs(
+    tilde_s: &Array1<f64>,
+    tol: f64,
+    branch: usize,
+) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    let mut zeros = Vec::new();
+    let mut removed = Vec::new();
+    let mut unit = Vec::new();
+    let mut j = 0;
+    for (k, &sk) in tilde_s.iter().enumerate() {
+        if sk.abs() <= tol {
+            zeros.push(k);
+        } else if sk.abs() < SINGULARTOL {
+            if (branch >> j) & 1 == 1 {
+                unit.push(k);
+            } else {
+                removed.push(k);
+            }
+            j += 1;
+        }
+    }
+    (zeros, removed, unit)
+}
+
 /// Symmetry-unique distributions of zero-overlap orbital pairs over the four contractions
 /// `in the same-spin \mathcal J intermediate. The symmetry`
 /// `{}^{\chi_\eta\chi_z,\chi_\xi\chi_y}\mathcal J_{\eta z,\xi y}^{(m_1,m_2,m_3,m_4)}`
@@ -96,6 +141,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     /// - `l`: `Reference determinant forming the bra \langle{}^x\Psi|.`
     /// - `spin`: Spin block for which the intermediates are constructed.
     /// - `tol`: `Singular values satisfying |{}^{xw}\tilde S_i| \leq \mathtt{tol} are treated as zero.`
+    /// - `branch`: Near-zero pairs with unit weight, as in `branch_pairs`.
     /// # Returns
     /// - `SameSpinBuild<T>`: Same-spin intermediates for the reference determinant pair.
     /// # Panics
@@ -106,6 +152,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         l: &ParentDeterminant<T>,
         spin: Spin,
         tol: f64,
+        branch: usize,
     ) -> Self {
         let eri = &ao.eri_coul;
         let h_munu = &ao.h;
@@ -140,29 +187,35 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         let (tilde_s_occ, g_tilde_c_occ, l_tilde_c_occ, phase) =
             Self::perform_ortho_and_svd_and_rotate(s_munu, &l_c_occ, &g_c_occ);
 
-        // Form the reduced overlap by multiplying only the non-zero
-        // singular values. The phase arising from the occupied orbital rotations is
-        // stored separately.
+        // Identify the m zero-overlap orbital pairs. When evaluating a matrix element, each pair
+        // must be assigned to one of the fundamental contractions such that the complete
+        // distribution satisfies `\sum_i m_i = m`.
+        let (zeros, removed, unit) = branch_pairs(&tilde_s_occ, tol, branch);
+        let m = zeros.len();
+
+        // Form the reduced overlap by multiplying the non-zero singular values of the regular
+        // pairs. Each removed near-zero pair contributes the corner weight `\tilde S_k - 1` and
+        // each unit-weight pair contributes one. The phase arising from the occupied orbital
+        // rotations is stored separately.
         let tilde_s_prod = tilde_s_occ
             .iter()
-            .filter(|&&x| x.abs() > tol)
-            .product::<f64>();
-
-        // Identify the m zero-overlap orbital pairs. When evaluating a matrix element,
-        // each pair must be assigned to one of the fundamental contractions such that
-        // the complete distribution satisfies `\sum_i m_i = m`.
-        let zeros: Vec<usize> = tilde_s_occ
-            .iter()
             .enumerate()
-            .filter_map(|(k, &sk)| if sk.abs() <= tol { Some(k) } else { None })
-            .collect();
-        let m = zeros.len();
+            .filter(|(k, _)| !zeros.contains(k) && !unit.contains(k))
+            .map(|(k, &x)| if removed.contains(&k) { x - 1.0 } else { x })
+            .product::<f64>();
 
         // Construct the AO matrices used for the `m_i = 0` and `m_i = 1` fundamental
         // contractions.
         // A fundamental contraction contains either zero or one
         // zero-overlap orbital pair, so no higher branch is required.
-        let (m0, m1) = Self::construct_m(&tilde_s_occ, &l_tilde_c_occ, &g_tilde_c_occ, &zeros, tol);
+        let (m0, m1) = Self::construct_m(
+            &tilde_s_occ,
+            &l_tilde_c_occ,
+            &g_tilde_c_occ,
+            &zeros,
+            &removed,
+            &unit,
+        );
         let mao: [Array2<T>; 2] = [m0, m1];
 
         // Transform the AO matrices into the `X^{(m_i)}` and `Y^{(m_i)}` fundamental
@@ -357,7 +410,8 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         }
     }
 
-    /// Count the zero-overlap occupied orbital pairs without constructing the Löwdin paired orbitals.
+    /// Count the zero-overlap and near-zero occupied orbital pairs without constructing the Löwdin
+    /// paired orbitals.
     /// `The singular values of {}^{xw}\mathbf S_{\mathrm{occ}} = ({}^x\mathbf C_{\mathrm{occ}})^\dagger`
     /// `\mathbf S {}^w\mathbf C_{\mathrm{occ}} are sufficient to determine m. The singular vectors and rotated`
     /// occupied coefficients are therefore not constructed. This is used before allocating the intermediate
@@ -370,7 +424,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     /// - `lo`: Bra-reference occupation bitstring.
     /// - `tol`: `Singular values satisfying |{}^{xw}\tilde S_i| \leq \mathtt{tol} are treated as zero.`
     /// # Returns
-    /// - `usize`: Number m of zero-overlap orbital pairs.
+    /// - `(usize, usize)`: Number m of zero-overlap orbital pairs and number of near-zero pairs.
     pub(crate) fn count_zero_overlap_pairs(
         s_munu: &Array2<f64>,
         g_c: &Array2<T>,
@@ -378,12 +432,13 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         l_c: &Array2<T>,
         lo: u128,
         tol: f64,
-    ) -> usize {
+    ) -> (usize, usize) {
         let l_c_occ = occ_coeffs(l_c, lo);
         let g_c_occ = occ_coeffs(g_c, go);
         let xw_s = Self::occupied_overlap(s_munu, &l_c_occ, &g_c_occ);
         let (_, s, _) = xw_s.svd(false, false).unwrap();
-        s.iter().filter(|&&sk| sk.abs() <= tol).count()
+        let (zeros, removed, _) = branch_pairs(&s, tol, 0);
+        (zeros.len(), removed.len())
     }
 
     /// Construct the occupied orbital overlap matrix between the reference determinants.
@@ -468,8 +523,10 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     /// - `xw_tilde_s`: `Singular values {}^{xw}\tilde S_i of the occupied orbital overlap matrix.`
     /// - `l_tilde_c_occ`: `Paired occupied coefficients {}^x\tilde{\mathbf C}_{\mathrm{occ}}.`
     /// - `g_tilde_c_occ`: `Paired occupied coefficients {}^w\tilde{\mathbf C}_{\mathrm{occ}}.`
-    /// - `zeros`: `Indices k for which |{}^{xw}\tilde S_k| \leq \mathtt{tol}.`
-    /// - `tol`: Singular-value tolerance.
+    /// - `zeros`: Indices k of the zero-overlap pairs.
+    /// - `removed`: Indices k of the near-zero pairs removed from `{}^{xw}W`.
+    /// - `unit`: Indices k of the near-zero pairs entering `{}^{xw}W` with unit weight in place of
+    ///   `({}^{xw}\tilde S_k)^{-1}`.
     /// # Returns
     /// - `(Array2<T>, Array2<T>)`: AO fundamental contraction matrices `{}^{xw}M^{(0)}`
     ///   and `{}^{xw}M^{(1)}`.
@@ -477,19 +534,24 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         xw_tilde_s: &Array1<f64>,
         l_tilde_c_occ: &Array2<T>,
         g_tilde_c_occ: &Array2<T>,
-        zeros: &Vec<usize>,
-        tol: f64,
+        zeros: &[usize],
+        removed: &[usize],
+        unit: &[usize],
     ) -> (Array2<T>, Array2<T>) {
         let nbas = g_tilde_c_occ.nrows();
         let nocc = g_tilde_c_occ.ncols();
 
-        // Divide each ket occupied orbital by its paired non-zero singular value.
-        // Columns belonging to zero-overlap orbital pairs are set to zero, since they
-        // do not contribute to `{}^{xw}W`.
+        // Divide each ket occupied orbital by its paired non-zero singular value; near-zero pairs
+        // with unit weight keep their orbital unscaled. Columns belonging to zero-overlap or
+        // removed near-zero orbital pairs are set to zero, since they do not contribute to
+        // `{}^{xw}W`.
         let mut g_tilde_c_occ_scaled = g_tilde_c_occ.clone();
         for k in 0..nocc {
             let s = xw_tilde_s[k];
-            if s.abs() > tol {
+            if unit.contains(&k) {
+                continue;
+            }
+            if !zeros.contains(&k) && !removed.contains(&k) {
                 let scale = <T as From<f64>>::from(1.0 / s);
                 let mut col = g_tilde_c_occ_scaled.column_mut(k);
                 col.mapv_inplace(|z| z * scale);
@@ -590,6 +652,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     /// - `l`: `Bra reference determinant \langle{}^x\Psi|.`
     /// - `spin`: Spin block for which the intermediates are constructed.
     /// - `tol`: `Singular values satisfying |{}^{xw}\tilde S_i| \leq \mathtt{tol} are treated as zero.`
+    /// - `branch`: Near-zero pairs with unit weight, as in `branch_pairs`.
     /// # Returns
     /// - `([T; 2], [[Array2<T>; 2]; 2])`: Scalar intermediates `F_0^{(m_i)}` and
     ///   column intermediates `\mathcal F^{(m_i,m_j)}` for `m_i,m_j \in \{0,1\}`.
@@ -602,6 +665,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         l: &ParentDeterminant<T>,
         spin: Spin,
         tol: f64,
+        branch: usize,
     ) -> ([T; 2], [[Array2<T>; 2]; 2]) {
         // Extract the selected spin orbital coefficients and occupied orbitals for
         // the bra reference x and ket reference w.
@@ -618,14 +682,17 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         // zero-overlap orbital pairs.
         let (tilde_s_occ, g_tilde_c_occ, l_tilde_c_occ, _) =
             Self::perform_ortho_and_svd_and_rotate(s_munu, &l_c_occ, &g_c_occ);
-        let zeros: Vec<usize> = tilde_s_occ
-            .iter()
-            .enumerate()
-            .filter_map(|(k, &sk)| if sk.abs() <= tol { Some(k) } else { None })
-            .collect();
+        let (zeros, removed, unit) = branch_pairs(&tilde_s_occ, tol, branch);
 
         // Construct the AO fundamental contractions `M^{(0)}` and `M^{(1)}`.
-        let (m0, m1) = Self::construct_m(&tilde_s_occ, &l_tilde_c_occ, &g_tilde_c_occ, &zeros, tol);
+        let (m0, m1) = Self::construct_m(
+            &tilde_s_occ,
+            &l_tilde_c_occ,
+            &g_tilde_c_occ,
+            &zeros,
+            &removed,
+            &unit,
+        );
         let mao = [&m0, &m1];
 
         // Construct the matrices containing the `X^{(m_i)}` or `Y^{(m_i)}`
@@ -762,6 +829,8 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
     /// - `g`: `Ket reference determinant |{}^w\Psi\rangle.`
     /// - `l`: `Bra reference determinant \langle{}^x\Psi|.`
     /// - `tol`: `Singular values satisfying |{}^{xw}\tilde S_{\sigma i}| \leq \mathtt{tol} are treated as zero.`
+    /// - `branch_a`: Alpha-spin near-zero pairs with unit weight, as in `branch_pairs`.
+    /// - `branch_b`: Beta-spin near-zero pairs with unit weight, as in `branch_pairs`.
     /// # Returns
     /// - `DiffSpinBuild<T>`: Different-spin two-body intermediates for the reference determinant pair.
     pub fn new(
@@ -769,6 +838,8 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
         g: &ParentDeterminant<T>,
         l: &ParentDeterminant<T>,
         tol: f64,
+        branch_a: usize,
+        branch_b: usize,
     ) -> Self {
         let eri = &ao.eri_coul;
         let s_munu = &ao.s;
@@ -802,17 +873,10 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
         let (tilde_sb_occ, g_tilde_cb_occ, l_tilde_cb_occ, _phase) =
             SameSpinBuild::perform_ortho_and_svd_and_rotate(s_munu, &l_cb_occ, &g_cb_occ);
 
-        // Identify the `m_\alpha` and `m_\beta` zero-overlap orbital pairs.
-        let zerosa: Vec<usize> = tilde_sa_occ
-            .iter()
-            .enumerate()
-            .filter_map(|(k, &sk)| if sk.abs() <= tol { Some(k) } else { None })
-            .collect();
-        let zerosb: Vec<usize> = tilde_sb_occ
-            .iter()
-            .enumerate()
-            .filter_map(|(k, &sk)| if sk.abs() <= tol { Some(k) } else { None })
-            .collect();
+        // Identify the `m_\alpha` and `m_\beta` zero-overlap orbital pairs and the near-zero
+        // pairs of this corner.
+        let (zerosa, removeda, unita) = branch_pairs(&tilde_sa_occ, tol, branch_a);
+        let (zerosb, removedb, unitb) = branch_pairs(&tilde_sb_occ, tol, branch_b);
         let ma = zerosa.len();
         let mb = zerosb.len();
 
@@ -822,14 +886,16 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
             &l_tilde_ca_occ,
             &g_tilde_ca_occ,
             &zerosa,
-            tol,
+            &removeda,
+            &unita,
         );
         let (m0b, m1b) = SameSpinBuild::construct_m(
             &tilde_sb_occ,
             &l_tilde_cb_occ,
             &g_tilde_cb_occ,
             &zerosb,
-            tol,
+            &removedb,
+            &unitb,
         );
         let mao_a = [&m0a, &m1a];
         let mao_b = [&m0b, &m1b];

@@ -69,6 +69,24 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_prepared,
         {
+            // A reference pair with near-zero orbital pairs is the sum over its combinations of
+            // alpha- and beta-spin branches.
+            if w.ncombinations() > 1 {
+                let zero = <T as From<f64>>::from(0.0);
+                return (0..w.ncombinations()).fold((zero, zero), |(h, s), k| {
+                    let (hk, sk) = xw_hamiltonian_overlap_prepared(
+                        &w.combination(k),
+                        ex,
+                        cache,
+                        excitation_phase,
+                        enuc,
+                        scratch,
+                        tol,
+                    );
+                    (h + hk, s + sk)
+                });
+            }
+
             let (x_ex, w_ex) = ex;
             let (x_cache, w_cache) = cache;
 
@@ -143,6 +161,32 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_prepared_batched,
         {
+            // A reference pair with near-zero orbital pairs is the sum over its combinations of
+            // alpha- and beta-spin branches; accumulate the requested outputs of each one.
+            if w.ncombinations() > 1 {
+                let zero = <T as From<f64>>::from(0.0);
+                for &(output, _, _) in requests {
+                    out[output] = (zero, zero);
+                }
+                let mut part = vec![(zero, zero); out.len()];
+                for k in 0..w.ncombinations() {
+                    xw_hamiltonian_overlap_prepared_batched(
+                        &w.combination(k),
+                        basis,
+                        requests,
+                        enuc,
+                        scratch,
+                        tol,
+                        &mut part,
+                    );
+                    for &(output, _, _) in requests {
+                        out[output].0 += part[output].0;
+                        out[output].1 += part[output].1;
+                    }
+                }
+                return;
+            }
+
             #[cfg(target_arch = "x86_64")]
             if w.aa.m == 0 && w.bb.m == 0 {
                 // Fixed-rank `m=0` requests can be packetised by the four excitation ranks and

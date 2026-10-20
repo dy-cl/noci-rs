@@ -62,6 +62,28 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
     if requests.is_empty() || out.is_empty() {
         return;
     }
+
+    // A spin sector with near-zero orbital pairs is the sum of its branches.
+    if w.nbranches() > 1 {
+        let zero = <T as From<f64>>::from(0.0);
+        out.fill(zero);
+        let mut part = vec![zero; out.len()];
+        for k in 0..w.nbranches() {
+            xw_rdmk_same_prepared_batched::<T, K>(
+                &w.branch(k),
+                ex,
+                coeff,
+                requests,
+                scratch,
+                tol,
+                &mut part,
+            );
+            for (value, branch) in out.iter_mut().zip(&part) {
+                *value += *branch;
+            }
+        }
+        return;
+    }
     if K > w.nocc {
         for value in out.iter_mut().take(requests.len()) {
             *value = <T as From<f64>>::from(0.0);

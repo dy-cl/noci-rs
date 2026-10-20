@@ -8,27 +8,29 @@ use crate::NOCIScalar;
 
 // Parent/sibling imports.
 use super::build::{DiffSpinBuild, SAME_SPIN_J_BRANCHES, SameSpinBuild};
-use super::types::{DiffSpinOffset, PairOffset, PairZeroCounts, SameSpinOffset};
+use super::types::{DiffSpinOffset, PairBranches, PairOffset, PairZeroCounts, SameSpinOffset};
 
 /// Assign offsets into the contiguous tensor slab for every ordered reference pair (x,w).
 /// Rank-four tensors are allocated only when their fundamental-contraction assignments can
-/// `satisfy the corresponding m_\alpha or m_\beta constraint.`
+/// `satisfy the corresponding m_\alpha or m_\beta constraint.` Pairs with near-zero
+/// occupied-orbital pairs also receive one same-spin block per additional alpha- and beta-spin
+/// corner and one different-spin block per additional corner combination, allocated after every
+/// ordinary pair.
 /// # Arguments:
-/// - `plans`: `Pair-specific values of m_\alpha and m_\beta.`
+/// - `plans`: `Pair-specific values of m_\alpha and m_\beta and numbers of near-zero pairs.`
 /// - `nmo`: Number of molecular orbitals in one reference orbital set.
 /// - `nbas`: Dimension of the external RDM basis.
 /// # Returns
-/// - `(Vec<PairOffset>, usize)`: Per-pair offset tables and total slab length in units of `T`.
+/// - `(Vec<PairOffset>, Vec<PairBranches>, usize)`: Offset tables of every ordinary pair
+///   followed by those of the additional branch combinations, the branch location of every
+///   ordinary pair, and the total slab length in units of `T`.
 pub fn assign_offsets(
     plans: &[PairZeroCounts],
     nmo: usize,
     nbas: usize,
-) -> (Vec<PairOffset>, usize) {
+) -> (Vec<PairOffset>, Vec<PairBranches>, usize) {
     let nn2 = nmo * nmo;
-    let nn4 = nn2 * nn2;
 
-    #[cfg(feature = "nocc")]
-    let nbas2 = nbas * nbas;
     #[cfg(not(feature = "nocc"))]
     let _ = nbas;
 
@@ -36,131 +38,14 @@ pub fn assign_offsets(
     let mut i: usize = 0;
 
     for (p, plan) in off.iter_mut().zip(plans.iter()) {
-        p.aa.hcol0 = usize::MAX;
-        p.bb.hcol0 = usize::MAX;
-
-        // Allocate the alpha-spin `X^{(m_i)}` and `Y^{(m_i)}` fundamental contractions.
-        for mi in 0..2 {
-            p.aa.x[mi] = i;
-            i += nn2;
-        }
-        for mi in 0..2 {
-            p.aa.y[mi] = i;
-            i += nn2;
-        }
-        #[cfg(feature = "nocc")]
-        {
-            // Allocate the corresponding alpha-spin contractions in the external RDM basis.
-            for mi in 0..2 {
-                p.aa.xrdm[mi] = i;
-                i += nbas2;
-            }
-            for mi in 0..2 {
-                p.aa.yrdm[mi] = i;
-                i += nbas2;
-            }
-        }
-        // Allocate the alpha-spin one-body `\mathcal F` and one-column `\mathcal V` intermediates.
-        for mi in 0..2 {
-            for mj in 0..2 {
-                p.aa.fh[mi][mj] = i;
-                i += nn2;
-            }
-        }
-        for mi in 0..2 {
-            for mj in 0..2 {
-                p.aa.ff[mi][mj] = i;
-                i += nn2;
-            }
-        }
-        for mi in 0..2 {
-            for mj in 0..2 {
-                for mk in 0..2 {
-                    p.aa.v[mi][mj][mk] = i;
-                    i += nn2;
-                }
-            }
-        }
-        // Allocate only those symmetry-unique alpha-spin `\mathcal J` tensors whose four
-        // assignments do not already exceed `m_\alpha`.
-        p.aa.j.fill(usize::MAX);
-        for (slot, branch) in SAME_SPIN_J_BRANCHES.iter().copied().enumerate() {
-            if branch.0 + branch.1 + branch.2 + branch.3 <= plan.ma {
-                p.aa.j[slot] = i;
-                i += nn4;
-            }
-        }
-
-        // Allocate the beta-spin `X^{(m_i)}` and `Y^{(m_i)}` fundamental contractions.
-        for mi in 0..2 {
-            p.bb.x[mi] = i;
-            i += nn2;
-        }
-        for mi in 0..2 {
-            p.bb.y[mi] = i;
-            i += nn2;
-        }
-        #[cfg(feature = "nocc")]
-        {
-            // Allocate the corresponding beta-spin contractions in the external RDM basis.
-            for mi in 0..2 {
-                p.bb.xrdm[mi] = i;
-                i += nbas2;
-            }
-            for mi in 0..2 {
-                p.bb.yrdm[mi] = i;
-                i += nbas2;
-            }
-        }
-        // Allocate the beta-spin one-body `\mathcal F` and one-column `\mathcal V` intermediates.
-        for mi in 0..2 {
-            for mj in 0..2 {
-                p.bb.fh[mi][mj] = i;
-                i += nn2;
-            }
-        }
-        for mi in 0..2 {
-            for mj in 0..2 {
-                p.bb.ff[mi][mj] = i;
-                i += nn2;
-            }
-        }
-        for mi in 0..2 {
-            for mj in 0..2 {
-                for mk in 0..2 {
-                    p.bb.v[mi][mj][mk] = i;
-                    i += nn2;
-                }
-            }
-        }
-        // Allocate only those symmetry-unique beta-spin `\mathcal J` tensors whose four
-        // assignments do not already exceed `m_\beta`.
-        p.bb.j.fill(usize::MAX);
-        for (slot, branch) in SAME_SPIN_J_BRANCHES.iter().copied().enumerate() {
-            if branch.0 + branch.1 + branch.2 + branch.3 <= plan.mb {
-                p.bb.j[slot] = i;
-                i += nn4;
-            }
-        }
+        // Allocate the alpha- and beta-spin same-spin intermediates.
+        p.aa = assign_same_spin(plan.ma, nmo, nbas, &mut i);
+        p.bb = assign_same_spin(plan.mb, nmo, nbas, &mut i);
 
         // Allocate the different-spin one-column intermediates `\mathcal V^\alpha` and
         // `\mathcal V^\beta` for every binary assignment of their three contractions.
-        for ma0 in 0..2 {
-            for mb0 in 0..2 {
-                for mk in 0..2 {
-                    p.ab.vab[ma0][mb0][mk] = i;
-                    i += nn2;
-                }
-            }
-        }
-        for mb0 in 0..2 {
-            for ma0 in 0..2 {
-                for mk in 0..2 {
-                    p.ab.vba[mb0][ma0][mk] = i;
-                    i += nn2;
-                }
-            }
-        }
+        assign_diff_spin_columns(&mut p.ab, nmo, &mut i);
+
         // Allocate the precombined `m_\alpha = m_\beta = 0` Hamiltonian one-column
         // intermediates only for all-zero ordered reference pairs.
         if plan.ma == 0 && plan.mb == 0 {
@@ -169,24 +54,212 @@ pub fn assign_offsets(
             p.bb.hcol0 = i;
             i += nn2;
         }
+
         // Allocate only those `\mathcal{II}` tensors whose alpha- and beta-spin assignments
         // can satisfy their independent constraints.
-        p.ab.iiab = [[[[usize::MAX; 2]; 2]; 2]; 2];
+        assign_diff_spin_ii(&mut p.ab, plan.ma, plan.mb, nmo, &mut i);
+    }
+
+    // Allocate the additional near-zero branches after every ordinary pair, so pairs without
+    // near-zero occupied-orbital pairs keep the same layout.
+    let mut branches = vec![PairBranches::default(); plans.len()];
+    for (idx, plan) in plans.iter().enumerate() {
+        let na = 1usize << plan.na;
+        let nb = 1usize << plan.nb;
+        branches[idx] = PairBranches {
+            start: off.len(),
+            na,
+            nb,
+        };
+        if na * nb == 1 {
+            continue;
+        }
+
+        // Every corner keeps the zero-overlap pairs of the ordinary pair, so its tensors are
+        // allocated for the same `m_\alpha` and `m_\beta`.
+        let mut aa = vec![off[idx].aa; na];
+        let mut bb = vec![off[idx].bb; nb];
+        for offset in aa.iter_mut().skip(1) {
+            *offset = assign_same_spin(plan.ma, nmo, nbas, &mut i);
+        }
+        for offset in bb.iter_mut().skip(1) {
+            *offset = assign_same_spin(plan.mb, nmo, nbas, &mut i);
+        }
+
+        for (ia, &aa) in aa.iter().enumerate() {
+            for (ib, &bb) in bb.iter().enumerate() {
+                if ia == 0 && ib == 0 {
+                    continue;
+                }
+                let mut p = PairOffset {
+                    aa,
+                    bb,
+                    ab: DiffSpinOffset::default(),
+                };
+                assign_diff_spin_columns(&mut p.ab, nmo, &mut i);
+
+                // The precombined one-column intermediates combine both spin sectors, so every
+                // combination of an all-zero pair has its own.
+                if plan.ma == 0 && plan.mb == 0 {
+                    p.aa.hcol0 = i;
+                    i += nn2;
+                    p.bb.hcol0 = i;
+                    i += nn2;
+                }
+                assign_diff_spin_ii(&mut p.ab, plan.ma, plan.mb, nmo, &mut i);
+                off.push(p);
+            }
+        }
+    }
+
+    (off, branches, i)
+}
+
+/// Assign slab offsets to the fundamental contractions and same-spin intermediates of one spin
+/// sector. `\mathcal J` tensors whose four assignments exceed `m` are not allocated.
+/// # Arguments:
+/// - `m`: Number of zero-overlap occupied-orbital pairs in this spin sector.
+/// - `nmo`: Number of molecular orbitals in one reference orbital set.
+/// - `nbas`: Dimension of the external RDM basis.
+/// - `i`: Next free slab offset, advanced past the allocation.
+/// # Returns
+/// - `SameSpinOffset`: Offsets of the same-spin intermediates, without `hcol0`.
+fn assign_same_spin(
+    m: usize,
+    nmo: usize,
+    nbas: usize,
+    i: &mut usize,
+) -> SameSpinOffset {
+    let nn2 = nmo * nmo;
+    let nn4 = nn2 * nn2;
+
+    #[cfg(feature = "nocc")]
+    let nbas2 = nbas * nbas;
+    #[cfg(not(feature = "nocc"))]
+    let _ = nbas;
+
+    let mut o = SameSpinOffset {
+        hcol0: usize::MAX,
+        ..SameSpinOffset::default()
+    };
+
+    // Allocate the `X^{(m_i)}` and `Y^{(m_i)}` fundamental contractions.
+    for mi in 0..2 {
+        o.x[mi] = *i;
+        *i += nn2;
+    }
+    for mi in 0..2 {
+        o.y[mi] = *i;
+        *i += nn2;
+    }
+    #[cfg(feature = "nocc")]
+    {
+        // Allocate the corresponding contractions in the external RDM basis.
+        for mi in 0..2 {
+            o.xrdm[mi] = *i;
+            *i += nbas2;
+        }
+        for mi in 0..2 {
+            o.yrdm[mi] = *i;
+            *i += nbas2;
+        }
+    }
+    // Allocate the one-body `\mathcal F` and one-column `\mathcal V` intermediates.
+    for mi in 0..2 {
+        for mj in 0..2 {
+            o.fh[mi][mj] = *i;
+            *i += nn2;
+        }
+    }
+    for mi in 0..2 {
+        for mj in 0..2 {
+            o.ff[mi][mj] = *i;
+            *i += nn2;
+        }
+    }
+    for mi in 0..2 {
+        for mj in 0..2 {
+            for mk in 0..2 {
+                o.v[mi][mj][mk] = *i;
+                *i += nn2;
+            }
+        }
+    }
+    // Allocate only those symmetry-unique `\mathcal J` tensors whose four assignments do not
+    // already exceed `m`.
+    o.j.fill(usize::MAX);
+    for (slot, branch) in SAME_SPIN_J_BRANCHES.iter().copied().enumerate() {
+        if branch.0 + branch.1 + branch.2 + branch.3 <= m {
+            o.j[slot] = *i;
+            *i += nn4;
+        }
+    }
+    o
+}
+
+/// Assign slab offsets to the different-spin one-column intermediates `\mathcal V^\alpha` and
+/// `\mathcal V^\beta` for every binary assignment of their three contractions.
+/// # Arguments:
+/// - `o`: Different-spin offsets to fill.
+/// - `nmo`: Number of molecular orbitals in one reference orbital set.
+/// - `i`: Next free slab offset, advanced past the allocation.
+/// # Returns
+/// - `()`: Writes the `vab` and `vba` offsets.
+fn assign_diff_spin_columns(
+    o: &mut DiffSpinOffset,
+    nmo: usize,
+    i: &mut usize,
+) {
+    let nn2 = nmo * nmo;
+    for ma0 in 0..2 {
+        for mb0 in 0..2 {
+            for mk in 0..2 {
+                o.vab[ma0][mb0][mk] = *i;
+                *i += nn2;
+            }
+        }
+    }
+    for mb0 in 0..2 {
         for ma0 in 0..2 {
-            for maj in 0..2 {
-                for mb0 in 0..2 {
-                    for mbj in 0..2 {
-                        if ma0 + maj <= plan.ma && mb0 + mbj <= plan.mb {
-                            p.ab.iiab[ma0][maj][mb0][mbj] = i;
-                            i += nn4;
-                        }
+            for mk in 0..2 {
+                o.vba[mb0][ma0][mk] = *i;
+                *i += nn2;
+            }
+        }
+    }
+}
+
+/// Assign slab offsets to the `\mathcal{II}` tensors whose alpha- and beta-spin assignments can
+/// satisfy their independent constraints.
+/// # Arguments:
+/// - `o`: Different-spin offsets to fill.
+/// - `ma`: `Number m_\alpha of alpha-spin zero-overlap pairs.`
+/// - `mb`: `Number m_\beta of beta-spin zero-overlap pairs.`
+/// - `nmo`: Number of molecular orbitals in one reference orbital set.
+/// - `i`: Next free slab offset, advanced past the allocation.
+/// # Returns
+/// - `()`: Writes the `iiab` offsets.
+fn assign_diff_spin_ii(
+    o: &mut DiffSpinOffset,
+    ma: usize,
+    mb: usize,
+    nmo: usize,
+    i: &mut usize,
+) {
+    let nn4 = nmo * nmo * nmo * nmo;
+    o.iiab = [[[[usize::MAX; 2]; 2]; 2]; 2];
+    for ma0 in 0..2 {
+        for maj in 0..2 {
+            for mb0 in 0..2 {
+                for mbj in 0..2 {
+                    if ma0 + maj <= ma && mb0 + mbj <= mb {
+                        o.iiab[ma0][maj][mb0][mbj] = *i;
+                        *i += nn4;
                     }
                 }
             }
         }
     }
-
-    (off, i)
 }
 
 /// `Write the same-spin fundamental contractions and \mathcal F, \mathcal V and \mathcal J`

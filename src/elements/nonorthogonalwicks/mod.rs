@@ -64,7 +64,7 @@ pub use shared::build_wicks_shared;
 
 // Crate-visible function re-exports.
 #[cfg(feature = "nocc")]
-pub(crate) use eval::{prepare_same, xw_overlap, xw_rdmk_same_prepared_batched};
+pub(crate) use eval::xw_rdmk_same_prepared_batched;
 pub(crate) use eval::{
     xw_f_overlap_prepared, xw_f_overlap_prepared_batched, xw_hamiltonian_overlap_prepared,
     xw_hamiltonian_overlap_prepared_batched, xw_overlap_orthogonal_prepared_batched,
