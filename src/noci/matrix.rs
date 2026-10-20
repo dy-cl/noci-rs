@@ -15,7 +15,7 @@ use crate::elements::compare_f_pair_wicks_naive;
 use crate::elements::compare_hs_pair_wicks_naive;
 use crate::elements::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::elements::{DetPair, FockData, MOCache, NOCIData};
-use crate::elements::{calculate_f_pair, calculate_hs_pair, calculate_s_pair};
+use crate::elements::{calculate_f_pair, calculate_hs_pair_dense, calculate_s_pair};
 use crate::input::Input;
 use crate::maths::general_evp;
 use crate::time_call;
@@ -121,6 +121,104 @@ where
         }
     }
     out
+}
+
+/// Dense counterpart of `calculate_matrix_elements` for Hamiltonian and overlap matrices. The
+/// ket determinants are sorted into runs sharing a parent once, and each row is evaluated with
+/// `calculate_hs_pair_dense` directly into its row of H and S.
+/// # Arguments:
+/// - `data`: Shared data required for NOCI matrix-element evaluation.
+/// - `left`: First set of determinants.
+/// - `right`: Second set of determinants.
+/// - `symmetric`: Whether only the upper triangle should be evaluated.
+/// # Returns:
+/// - `(Array2<T>, Array2<T>, Duration)`: Hamiltonian and overlap matrices, with only the upper
+///   triangle filled if `symmetric`, and the wall time for the evaluation.
+fn calculate_matrix_elements_dense<T: NOCIScalar>(
+    data: &NOCIData<'_, T>,
+    left: &[NOCIIndex],
+    right: &[NOCIIndex],
+    symmetric: bool,
+) -> (Array2<T>, Array2<T>, Duration) {
+    let nl = left.len();
+    let nr = right.len();
+    let zero = (T::from_real(0.0), T::from_real(0.0));
+
+    let t0 = Instant::now();
+
+    // Sort the columns into runs of ket determinants sharing a parent.
+    let mut runs: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut run_of = vec![usize::MAX; data.space.parents.len()];
+    for (j, &gdet) in right.iter().enumerate() {
+        let gp = data.space.state(gdet).parent;
+        if run_of[gp] == usize::MAX {
+            run_of[gp] = runs.len();
+            runs.push((gp, Vec::new()));
+        }
+        runs[run_of[gp]].1.push(j);
+    }
+
+    // Evaluate each row's upper-triangle and diagonal, or full, columns.
+    let use_wicks_scratch = data.input.wicks.enabled;
+    let rows: Vec<Vec<(T, T)>> = (0..nl)
+        .into_par_iter()
+        .map_init(
+            || use_wicks_scratch.then(WickScratchSpin::<T>::new),
+            |scratch, i| {
+                let first = if symmetric { i } else { 0 };
+                let mut row = vec![zero; nr];
+                calculate_hs_pair_dense(
+                    data,
+                    left[i],
+                    right,
+                    &runs,
+                    first,
+                    scratch.as_mut(),
+                    &mut row,
+                );
+                row
+            },
+        )
+        .collect();
+
+    // Copy the rows into H and S.
+    let mut h = Array2::<T>::zeros((nl, nr));
+    let mut s = Array2::<T>::zeros((nl, nr));
+    for (i, row) in rows.iter().enumerate() {
+        let first = if symmetric { i } else { 0 };
+        for (j, &(hij, sij)) in row.iter().enumerate().skip(first) {
+            h[(i, j)] = hij;
+            s[(i, j)] = sij;
+        }
+    }
+
+    let dt = t0.elapsed();
+
+    (h, s, dt)
+}
+
+/// Dense counterpart of `scatter_matrix_elements`. The elements are already in place, so only
+/// the lower triangle of a symmetric matrix is filled from the upper triangle.
+/// # Arguments:
+/// - `h`: Hamiltonian matrix with the upper triangle filled.
+/// - `s`: Overlap matrix with the upper triangle filled.
+/// - `symmetric`: Whether symmetry should be used to fill the lower triangle.
+/// # Returns:
+/// - `()`: Fills the lower triangles of `h` and `s` in place.
+fn scatter_matrix_elements_dense<T: NOCIScalar>(
+    h: &mut Array2<T>,
+    s: &mut Array2<T>,
+    symmetric: bool,
+) {
+    if !symmetric {
+        return;
+    }
+    for i in 0..h.nrows() {
+        for j in 0..i {
+            h[(i, j)] = h[(j, i)].mirror();
+            s[(i, j)] = s[(j, i)].mirror();
+        }
+    }
 }
 
 /// Construct the full NOCI Fock matrix using either the generalised
@@ -282,18 +380,9 @@ pub fn build_noci_hs<T: NOCIScalar>(
             return (h, s, dt);
         }
 
-        // Assemble ordinary H and S pair elements with the selected evaluator.
-        let zero = (T::from_real(0.0), T::from_real(0.0));
-        let (vals, dt) = calculate_matrix_elements(
-            left,
-            right,
-            data.input,
-            symmetric,
-            zero,
-            |pairs, scratch, out| calculate_hs_pair(data, pairs, scratch, out),
-        );
-
-        let (h, s) = scatter_matrix_elements(vals, nl, nr, symmetric);
+        // Assemble ordinary H and S elements directly into the dense matrices.
+        let (mut h, mut s, dt) = calculate_matrix_elements_dense(data, left, right, symmetric);
+        scatter_matrix_elements_dense(&mut h, &mut s, symmetric);
 
         if data.input.write.write_matrices {
             write_hs_matrices(&data.input.write.write_dir, &h, &s);

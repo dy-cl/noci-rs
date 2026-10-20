@@ -2,6 +2,7 @@
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::NOCIIndex;
 use crate::elements::{DetPair, NOCIData};
 use crate::time_call;
 
@@ -99,6 +100,96 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
                     data.tol,
                     out,
                 );
+            }
+        }
+    })
+}
+
+/// Dense counterpart of `calculate_hs_pair`, which fills one matrix row. The ket determinants of
+/// the row are pre-sorted into runs sharing a parent, so each run is passed to the orthogonal or
+/// Wick batched kernels without regrouping the requests.
+/// # Arguments:
+/// - `data`: Shared data required for NOCI matrix-element evaluation.
+/// - `ldet`: Bra determinant of the row.
+/// - `right`: Ket determinants of every column.
+/// - `runs`: Parent and ascending column indices of each run of ket determinants.
+/// - `first`: First column to evaluate; earlier columns are left untouched.
+/// - `scratch`: Scratch space for Wick's calculations.
+/// - `out`: Hamiltonian and overlap matrix elements of every column of the row.
+/// # Returns:
+/// - `()`: Writes the requested `(H, S)` elements of the row into `out`.
+pub(crate) fn calculate_hs_pair_dense<T: NOCIScalar>(
+    data: &NOCIData<'_, T>,
+    ldet: NOCIIndex,
+    right: &[NOCIIndex],
+    runs: &[(usize, Vec<usize>)],
+    first: usize,
+    mut scratch: Option<&mut WickScratchSpin<T>>,
+    out: &mut [(T, T)],
+) {
+    time_call!(crate::timers::noci::add_calculate_hs_pair, {
+        let zero = T::from_real(0.0);
+        let wicks = data.wicks.filter(|_| data.input.wicks.enabled);
+        let lp = data.space.state(ldet).parent;
+        let l_occ = data.space.occupations(ldet);
+        let mut groups = vec![Vec::new(); data.space.parents.len()];
+        let mut requests = Vec::new();
+
+        for (gp, columns) in runs {
+            let gp = *gp;
+            let orthogonal = lp == gp
+                && data
+                    .mocache
+                    .is_some_and(|mocache| mocache[lp].orthogonal_slater_condon);
+
+            // Route every column of the run to the orthogonal or Wick batch, or evaluate it
+            // immediately when neither batched path applies.
+            for &j in columns.iter().filter(|&&j| j >= first) {
+                let pair = DetPair::new(ldet, right[j]);
+                if lp == gp {
+                    // A one- or two-body Hamiltonian cannot connect same-parent states
+                    // differing by more than two excitations (four occupation bits).
+                    let g_occ = data.space.occupations(right[j]);
+                    if (l_occ.0 ^ g_occ.0).count_ones() + (l_occ.1 ^ g_occ.1).count_ones() > 4 {
+                        out[j] = (zero, zero);
+                        continue;
+                    }
+                    if orthogonal {
+                        groups[lp].push((j, pair));
+                        continue;
+                    }
+                }
+                if wicks.is_some() {
+                    requests.push((j, ldet.0, right[j].0));
+                    continue;
+                }
+                out[j] = calculate_hs_pair_nonorthogonal(data, pair, scratch.as_deref_mut());
+            }
+
+            // Evaluate the batched requests of the run.
+            if !groups[lp].is_empty() {
+                calculate_hs_pairs_orthogonal_batched(
+                    data.ao,
+                    data.mocache.unwrap(),
+                    data.space,
+                    &groups,
+                    out,
+                );
+                groups[lp].clear();
+            }
+            if let Some(wicks) = wicks
+                && !requests.is_empty()
+            {
+                xw_hamiltonian_overlap_prepared_batched(
+                    &wicks.pair(lp, gp),
+                    (data.space, &data.space.reduced),
+                    &requests,
+                    data.ao.enuc,
+                    scratch.as_deref_mut().unwrap(),
+                    data.tol,
+                    out,
+                );
+                requests.clear();
             }
         }
     })
