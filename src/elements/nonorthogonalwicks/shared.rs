@@ -27,33 +27,33 @@ use crate::input::Spin;
 use crate::mpiutils::Sharedffi;
 use crate::mpiutils::broadcast;
 
-/// Build all Wick's intermediates and metadata for one reference pair and write them into the
-/// tensor slab. Every near-zero corner of each spin sector is built once, and every combination
-/// of alpha- and beta-spin corners receives its own different-spin intermediates and metadata.
+/// Build all Wick's intermediates and metadata for one reference pair and write the
+/// intermediates into the tensor slab. Every near-zero corner of each spin sector is built once,
+/// and every combination of alpha- and beta-spin corners receives its own different-spin
+/// intermediates and metadata.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
-/// - `meta`: Metadata of every ordinary pair followed by that of the branch combinations.
 /// - `off`: Offset tables of every ordinary pair followed by those of the branch combinations.
-/// - `branches`: Location of the branch combinations of this pair.
-/// - `idx`: Flattened index of the ordered reference pair.
+/// - `branches`: Location of the branch combinations of every ordinary pair.
+/// - `idx`: Flattened index `i * nref + j` of the ordered reference pair.
 /// - `ao`: Contains AO integrals and other system data.
-/// - `ri`: Left/reference state.
-/// - `rj`: Right/reference state.
+/// - `parents`: Reference determinants.
 /// - `tol`: Tolerance for a number being zero.
 /// # Returns
-/// - `()`: Writes the intermediates of every branch combination into `slab` and `meta`.
-#[allow(clippy::too_many_arguments)]
+/// - `Vec<(usize, PairMeta<T>)>`: Metadata of every branch combination with its pair index.
 fn build_wicks_pair_into<T: NOCIScalar>(
     slab: &mut [T],
-    meta: &mut [PairMeta<T>],
     off: &[PairOffset],
-    branches: &PairBranches,
+    branches: &[PairBranches],
     idx: usize,
     ao: &AoData,
-    ri: &ParentDeterminant<T>,
-    rj: &ParentDeterminant<T>,
+    parents: &[ParentDeterminant<T>],
     tol: f64,
-) {
+) -> Vec<(usize, PairMeta<T>)> {
+    let nref = parents.len();
+    let (ri, rj) = (&parents[idx / nref], &parents[idx % nref]);
+    let branches = &branches[idx];
+
     // Build `\alpha` and `\beta` contractions once per branch of each spin sector.
     let aa: Vec<_> = (0..branches.na)
         .map(|ia| SameSpinBuild::new(ao, rj, ri, Spin::Alpha, tol, ia))
@@ -70,6 +70,7 @@ fn build_wicks_pair_into<T: NOCIScalar>(
 
     // Build the mixed-spin contractions of every branch combination; the evaluator reads them
     // through the paired metadata below.
+    let mut meta = Vec::with_capacity(branches.na * branches.nb);
     for (ia, aa) in aa.iter().enumerate() {
         for (ib, bb) in bb.iter().enumerate() {
             let k = branches.index(idx, ia, ib);
@@ -79,7 +80,7 @@ fn build_wicks_pair_into<T: NOCIScalar>(
             // The precombined one-column intermediates exist only for all-zero pairs.
             write_hcol0(slab, &off[k], aa.nmo);
 
-            meta[k] = PairMeta {
+            let pair = PairMeta {
                 aa: SameSpinMeta {
                     tilde_s_prod: aa.tilde_s_prod,
                     phase: aa.phase,
@@ -106,8 +107,10 @@ fn build_wicks_pair_into<T: NOCIScalar>(
                     vba0: ab.vba0,
                 },
             };
+            meta.push((k, pair));
         }
     }
+    meta
 }
 
 /// Determine pair-specific alpha and beta zero-overlap and near-zero counts needed to allocate only reachable rank-four intermediates.
@@ -202,8 +205,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                 tensor.fill(<T as From<f64>>::from(f64::NAN));
 
                 for i in 0..nref {
-                    let ri = &parents[i];
-                    for (j, rj) in parents.iter().enumerate() {
+                    for j in 0..nref {
                         println!(
                             "Building intermediates for reference pair: {}, {} on world rank {}",
                             i,
@@ -211,18 +213,18 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                             world.rank()
                         );
 
-                        let idx = i * nref + j;
-                        build_wicks_pair_into(
+                        let built = build_wicks_pair_into(
                             tensor,
-                            &mut meta,
                             &offset,
-                            &branches[idx],
-                            idx,
+                            &branches,
+                            i * nref + j,
                             ao,
-                            ri,
-                            rj,
+                            parents,
                             tol,
                         );
+                        for (k, pair) in built {
+                            meta[k] = pair;
+                        }
                     }
                 }
             }
@@ -288,8 +290,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                 let mut meta = vec![PairMeta::<T>::default(); offset.len()];
 
                 for i in 0..nref {
-                    let ri = &parents[i];
-                    for (j, rj) in parents.iter().enumerate() {
+                    for j in 0..nref {
                         println!(
                             "Building intermediates for reference pair: {}, {} on world rank {}",
                             i,
@@ -297,18 +298,18 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                             world.rank()
                         );
 
-                        let idx = i * nref + j;
-                        build_wicks_pair_into(
+                        let built = build_wicks_pair_into(
                             wicks.slab_mut(),
-                            &mut meta,
                             &offset,
-                            &branches[idx],
-                            idx,
+                            &branches,
+                            i * nref + j,
                             ao,
-                            ri,
-                            rj,
+                            parents,
                             tol,
                         );
+                        for (k, pair) in built {
+                            meta[k] = pair;
+                        }
                     }
                 }
                 wicks.view_mut().meta = meta;
