@@ -11,7 +11,10 @@ use super::naive::calculate_hs_pair_naive;
 use super::nonorthogonalwicks::{
     WickScratchSpin, calculate_hs_pair_wicks, xw_hamiltonian_overlap_prepared_batched,
 };
-use super::orthogonal::{calculate_hs_pair_orthogonal, calculate_hs_pairs_orthogonal_batched};
+use super::orthogonal::{
+    calculate_hs_pair_orthogonal, calculate_hs_pairs_orthogonal_batched,
+    calculate_hs_pairs_orthogonal_dense,
+};
 
 /// Wrapper function which dispatches Hamiltonian and overlap matrix-element evaluation for a batch
 /// of determinant pairs depending on user input and properties of each pair. If a determinant
@@ -106,8 +109,9 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
 }
 
 /// Dense counterpart of `calculate_hs_pair`, which fills one matrix row. The ket determinants of
-/// the row are pre-sorted into runs sharing a parent, so each run is passed to the orthogonal or
-/// Wick batched kernels without regrouping the requests.
+/// the row are pre-sorted into runs sharing a parent. Same-parent runs of an orthonormal parent
+/// are evaluated directly into the row, and every other run is passed to the Wick batched kernels
+/// without regrouping the requests.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `ldet`: Bra determinant of the row.
@@ -132,19 +136,33 @@ pub(crate) fn calculate_hs_pair_dense<T: NOCIScalar>(
         let wicks = data.wicks.filter(|_| data.input.wicks.enabled);
         let lp = data.space.state(ldet).parent;
         let l_occ = data.space.occupations(ldet);
-        let mut groups = vec![Vec::new(); data.space.parents.len()];
         let mut requests = Vec::new();
 
         for (gp, columns) in runs {
             let gp = *gp;
-            let orthogonal = lp == gp
-                && data
-                    .mocache
-                    .is_some_and(|mocache| mocache[lp].orthogonal_slater_condon);
+            // Columns are ascending, so the requested ones form a suffix.
+            let columns = &columns[columns.partition_point(|&j| j < first)..];
 
-            // Route every column of the run to the orthogonal or Wick batch, or evaluate it
-            // immediately when neither batched path applies.
-            for &j in columns.iter().filter(|&&j| j >= first) {
+            // Same-parent runs of an orthonormal parent are evaluated directly into the row.
+            if lp == gp
+                && let Some(mocache) = data.mocache
+                && mocache[lp].orthogonal_slater_condon
+            {
+                calculate_hs_pairs_orthogonal_dense(
+                    data.ao,
+                    &mocache[lp],
+                    data.space,
+                    ldet,
+                    right,
+                    columns,
+                    out,
+                );
+                continue;
+            }
+
+            // Route every other column to the Wick batch, or evaluate it immediately when the
+            // batched path does not apply.
+            for &j in columns {
                 let pair = DetPair::new(ldet, right[j]);
                 if lp == gp {
                     // A one- or two-body Hamiltonian cannot connect same-parent states
@@ -152,10 +170,6 @@ pub(crate) fn calculate_hs_pair_dense<T: NOCIScalar>(
                     let g_occ = data.space.occupations(right[j]);
                     if (l_occ.0 ^ g_occ.0).count_ones() + (l_occ.1 ^ g_occ.1).count_ones() > 4 {
                         out[j] = (zero, zero);
-                        continue;
-                    }
-                    if orthogonal {
-                        groups[lp].push((j, pair));
                         continue;
                     }
                 }
@@ -166,17 +180,7 @@ pub(crate) fn calculate_hs_pair_dense<T: NOCIScalar>(
                 out[j] = calculate_hs_pair_nonorthogonal(data, pair, scratch.as_deref_mut());
             }
 
-            // Evaluate the batched requests of the run.
-            if !groups[lp].is_empty() {
-                calculate_hs_pairs_orthogonal_batched(
-                    data.ao,
-                    data.mocache.unwrap(),
-                    data.space,
-                    &groups,
-                    out,
-                );
-                groups[lp].clear();
-            }
+            // Evaluate the batched Wick requests of the run.
             if let Some(wicks) = wicks
                 && !requests.is_empty()
             {

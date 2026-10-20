@@ -477,3 +477,39 @@ pub(in crate::elements) fn calculate_hs_pairs_orthogonal_batched<T: NOCIScalar>(
         },
     );
 }
+
+/// Dense counterpart of `calculate_hs_pairs_orthogonal_batched`, which fills the same-parent
+/// columns of one matrix row. Each ket is tested against the bra occupation and, if coupled by
+/// the Hamiltonian, evaluated with the scalar fixed-rank kernels directly into the row.
+/// # Arguments:
+/// - `ao`: AO integrals and nuclear-repulsion energy.
+/// - `cache`: MO-basis Hamiltonian cache of the shared parent.
+/// - `space`: Determinant space containing the bra and ket states.
+/// - `ldet`: Bra determinant of the row.
+/// - `right`: Ket determinants of every column.
+/// - `columns`: Columns of the row with kets of the bra's parent.
+/// - `out`: Hamiltonian and overlap matrix elements of every column of the row.
+/// # Returns:
+/// - `()`: Writes the `(H, S)` element of every column in `columns` into `out`.
+pub(in crate::elements) fn calculate_hs_pairs_orthogonal_dense<T: NOCIScalar>(
+    ao: &AoData,
+    cache: &MOCache<T>,
+    space: &NOCISpace<T>,
+    ldet: NOCIIndex,
+    right: &[NOCIIndex],
+    columns: &[usize],
+    out: &mut [(T, T)],
+) {
+    let zero = T::from_real(0.0);
+    let l_occ = space.occupations(ldet);
+    for &j in columns {
+        let g_occ = space.occupations(right[j]);
+        out[j] = match prepare_orthogonal_state(l_occ, g_occ, 2) {
+            Some(state) => (
+                xw_hamiltonian_orthogonal(ao, cache, g_occ, &state),
+                xw_overlap_orthogonal(&state),
+            ),
+            None => (zero, zero),
+        };
+    }
+}
