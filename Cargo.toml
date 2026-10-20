@@ -68,6 +68,19 @@ rpath = false
 opt-level = 3
 codegen-units = 16
 
+[profile.quick]
+inherits = "release"
+opt-level = 3
+debug = false
+strip = false
+debug-assertions = false
+overflow-checks = false
+lto = false
+panic = 'abort'
+incremental = true
+codegen-units = 256
+rpath = false
+
 [profile.dev]
 opt-level = 0
 debug = true
