@@ -3,11 +3,13 @@
 
 mod denominators;
 mod energy;
+mod jacobian;
 mod metric;
 mod residual;
 
 // Restricted function re-exports.
 pub(in crate::nocc) use denominators::orbital_denominators;
 pub(in crate::nocc) use energy::correlation_energy;
+pub(in crate::nocc) use jacobian::{COLUMNS, jacobian_columns};
 pub(in crate::nocc) use metric::metric_matrix;
 pub(in crate::nocc) use residual::residual_vector;

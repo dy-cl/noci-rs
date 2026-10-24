@@ -40,6 +40,12 @@ pub(super) enum TensorKind {
     T1 = 8,
     /// Double-excitation amplitudes `t^{pq}_{rs}`.
     T2 = 9,
+    /// Single-excitation part of a batch of amplitude directions `v^p_{q,c}`, with the batch
+    /// label `c` as its last lower slot.
+    V1 = 10,
+    /// Double-excitation part of a batch of amplitude directions `v^{pq}_{rs,c}`, with the batch
+    /// label `c` as its last lower slot.
+    V2 = 11,
 }
 
 impl TensorKind {
@@ -56,14 +62,17 @@ impl TensorKind {
         Self::T2,
     ];
 
-    /// Tensor kind of every id, so generated ids convert in constant time.
-    const BY_ID: [Option<Self>; 10] = {
-        let mut table = [None; 10];
+    /// Tensor kind of every id, so generated ids convert in constant time. The direction kinds
+    /// never occur in generated tables, only in the Jacobian tables derived from them.
+    const BY_ID: [Option<Self>; 12] = {
+        let mut table = [None; 12];
         let mut k = 0;
         while k < Self::ALL.len() {
             table[Self::ALL[k] as usize] = Some(Self::ALL[k]);
             k += 1;
         }
+        table[Self::V1 as usize] = Some(Self::V1);
+        table[Self::V2 as usize] = Some(Self::V2);
         table
     };
 
@@ -83,6 +92,8 @@ impl TensorKind {
             Self::Lambda4 => "Lambda4",
             Self::T1 => "t1",
             Self::T2 => "t2",
+            Self::V1 => "v1",
+            Self::V2 => "v2",
         }
     }
 
@@ -114,6 +125,32 @@ impl TensorKind {
             _ => 0,
         }
     }
+
+    /// Return the direction kind that replaces an amplitude kind in a Jacobian term.
+    /// # Arguments:
+    /// - `self`: Tensor kind.
+    /// # Returns:
+    /// - `Option<Self>`: `V1` for `T1`, `V2` for `T2`, or `None` for any other tensor.
+    pub(super) fn direction(self) -> Option<Self> {
+        match self {
+            Self::T1 => Some(Self::V1),
+            Self::T2 => Some(Self::V2),
+            _ => None,
+        }
+    }
+
+    /// Return the amplitude kind whose elements a direction kind holds.
+    /// # Arguments:
+    /// - `self`: Tensor kind.
+    /// # Returns:
+    /// - `Option<Self>`: `T1` for `V1`, `T2` for `V2`, or `None` for any other tensor.
+    pub(super) fn amplitude(self) -> Option<Self> {
+        match self {
+            Self::V1 => Some(Self::T1),
+            Self::V2 => Some(Self::T2),
+            _ => None,
+        }
+    }
 }
 
 /// Orbital space of a generated index, with the ids used by the generated term tables.
@@ -127,6 +164,9 @@ pub(super) enum SpaceKind {
     Active = 1,
     /// Virtual orbitals.
     Virtual = 2,
+    /// Batch of amplitude directions, the column label of a Jacobian table; never an orbital
+    /// space of a generated table.
+    Batch = 3,
 }
 
 impl SpaceKind {
@@ -134,13 +174,14 @@ impl SpaceKind {
     pub(super) const ALL: [Self; 3] = [Self::Core, Self::Active, Self::Virtual];
 
     /// Orbital space of every id, so generated ids convert in constant time.
-    const BY_ID: [Option<Self>; 3] = {
-        let mut table = [None; 3];
+    const BY_ID: [Option<Self>; 4] = {
+        let mut table = [None; 4];
         let mut k = 0;
         while k < Self::ALL.len() {
             table[Self::ALL[k] as usize] = Some(Self::ALL[k]);
             k += 1;
         }
+        table[Self::Batch as usize] = Some(Self::Batch);
         table
     };
 
@@ -154,6 +195,7 @@ impl SpaceKind {
             Self::Core => "core",
             Self::Active => "active",
             Self::Virtual => "virtual",
+            Self::Batch => "batch",
         }
     }
 
@@ -187,6 +229,9 @@ pub(in crate::nocc) struct Tensors<'a> {
     pub(in crate::nocc) lambdas: &'a Cumulants<f64>,
     /// Dense amplitude tensors, or `None` for amplitude-free tables.
     pub(in crate::nocc) amplitudes: Option<Amplitudes<'a>>,
+    /// Dense tensors of the batch of amplitude directions `v_c` that a Jacobian table acts on,
+    /// or `None` for every other table.
+    pub(in crate::nocc) directions: Option<&'a [&'a DenseAmplitudes<f64>]>,
 }
 
 /// Dense amplitude tensors of one cluster operator, real or complex.
@@ -269,6 +314,8 @@ fn active_index(
 /// - `kind`: Orbital space.
 /// # Returns:
 /// - `&[usize]`: Orbital indices in the requested space.
+/// # Panics
+/// - Panics if `kind` is the batch space, which holds no orbitals.
 pub(super) fn space_orbitals(
     spaces: &Spaces,
     kind: SpaceKind,
@@ -277,6 +324,7 @@ pub(super) fn space_orbitals(
         SpaceKind::Core => &spaces.core,
         SpaceKind::Active => &spaces.active,
         SpaceKind::Virtual => &spaces.virtuals,
+        SpaceKind::Batch => panic!("the batch space holds no orbitals"),
     }
 }
 
@@ -321,7 +369,8 @@ pub(super) fn excitation_indices(ex: Excitation) -> ([usize; 4], usize) {
 /// - `f64`: Tensor element.
 /// # Panics
 /// - Panics if an amplitude tensor is requested from a table evaluated without amplitudes, or
-///   from complex amplitudes, which `amplitude_element` evaluates.
+///   from complex amplitudes, which `amplitude_element` evaluates, or if a direction tensor is
+///   requested, whose blocks `FactorBlocks` builds directly.
 pub(super) fn evaluate_factor(
     kind: TensorKind,
     slots: (&[u16], &[u16]),
@@ -379,6 +428,8 @@ pub(super) fn evaluate_factor(
             Amplitudes::Real(t) => amplitude_element(kind, slots, idx, t),
             Amplitudes::Complex(_) => panic!("complex amplitudes requested as a real element"),
         },
+        // Direction batches carry the batch label, so they are built as whole blocks.
+        TensorKind::V1 | TensorKind::V2 => panic!("{kind:?} is built only as a whole block"),
     }
 }
 

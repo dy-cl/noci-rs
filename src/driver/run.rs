@@ -11,6 +11,7 @@ use rayon::ThreadPoolBuilder;
 
 // Crate-root imports.
 use crate::driver::geometry::run_geometry;
+use crate::driver::post::PostGuess;
 use crate::driver::report::print_report;
 use crate::driver::types::Atoms;
 use crate::input::Input;
@@ -50,6 +51,7 @@ pub fn run(mut input: Input) -> Result<()> {
     let t_total = Instant::now();
     let mut prev_states: Vec<SCFState> = Vec::new();
     let mut prev_htracks: Vec<HSCFState> = Vec::new();
+    let mut prev_guess = PostGuess::default();
 
     // Initialise MPI before reporting input or running collective geometry work.
     let universe = mpi::initialize().unwrap();
@@ -64,13 +66,21 @@ pub fn run(mut input: Input) -> Result<()> {
     let rlist = input.mol.r_list.clone();
     let geoms = input.mol.geoms.clone();
 
-    // Carry converged real states and holomorphic tracking states to the next
-    // geometry so the scan follows the same physical solutions.
+    // Carry converged real states, holomorphic tracking states and post-reference solutions to
+    // the next geometry so the scan follows the same physical solutions.
     for (i, r) in rlist.iter().copied().enumerate() {
         println!("\n");
 
         let atoms: &Atoms = &geoms[i];
-        let res = run_geometry(r, atoms, &mut input, &prev_states, &prev_htracks, &world)?;
+        let res = run_geometry(
+            r,
+            atoms,
+            &mut input,
+            &prev_states,
+            &prev_htracks,
+            &prev_guess,
+            &world,
+        )?;
 
         if irank == 0 {
             print_report(&res, &input);
@@ -78,6 +88,7 @@ pub fn run(mut input: Input) -> Result<()> {
 
         prev_states = res.states.clone();
         prev_htracks = res.htracks.clone();
+        prev_guess = res.guess.clone();
     }
     if irank == 0 {
         println!("\n Total wall time: {:?}", t_total.elapsed());

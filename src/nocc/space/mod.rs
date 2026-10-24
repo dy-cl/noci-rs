@@ -3,12 +3,14 @@
 
 mod excitations;
 mod fois;
+mod guess;
 mod orbitals;
 
 // Restricted type re-exports.
 pub(crate) use excitations::Excitation;
 pub(in crate::nocc) use excitations::{DenseAmplitudes, ExcitationClass};
 pub(crate) use fois::FoisBasis;
+pub(crate) use guess::AmplitudeGuess;
 pub(crate) use orbitals::Spaces;
 
 // Restricted function re-exports.

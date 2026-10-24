@@ -55,6 +55,7 @@ mod terms;
 // Restricted type re-exports.
 pub(crate) use deterministic::AmplitudeSolution;
 pub(crate) use setup::ReferenceState;
+pub(crate) use space::AmplitudeGuess;
 pub(crate) use terms::TermEvaluator;
 
 // Restricted function re-exports.

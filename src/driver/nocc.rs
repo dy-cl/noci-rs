@@ -11,24 +11,26 @@ use crate::elements::{NOCIData, build_wicks_shared};
 use crate::elements::{rdm1, rdm2, rdm3, rdm4};
 use crate::input::Input;
 use crate::nocc::{
-    AmplitudeSolution, ReferenceState, TermEvaluator, build_excitations, build_fois_basis,
-    build_spaces, cumulants, noci_natural_orbitals, print_noci_natural_orbitals, reference_energy,
-    solve_amplitudes, transform_ao_data, transform_noci_basis,
+    AmplitudeGuess, AmplitudeSolution, ReferenceState, TermEvaluator, build_excitations,
+    build_fois_basis, build_spaces, cumulants, noci_natural_orbitals, print_noci_natural_orbitals,
+    reference_energy, solve_amplitudes, transform_ao_data, transform_noci_basis,
 };
 
 /// Run GNOCC on a NOCI reference in its natural-orbital basis.
 /// Builds the NOCI natural orbitals while the reference Wick storage is available, releases that
 /// storage, transforms the reference into the natural-orbital basis, builds the spin-free RDMs
 /// and cumulants, partitions the natural orbitals into core, active and virtual spaces,
-/// constructs the FOIS, solves the amplitude equations and reports the GNOCC energy.
+/// constructs the FOIS, solves the amplitude equations from the amplitudes continued from the
+/// previous geometry, if any, and reports the GNOCC energy.
 /// # Arguments:
 /// - `post`: Data shared by post-SCF methods.
 /// - `input`: User input specifications.
 /// - `c0`: Reference NOCI coefficient vector.
 /// - `wicks`: Reference Wick storage, released before the natural-orbital storage is built.
+/// - `previous`: Converged amplitudes of the previous geometry, if any.
 /// - `world`: MPI communicator object.
 /// # Returns:
-/// - `()`: Prints the natural orbitals, the amplitude iterations and the GNOCC energy.
+/// - `Option<AmplitudeGuess>`: Converged amplitudes for the next geometry, on the root rank.
 /// # Panics
 /// - Panics if the NOCCMC options are absent.
 pub(crate) fn run_gnocc(
@@ -36,8 +38,9 @@ pub(crate) fn run_gnocc(
     input: &Input,
     c0: &[f64],
     wicks: &mut Option<WicksShared<f64>>,
+    previous: Option<&AmplitudeGuess>,
     world: &impl Communicator,
-) {
+) -> Option<AmplitudeGuess> {
     let coeffs = Array1::from_vec(c0.to_vec());
 
     // Build natural orbitals before releasing Wick storage for the GNOCC calculation.
@@ -97,7 +100,7 @@ pub(crate) fn run_gnocc(
     let spaces = build_spaces(gamma1.n, &no.active, &gamma1, tol, tol);
     let excitations = build_excitations(&spaces);
     let reference = ReferenceState::new(&noao, &gamma1, &lambdas);
-    let evaluator = TermEvaluator::new(options.max_cumulant, &spaces);
+    let evaluator = TermEvaluator::new(options.max_cumulant, &spaces, 0);
     let fois = build_fois_basis(&reference, &spaces, &excitations, &evaluator, options);
     if world.rank() == 0 {
         println!(
@@ -107,20 +110,30 @@ pub(crate) fn run_gnocc(
         );
     }
 
-    if world.rank() == 0 {
-        // Solve the amplitude equations and report the GNOCC energy.
-        let e0 = reference_energy(&noao, &gamma1, &gamma2);
-        let solution = solve_amplitudes(
-            &reference,
-            &spaces,
-            &excitations,
-            &evaluator,
-            &fois,
-            e0,
-            options,
-        );
-        print_solution(e0, &solution, options.holomorphic);
+    if world.rank() != 0 {
+        return None;
     }
+
+    // Solve the amplitude equations from the continued amplitudes and report the GNOCC energy.
+    let e0 = reference_energy(&noao, &gamma1, &gamma2);
+    let guess = previous.map(|g| g.continue_to(&no.c, &post.ao.s, &spaces, &excitations, &fois));
+    let solution = solve_amplitudes(
+        &reference,
+        &spaces,
+        &excitations,
+        &evaluator,
+        &fois,
+        (e0, guess.as_ref()),
+        options,
+    );
+    print_solution(e0, &solution, options.holomorphic);
+
+    Some(AmplitudeGuess::new(
+        &no.c,
+        &spaces,
+        &excitations,
+        &solution.amplitudes,
+    ))
 }
 
 /// Print the final GNOCC amplitude solution.

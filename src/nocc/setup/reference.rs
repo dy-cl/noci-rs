@@ -64,6 +64,7 @@ impl<'a> ReferenceState<'a> {
             gamma1: self.gamma1,
             lambdas: self.lambdas,
             amplitudes,
+            directions: None,
         }
     }
 }

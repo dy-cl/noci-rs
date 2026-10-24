@@ -278,6 +278,8 @@ pub fn print_input(input: &Input) {
             println!("RESIDUAL_TOL: {:e}", n.residual_tol);
             println!("LEVEL_SHIFT: {}", n.level_shift);
             println!("HOLOMORPHIC: {}", n.holomorphic);
+            println!("NEWTON: {}", n.newton.as_str());
+            println!("PRECONDITIONER: {}", n.preconditioner.as_str());
             println!("GMRES:");
             println!("  MAX_ITER: {}", n.gmres.max_iter);
             println!("  RESTART: {}", n.gmres.restart);

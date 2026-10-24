@@ -38,5 +38,9 @@ pub(crate) use plan::TermEvaluator;
 pub(in crate::nocc) use tensors::{Amplitudes, Tensors};
 
 // Restricted function re-exports.
-pub(in crate::nocc) use assemble::{assemble_matrix, assemble_scalar, assemble_vector};
-pub(in crate::nocc) use loader::{e1_terms, e2_terms, overlap_blocks, residual_classes};
+pub(in crate::nocc) use assemble::{
+    assemble_columns, assemble_matrix, assemble_scalar, assemble_vector,
+};
+pub(in crate::nocc) use loader::{
+    e1_terms, e2_terms, jacobian_classes, overlap_blocks, residual_classes,
+};

@@ -66,8 +66,6 @@ fn class_members(
 }
 
 /// Evaluate the sum of several class-keyed table orders at every raw excitation.
-/// Each excitation class is evaluated as one dense block over its free-index spaces, summed
-/// over the orders in the given sequence, and its listed elements are then gathered.
 /// # Arguments:
 /// - `spaces`: Core, active, and virtual orbital-space maps.
 /// - `excitations`: Raw spin-free excitation list.
@@ -87,6 +85,38 @@ pub(in crate::nocc) fn assemble_vector<T: NOCIScalar>(
     orders: &[&ClassTables],
     tensors: &Tensors<'_>,
 ) -> Array1<T> {
+    assemble_columns(spaces, excitations, evaluator, plan, orders, tensors, 1)
+        .column(0)
+        .to_owned()
+}
+
+/// Evaluate the sum of several class-keyed table orders at every raw excitation and every
+/// direction of a batch, `X_{\mu c}`. Each excitation class is evaluated as one dense block over
+/// its free-index spaces, summed over the orders in the given sequence, and its listed elements
+/// are then gathered. A Jacobian table's batch label is its last free index, so it runs fastest
+/// in the block; every other table has a batch of one.
+/// # Arguments:
+/// - `spaces`: Core, active, and virtual orbital-space maps.
+/// - `excitations`: Raw spin-free excitation list.
+/// - `evaluator`: Term-table evaluator.
+/// - `plan`: Plan lookup, truncated or exact.
+/// - `orders`: Class-keyed tables of the orders to sum.
+/// - `tensors`: Runtime tensors, including the amplitudes and directions when an order needs them.
+/// - `width`: Number of directions in the batch, one for tables without a batch label.
+/// # Returns:
+/// - `Array2<T>`: Summed quantity over the raw excitations and the batch, in the amplitude
+///   scalar type.
+/// # Panics
+/// - Panics if `orders` is empty or an order has no terms for an excitation class in the list.
+pub(in crate::nocc) fn assemble_columns<T: NOCIScalar>(
+    spaces: &Spaces,
+    excitations: &[Excitation],
+    evaluator: &TermEvaluator,
+    plan: PlanChoice,
+    orders: &[&ClassTables],
+    tensors: &Tensors<'_>,
+    width: usize,
+) -> Array2<T> {
     // Group the raw excitations by class.
     let classes = class_members(spaces, excitations);
 
@@ -102,7 +132,7 @@ pub(in crate::nocc) fn assemble_vector<T: NOCIScalar>(
     );
 
     let positions = orbital_positions(spaces);
-    let mut out = Array1::<T>::zeros(excitations.len());
+    let mut out = Array2::<T>::zeros((excitations.len(), width));
 
     for (class, members) in &classes {
         // `X = \sum_n X_n` over the requested orders, as one dense block.
@@ -124,14 +154,16 @@ pub(in crate::nocc) fn assemble_vector<T: NOCIScalar>(
         }
         let (data, dims) = block.expect("at least one table order");
 
-        // Gather each listed excitation from its free-index tuple.
+        // Gather each listed excitation's row from its free-index tuple.
         for &mu in members {
             let (values, n) = excitation_indices(excitations[mu]);
             let flat = values[..n]
                 .iter()
                 .zip(&dims)
                 .fold(0, |acc, (&p, &d)| acc * d + positions[p]);
-            out[mu] = data[flat];
+            for c in 0..width {
+                out[(mu, c)] = data[flat * width + c];
+            }
         }
     }
 

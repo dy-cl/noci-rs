@@ -51,14 +51,15 @@ pub(in crate::nocc) struct TablePlan {
     pub(super) graph: TableGraph,
 }
 
-/// Evaluator of generated term tables: the cumulant truncation, the orbital-space sizes that
-/// fix every contraction order, and the plans of every table evaluated in one run, keyed by
-/// table address.
+/// Evaluator of generated term tables: the cumulant truncation, the orbital-space and batch
+/// sizes that fix every contraction order, and the plans of every table evaluated in one run,
+/// keyed by table address.
 pub(crate) struct TermEvaluator {
     /// Highest cumulant rank kept; terms with higher-rank cumulants are dropped.
     max_cumulant: usize,
-    /// Number of orbitals in the core, active and virtual spaces.
-    dims: [usize; 3],
+    /// Number of orbitals in the core, active and virtual spaces, then the number of directions
+    /// in the batch space of the Jacobian tables.
+    dims: [usize; 4],
     /// Cached plans.
     plans: Mutex<HashMap<usize, Arc<TablePlan>>>,
 }
@@ -68,17 +69,30 @@ impl TermEvaluator {
     /// # Arguments:
     /// - `max_cumulant`: Highest cumulant rank kept in every table.
     /// - `spaces`: NOCC orbital spaces.
+    /// - `batch`: Number of directions in each batch a Jacobian table acts on, zero when no
+    ///   Jacobian table is evaluated.
     /// # Returns:
     /// - `Self`: Evaluator.
     pub(crate) fn new(
         max_cumulant: usize,
         spaces: &Spaces,
+        batch: usize,
     ) -> Self {
+        let [core, active, virtuals] = SpaceKind::ALL.map(|s| space_orbitals(spaces, s).len());
         Self {
             max_cumulant,
-            dims: SpaceKind::ALL.map(|s| space_orbitals(spaces, s).len()),
+            dims: [core, active, virtuals, batch],
             plans: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Return the number of directions in each batch a Jacobian table acts on.
+    /// # Arguments:
+    /// - `self`: Evaluator.
+    /// # Returns:
+    /// - `usize`: Batch size.
+    pub(in crate::nocc) fn batch(&self) -> usize {
+        self.dims[3]
     }
 
     /// Return the plan of one working-equation table, the energy or a residual, resolving it on
@@ -138,7 +152,7 @@ impl TermEvaluator {
 /// # Arguments:
 /// - `table`: Terms and index spaces of the table.
 /// - `max_cumulant`: Highest cumulant rank kept.
-/// - `dims`: Number of orbitals in the core, active and virtual spaces.
+/// - `dims`: Number of orbitals in the core, active and virtual spaces, then the batch size.
 /// # Returns:
 /// - `TablePlan`: Kept terms, distinct blocks, the block of every factor and the contraction
 ///   steps of every term.
@@ -147,7 +161,7 @@ impl TermEvaluator {
 fn resolve_table_plan(
     table: TermTable<'_>,
     max_cumulant: usize,
-    dims: [usize; 3],
+    dims: [usize; 4],
 ) -> TablePlan {
     let (terms, indices) = table;
     let space = |x: &u16| SpaceKind::from_id(indices[*x as usize].1);

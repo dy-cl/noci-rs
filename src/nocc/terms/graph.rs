@@ -11,7 +11,8 @@
 //! to those of an evaluation in order.
 
 // Standard library imports.
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -620,7 +621,248 @@ pub(super) fn build_table_graph(
             graph.uses[id] += 1;
         }
     }
+
+    // Evaluate the groups in the candidate order that holds the fewest node elements at once.
+    let sizes = graph
+        .nodes
+        .iter()
+        .map(|n| {
+            (0..n.extent.len())
+                .filter(|&p| n.keep & (1 << p) != 0)
+                .map(|p| n.extent[p])
+                .product::<usize>()
+        })
+        .collect::<Vec<_>>();
+    let orders = [
+        (0..graph.groups.len()).collect::<Vec<_>>(),
+        greedy_order(&graph, &sizes),
+    ];
+    let peaks = orders
+        .iter()
+        .map(|o| peak_elements(&graph, &sizes, o))
+        .collect::<Vec<_>>();
+    let best = (0..orders.len()).min_by_key(|&k| peaks[k]).unwrap();
+    let mut groups = graph.groups.drain(..).map(Some).collect::<Vec<_>>();
+    graph.groups = orders[best]
+        .iter()
+        .map(|&g| groups[g].take().unwrap())
+        .collect();
     graph
+}
+
+/// Return the node operand id of a child, or `None` for a block.
+/// # Arguments:
+/// - `child`: Operand.
+/// # Returns:
+/// - `Option<usize>`: Node id.
+fn node_id(child: &Child) -> Option<usize> {
+    match child {
+        Child::Node(id, _) => Some(*id as usize),
+        Child::Block(..) => None,
+    }
+}
+
+/// Return the nodes one group consumes directly, its members' operands then its shared operand,
+/// in evaluation order.
+/// # Arguments:
+/// - `group`: Group.
+/// # Returns:
+/// - `impl Iterator<Item = usize>`: Consumed node ids.
+fn group_nodes(group: &Group) -> impl Iterator<Item = usize> + '_ {
+    group
+        .members
+        .iter()
+        .map(|m| &m.operand)
+        .chain(std::iter::once(&group.shared))
+        .filter_map(node_id)
+}
+
+/// Serial replay of an evaluation's node cache: every node is contracted at its first use, after
+/// the nodes it needs, and freed after its last use.
+struct Replay {
+    /// Remaining consumers of every node.
+    left: Vec<u32>,
+    /// Whether every node has been contracted.
+    done: Vec<bool>,
+    /// Node elements held.
+    held: usize,
+    /// Largest number of node elements held at once.
+    peak: usize,
+}
+
+impl Replay {
+    /// Start a replay with no node contracted.
+    /// # Arguments:
+    /// - `graph`: Table graph.
+    /// # Returns:
+    /// - `Self`: Replay state.
+    fn new(graph: &TableGraph) -> Self {
+        Self {
+            left: graph.uses.clone(),
+            done: vec![false; graph.nodes.len()],
+            held: 0,
+            peak: 0,
+        }
+    }
+
+    /// Consume one node: contract it and the nodes it needs unless done, recording every newly
+    /// contracted node, then release one use of it.
+    /// # Arguments:
+    /// - `id`: Node id.
+    /// - `graph`: Table graph.
+    /// - `sizes`: Elements of every node.
+    /// - `contracted`: Newly contracted nodes, appended to.
+    /// # Returns:
+    /// - `()`: Mutates the replay and `contracted`.
+    fn consume(
+        &mut self,
+        id: usize,
+        graph: &TableGraph,
+        sizes: &[usize],
+        contracted: &mut Vec<usize>,
+    ) {
+        self.ensure(id, graph, sizes, contracted);
+        self.release(id, sizes);
+    }
+
+    /// Contract a node and the nodes it needs unless done, then release its operands.
+    /// # Arguments:
+    /// - `id`: Node id.
+    /// - `graph`: Table graph.
+    /// - `sizes`: Elements of every node.
+    /// - `contracted`: Newly contracted nodes, appended to.
+    /// # Returns:
+    /// - `()`: Mutates the replay and `contracted`.
+    fn ensure(
+        &mut self,
+        id: usize,
+        graph: &TableGraph,
+        sizes: &[usize],
+        contracted: &mut Vec<usize>,
+    ) {
+        if self.done[id] {
+            return;
+        }
+        let children = graph.nodes[id]
+            .operands
+            .iter()
+            .filter_map(node_id)
+            .collect::<Vec<_>>();
+        for &c in &children {
+            self.ensure(c, graph, sizes, contracted);
+        }
+        self.done[id] = true;
+        self.held += sizes[id];
+        self.peak = self.peak.max(self.held);
+        contracted.push(id);
+        for &c in &children {
+            self.release(c, sizes);
+        }
+    }
+
+    /// Release one use of a node, freeing it after its last.
+    /// # Arguments:
+    /// - `id`: Node id.
+    /// - `sizes`: Elements of every node.
+    /// # Returns:
+    /// - `()`: Mutates the replay.
+    fn release(
+        &mut self,
+        id: usize,
+        sizes: &[usize],
+    ) {
+        self.left[id] -= 1;
+        if self.left[id] == 0 {
+            self.held -= sizes[id];
+        }
+    }
+}
+
+/// Return the largest number of node elements held at once by a serial evaluation of the groups
+/// in one order.
+/// # Arguments:
+/// - `graph`: Table graph.
+/// - `sizes`: Elements of every node.
+/// - `order`: Evaluation order of the group positions.
+/// # Returns:
+/// - `usize`: Peak number of held node elements.
+fn peak_elements(
+    graph: &TableGraph,
+    sizes: &[usize],
+    order: &[usize],
+) -> usize {
+    let mut replay = Replay::new(graph);
+    let mut contracted = Vec::new();
+    for &g in order {
+        for id in group_nodes(&graph.groups[g]) {
+            replay.consume(id, graph, sizes, &mut contracted);
+        }
+    }
+    replay.peak
+}
+
+/// Greedy evaluation order of a graph's groups: repeatedly the unscheduled group that consumes
+/// the most elements of the nodes held, or the first unscheduled group when none does, so the
+/// consumers of a node follow it closely and it is freed soon after it is contracted. A node is
+/// freed only after all its consuming groups, so only contractions change the scores.
+/// # Arguments:
+/// - `graph`: Table graph.
+/// - `sizes`: Elements of every node.
+/// # Returns:
+/// - `Vec<usize>`: Evaluation order of the group positions.
+fn greedy_order(
+    graph: &TableGraph,
+    sizes: &[usize],
+) -> Vec<usize> {
+    let n = graph.groups.len();
+    let mut consumers = vec![Vec::new(); graph.nodes.len()];
+    for (g, group) in graph.groups.iter().enumerate() {
+        for id in group_nodes(group) {
+            consumers[id].push(g);
+        }
+    }
+
+    let mut replay = Replay::new(graph);
+    let mut score = vec![0usize; n];
+    let mut scheduled = vec![false; n];
+    let mut heap = BinaryHeap::<(usize, Reverse<usize>)>::new();
+    let mut first = 0;
+    let mut order = Vec::with_capacity(n);
+    let mut contracted = Vec::new();
+
+    while order.len() < n {
+        // The best-scoring unscheduled group, skipping stale heap entries.
+        let g = loop {
+            match heap.pop() {
+                Some((s, Reverse(g))) if !scheduled[g] && score[g] == s => break g,
+                Some(_) => continue,
+                None => {
+                    while scheduled[first] {
+                        first += 1;
+                    }
+                    break first;
+                }
+            }
+        };
+        scheduled[g] = true;
+        order.push(g);
+
+        // Every node it contracts raises the scores of the node's other consumers.
+        for id in group_nodes(&graph.groups[g]) {
+            contracted.clear();
+            replay.consume(id, graph, sizes, &mut contracted);
+            for &c in &contracted {
+                for &h in &consumers[c] {
+                    if !scheduled[h] {
+                        score[h] += sizes[c];
+                        heap.push((score[h], Reverse(h)));
+                    }
+                }
+            }
+        }
+    }
+
+    order
 }
 
 /// Shared state of one node during an evaluation: its data once contracted, and its remaining

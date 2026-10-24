@@ -18,8 +18,9 @@ use super::workspace::Values;
 pub(super) struct FactorBlocks {
     /// Row-major block data over the orbitals of each slot space.
     pub(super) blocks: HashMap<BlockKey, Values>,
-    /// Number of orbitals in the core, active and virtual spaces.
-    pub(super) dims: [usize; 3],
+    /// Number of orbitals in the core, active and virtual spaces, then the number of directions
+    /// in the batch space.
+    pub(super) dims: [usize; 4],
 }
 
 impl FactorBlocks {
@@ -37,7 +38,14 @@ impl FactorBlocks {
         plans: &[&TablePlan],
         tensors: &Tensors<'_>,
     ) -> Self {
-        let dims = SpaceKind::ALL.map(|s| space_orbitals(tensors.spaces, s).len());
+        let [core, active, virtuals] =
+            SpaceKind::ALL.map(|s| space_orbitals(tensors.spaces, s).len());
+        let dims = [
+            core,
+            active,
+            virtuals,
+            tensors.directions.map_or(0, |v| v.len()),
+        ];
 
         let mut keys = plans
             .iter()
@@ -59,19 +67,24 @@ impl FactorBlocks {
 }
 
 /// Build one dense factor block by evaluating the runtime tensor element at every orbital tuple.
-/// Amplitude blocks take the scalar type of the amplitudes; every other block is real.
+/// Amplitude blocks take the scalar type of the amplitudes; every other block, including the
+/// real direction batches, is real.
 /// # Arguments:
 /// - `key`: Tensor kind and slot spaces.
 /// - `tensors`: Runtime tensors.
 /// # Returns:
 /// - `Values`: Row-major block elements.
 /// # Panics
-/// - Panics if the block is an amplitude block and `tensors` holds no amplitudes.
+/// - Panics if the block is an amplitude block and `tensors` holds no amplitudes, or a direction
+///   block and `tensors` holds no directions.
 fn dense_factor_block(
     key: &BlockKey,
     tensors: &Tensors<'_>,
 ) -> Values {
     let kind = key.0;
+    if let Some(amplitude) = kind.amplitude() {
+        return Values::Real(direction_block(key, amplitude, tensors));
+    }
     match tensors.amplitudes {
         Some(Amplitudes::Complex(t)) if matches!(kind, TensorKind::T1 | TensorKind::T2) => {
             Values::Complex(dense_block(key, tensors, |slots, idx| {
@@ -82,6 +95,48 @@ fn dense_factor_block(
             evaluate_factor(kind, slots, idx, tensors)
         })),
     }
+}
+
+/// Build the block of a batch of amplitude directions, `v_{\ldots,c}` over the orbital tuples of
+/// every slot but the last and the directions `c` of the last, batch slot, in row-major order.
+/// # Arguments:
+/// - `key`: Direction kind and slot spaces, the batch space last.
+/// - `amplitude`: Amplitude kind whose elements the directions hold.
+/// - `tensors`: Runtime tensors, including the direction batch.
+/// # Returns:
+/// - `Vec<f64>`: Row-major block elements.
+/// # Panics
+/// - Panics if `tensors` holds no directions.
+fn direction_block(
+    key: &BlockKey,
+    amplitude: TensorKind,
+    tensors: &Tensors<'_>,
+) -> Vec<f64> {
+    let directions = tensors
+        .directions
+        .expect("direction block requested without directions");
+    let (_, spaces) = key;
+    let orbital = (amplitude, spaces[..spaces.len() - 1].to_vec());
+    let width = directions.len();
+
+    // Each direction's amplitude block, interleaved so the batch label runs fastest.
+    let columns = directions
+        .iter()
+        .map(|v| {
+            dense_block(&orbital, tensors, |slots, idx| {
+                amplitude_element(amplitude, slots, idx, v)
+            })
+        })
+        .collect::<Vec<_>>();
+    let size = columns.first().map_or(0, |c| c.len());
+    let mut data = vec![0.0; size * width];
+    for (c, column) in columns.iter().enumerate() {
+        for (t, &x) in column.iter().enumerate() {
+            data[t * width + c] = x;
+        }
+    }
+
+    data
 }
 
 /// Evaluate one element function at every orbital tuple of a block, in row-major order.

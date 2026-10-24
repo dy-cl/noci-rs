@@ -13,9 +13,10 @@ use crate::{Error, Result};
 // Parent/sibling imports.
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
-    InitialShift, Input, Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator,
-    QMCOptions, SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage,
-    SpatialBias, Spin, SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
+    InitialShift, Input, Metadynamics, MolOptions, NOCCMCOptions, NOCCNewton, NOCCPreconditioner,
+    PropagationOptions, Propagator, QMCOptions, SCFExcitation, SCFInfo, SNOCIOptions,
+    SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin, SpinBias, StateRecipe, StateType,
+    WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -857,6 +858,23 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
 fn read_noccmc(noccmc_tbl: Option<Table>) -> Option<NOCCMCOptions> {
     noccmc_tbl.map(|t| {
         let defaults = NOCCMCOptions::default();
+
+        // Validate the Newton solver and preconditioner names before assembling the options.
+        let newton_str: String = t
+            .get("newton")
+            .unwrap_or_else(|_| defaults.newton.as_str().to_string());
+        let newton: NOCCNewton = newton_str.parse().unwrap_or_else(|msg| {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        });
+        let preconditioner_str: String = t
+            .get("preconditioner")
+            .unwrap_or_else(|_| defaults.preconditioner.as_str().to_string());
+        let preconditioner: NOCCPreconditioner = preconditioner_str.parse().unwrap_or_else(|msg| {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        });
+
         NOCCMCOptions {
             active_space_tol: t
                 .get("active_space_tol")
@@ -872,6 +890,8 @@ fn read_noccmc(noccmc_tbl: Option<Table>) -> Option<NOCCMCOptions> {
                 .ok()
                 .flatten()
                 .unwrap_or(defaults.holomorphic),
+            newton,
+            preconditioner,
             gmres: read_gmres(
                 t.get::<_, Option<Table>>("gmres").ok().flatten().as_ref(),
                 defaults.gmres,

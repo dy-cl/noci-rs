@@ -4,7 +4,7 @@
 use num_complex::Complex64;
 
 // Crate-root imports.
-use crate::driver::post::PostReferenceResults;
+use crate::driver::post::{PostGuess, PostReferenceResults};
 use crate::driver::reference::ReferenceRun;
 use crate::timers;
 use crate::{HSCFState, SCFState};
@@ -34,6 +34,8 @@ pub struct GeometryResults {
     pub e_snoci: Option<f64>,
     /// NOCI-PT2 energy if calculated.
     pub e_pt2: Option<Vec<(f64, f64)>>,
+    /// Post-reference solutions carried to the next geometry.
+    pub guess: PostGuess,
     /// Number of MPI ranks for printing.
     pub nranks: usize,
     /// Total timings associated with this geometry.
@@ -71,6 +73,7 @@ impl GeometryResults {
             e_noci_qmc_stoch: post.e_noci_qmc_stoch,
             e_snoci: post.e_snoci,
             e_pt2: post.e_pt2,
+            guess: post.guess,
             nranks,
             timings,
         }
@@ -107,6 +110,7 @@ impl GeometryResults {
             e_noci_qmc_stoch: post.e_noci_qmc_stoch,
             e_snoci: post.e_snoci,
             e_pt2: post.e_pt2,
+            guess: post.guess,
             nranks,
             timings,
         }

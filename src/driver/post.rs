@@ -10,7 +10,17 @@ use crate::driver::nocc::run_gnocc;
 use crate::driver::noci::{run_qmc_deterministic_noci, run_qmc_stochastic_noci, run_snoci};
 use crate::driver::reference::ReferenceRun;
 use crate::input::Input;
+#[cfg(feature = "nocc")]
+use crate::nocc::AmplitudeGuess;
 use crate::{AoData, PostSCFData};
+
+/// Post-reference solutions of one geometry carried to the next as starting guesses.
+#[derive(Clone, Default)]
+pub struct PostGuess {
+    /// Converged GNOCC amplitudes and their natural orbitals.
+    #[cfg(feature = "nocc")]
+    pub nocc: Option<AmplitudeGuess>,
+}
 
 /// Results from optional post-reference calculations.
 pub struct PostReferenceResults {
@@ -22,6 +32,8 @@ pub struct PostReferenceResults {
     pub e_snoci: Option<f64>,
     /// NOCI-PT2 energy if calculated.
     pub e_pt2: Option<Vec<(f64, f64)>>,
+    /// Solutions carried to the next geometry.
+    pub guess: PostGuess,
 }
 
 impl PostReferenceResults {
@@ -36,6 +48,7 @@ impl PostReferenceResults {
             e_noci_qmc_stoch: None,
             e_snoci: None,
             e_pt2: None,
+            guess: PostGuess::default(),
         }
     }
 }
@@ -46,6 +59,7 @@ impl PostReferenceResults {
 /// - `reference`: Reference-space intermediates and solution.
 /// - `input`: User input specifications.
 /// - `tol`: Tolerance up to which a number is considered zero.
+/// - `previous`: Post-reference solutions of the previous geometry.
 /// - `world`: MPI communicator object.
 /// # Returns:
 /// - `PostReferenceResults`: Optional post-reference energies.
@@ -54,6 +68,7 @@ pub fn run_real_post_reference(
     reference: &mut ReferenceRun<f64>,
     input: &mut Input,
     tol: f64,
+    #[cfg_attr(not(feature = "nocc"), allow(unused_variables))] previous: &PostGuess,
     world: &impl Communicator,
 ) -> PostReferenceResults {
     // Assemble the immutable post-SCF view shared by all optional methods.
@@ -79,7 +94,14 @@ pub fn run_real_post_reference(
 
     #[cfg(feature = "nocc")]
     if input.noccmc.is_some() {
-        run_gnocc(&post, input, &reference.c0, &mut reference.wicks, world);
+        out.guess.nocc = run_gnocc(
+            &post,
+            input,
+            &reference.c0,
+            &mut reference.wicks,
+            previous.nocc.as_ref(),
+            world,
+        );
     }
 
     // Select real or complex PT2 arithmetic according to the requested imaginary shifts.

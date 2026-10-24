@@ -5,7 +5,7 @@ use mpi::collective::CommunicatorCollectives;
 use mpi::topology::Communicator;
 
 // Crate-root imports.
-use crate::driver::post::{run_holomorphic_post_reference, run_real_post_reference};
+use crate::driver::post::{PostGuess, run_holomorphic_post_reference, run_real_post_reference};
 use crate::driver::reference::{ReferenceKind, run_reference_space};
 use crate::driver::scf::{
     HolomorphicReferencePrep, RealReferencePrep, generate_holomorphic_references,
@@ -36,6 +36,7 @@ pub fn should_run_holomorphic(input: &Input) -> bool {
 /// - `input`: User input specifications.
 /// - `prev_states`: Converged SCF states at previous r, used for seeding.
 /// - `prev_htracks`: Converged h-SCF states at previous r, used for complex branch tracking.
+/// - `prev_guess`: Post-reference solutions at previous r, used as starting guesses.
 /// - `world`: MPI communicator object.
 /// # Returns:
 /// - `Result<GeometryResults>`: Calculated energies, timings, and SCF states.
@@ -50,6 +51,7 @@ pub fn run_geometry(
     input: &mut Input,
     prev_states: &[SCFState],
     prev_htracks: &[HSCFState],
+    prev_guess: &PostGuess,
     world: &impl Communicator,
 ) -> Result<GeometryResults> {
     // Reset per-geometry diagnostics and distribute the root-generated AO data.
@@ -113,7 +115,7 @@ pub fn run_geometry(
                 ReferenceKind::Real,
                 world,
             );
-            let post = run_real_post_reference(&ao, &mut reference, input, tol, world);
+            let post = run_real_post_reference(&ao, &mut reference, input, tol, prev_guess, world);
             let timings = timers::snapshot_all_mpi(world);
             let mut results = GeometryResults::from_real(
                 r,
@@ -142,7 +144,7 @@ pub fn run_geometry(
 
         let mut reference =
             run_reference_space(&ao, input, prep.basis, tol, ReferenceKind::Real, world);
-        let post = run_real_post_reference(&ao, &mut reference, input, tol, world);
+        let post = run_real_post_reference(&ao, &mut reference, input, tol, prev_guess, world);
         let timings = timers::snapshot_all_mpi(world);
         Ok(GeometryResults::from_real(
             r,

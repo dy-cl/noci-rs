@@ -35,7 +35,7 @@ pub use det::DeterministicOptions;
 pub use excit::ExcitationOptions;
 pub use gmres::GMRESOptions;
 pub use mol::MolOptions;
-pub use nocc::NOCCMCOptions;
+pub use nocc::{NOCCMCOptions, NOCCNewton, NOCCPreconditioner};
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, FriOptions, InitialShift, QMCOptions};
 pub use scf::{DiisOptions, SCFInfo};
