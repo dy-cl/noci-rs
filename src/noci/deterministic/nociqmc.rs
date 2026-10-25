@@ -322,11 +322,13 @@ impl<T: NOCIScalar> ProjPropagator<T> {
     }
 }
 
-/// Perform one deterministic NOCI-QMC propagation step.
+/// Perform one deterministic NOCI-QMC propagation step from the Hamiltonian and overlap
+/// products of the current coefficients, so that the coefficient-space propagators need no
+/// further matrix-vector products and S-apply needs only `S` applied to the residual.
 /// # Arguments
-/// - `h`: NOCI Hamiltonian in the full NOCI-QMC basis.
 /// - `s`: Overlap matrix in the full NOCI-QMC basis.
 /// - `c`: NOCI-QMC coefficient vector.
+/// - `products`: Hamiltonian and overlap products `Hc` and `Sc`.
 /// - `es_s`: Overlap-transformed energy shift.
 /// - `es`: Non-overlap-transformed energy shift.
 /// - `dt`: Propagation time step.
@@ -336,24 +338,22 @@ impl<T: NOCIScalar> ProjPropagator<T> {
 /// # Panics
 /// - Panics if BApply is selected; deterministic BApply is unsupported.
 pub fn propagate_step<T: NOCIScalar>(
-    h: &Array2<T>,
     s: &Array2<T>,
     c: &Array1<T>,
+    products: (&Array1<T>, &Array1<T>),
     es_s: f64,
     es: f64,
     dt: f64,
     prop: &Propagator,
 ) -> Array1<T> {
+    let (hc, sc) = products;
     match prop {
         Propagator::SApply => {
             // `c' = c - \Delta t\, S (H - E_s S)c` in the overlap-applied propagator.
             let es_s = T::from_real(es_s);
             let dt = T::from_real(dt);
 
-            let hc = parallel_matvec(h, c);
-            let sc = parallel_matvec(s, c);
-
-            let residual = hc - sc.mapv(|z| es_s * z);
+            let residual = hc - &sc.mapv(|z| es_s * z);
 
             let overlap_residual = parallel_matvec(s, &residual);
 
@@ -373,10 +373,7 @@ pub fn propagate_step<T: NOCIScalar>(
             let es = T::from_real(es);
             let dt = T::from_real(dt);
 
-            let hc = parallel_matvec(h, c);
-            let sc = parallel_matvec(s, c);
-
-            let residual = hc - sc.mapv(|z| es_s * z) - c.mapv(|z| es * z);
+            let residual = hc - &sc.mapv(|z| es_s * z) - c.mapv(|z| es * z);
 
             c - &residual.mapv(|z| dt * z)
         }
@@ -425,8 +422,12 @@ pub fn propagate<T: NOCIScalar>(
         c0.clone()
     };
 
+    // Hamiltonian and overlap products of the current coefficients, carried between steps.
+    let mut hc = parallel_matvec(h, &c_norm);
+    let mut sc = parallel_matvec(s, &c_norm);
+
     // Initialise projected.
-    let mut e_prev = projected_energy(h, s, &c_norm);
+    let mut e_prev = rayleigh_quotient(&c_norm, &hc, &sc);
 
     // Keep track of algorithmic ampltiudes.
     let mut logamp = 0.0;
@@ -439,7 +440,7 @@ pub fn propagate<T: NOCIScalar>(
     let det = input.det.as_ref().unwrap();
 
     // Calculate initial populations.
-    let sc0 = parallel_matvec(s, &c_norm);
+    let sc0 = sc.clone();
     let pop_c0 = c_norm.iter().map(|z| z.abs()).sum::<f64>();
     let pop_sc0 = sc0.iter().map(|z| z.abs()).sum::<f64>();
 
@@ -512,22 +513,23 @@ pub fn propagate<T: NOCIScalar>(
     print_propagation_table_row(0, (e_prev, 0.0), (es, es_s), (pop_c0, pop_sc0), den0);
 
     for it in 0..det.max_steps {
-        // Perform one propagation step using the current shifts.
+        // Perform one propagation step using the current shifts and products.
         let mut c_new_norm = propagate_step(
-            h,
             s,
             &c_norm,
+            (&hc, &sc),
             es_s,
             es,
             input.prop_ref().dt,
             &input.prop_ref().propagator,
         );
+        let mut hc_new = parallel_matvec(h, &c_new_norm);
+        let mut sc_new = parallel_matvec(s, &c_new_norm);
 
         // Calculate the metric norm before normalisation.
-        let sc = parallel_matvec(s, &c_new_norm);
         let norm_squared = c_new_norm
             .iter()
-            .zip(sc.iter())
+            .zip(sc_new.iter())
             .map(|(&ci, &sci)| ci.conj() * sci)
             .sum::<T>()
             .re();
@@ -543,25 +545,27 @@ pub fn propagate<T: NOCIScalar>(
 
         let norm = norm_squared.sqrt();
 
-        // Normalise coefficients but retain the removed amplitude in logamp.
+        // Normalise coefficients and, by linearity, their products, but retain the removed
+        // amplitude in logamp.
         c_new_norm.mapv_inplace(|z| z / T::from_real(norm));
+        hc_new.mapv_inplace(|z| z / T::from_real(norm));
+        sc_new.mapv_inplace(|z| z / T::from_real(norm));
         logamp += norm.ln();
 
         // Calculate post-normalisation quantities.
-        let sc = parallel_matvec(s, &c_new_norm);
         let den = c_new_norm
             .iter()
-            .zip(sc.iter())
+            .zip(sc_new.iter())
             .map(|(&ci, &sci)| ci.conj() * sci)
             .sum::<T>()
             .re();
 
-        let e = projected_energy(h, s, &c_new_norm);
+        let e = rayleigh_quotient(&c_new_norm, &hc_new, &sc_new);
         let de = (e - e_prev).abs();
 
         // Calculate the coefficient norms after metric normalisation.
         let c1norm = c_new_norm.iter().map(|z| z.abs()).sum::<f64>();
-        let sc1norm = sc.iter().map(|z| z.abs()).sum::<f64>();
+        let sc1norm = sc_new.iter().map(|z| z.abs()).sum::<f64>();
 
         if !c1norm.is_finite() || !sc1norm.is_finite() || c1norm <= 0.0 || sc1norm <= 0.0 {
             println!(
@@ -639,6 +643,8 @@ pub fn propagate<T: NOCIScalar>(
         }
 
         c_norm = c_new_norm;
+        hc = hc_new;
+        sc = sc_new;
         e_prev = e;
     }
 
@@ -658,13 +664,26 @@ pub fn projected_energy<T: NOCIScalar>(
     s: &Array2<T>,
     c: &Array1<T>,
 ) -> f64 {
-    let hc = parallel_matvec(h, c);
+    rayleigh_quotient(c, &parallel_matvec(h, c), &parallel_matvec(s, c))
+}
+
+/// Projected energy `E = c^\dagger (Hc) / c^\dagger (Sc)` from precomputed products.
+/// # Arguments
+/// - `c`: NOCI-QMC coefficient vector.
+/// - `hc`: Hamiltonian product `Hc`.
+/// - `sc`: Overlap product `Sc`.
+/// # Returns
+/// - `f64`: Projected energy corresponding to coefficient vector `c`.
+fn rayleigh_quotient<T: NOCIScalar>(
+    c: &Array1<T>,
+    hc: &Array1<T>,
+    sc: &Array1<T>,
+) -> f64 {
     let num = c
         .iter()
         .zip(hc.iter())
         .map(|(&ci, &hci)| ci.conj() * hci)
         .sum::<T>();
-    let sc = parallel_matvec(s, c);
     let den = c
         .iter()
         .zip(sc.iter())
