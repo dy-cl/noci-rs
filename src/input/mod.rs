@@ -3,7 +3,7 @@
 //!
 //! The input submodules define the user options associated with molecular geometry, SCF
 //! convergence, reference-state generation, excitation spaces, deterministic and stochastic
-//! propagation, NOCI-PT2 and SNOCI, experimental NOCCMC, nonorthogonal Wick intermediates,
+//! propagation, NOCI-PT2 and SNOCI, experimental NOCCMC and JM-NOCCMC, nonorthogonal Wick intermediates,
 //! output and restart handling.
 //!
 //! [`Input`] contains the complete calculation specification after parsing. Propagation
@@ -19,6 +19,7 @@
 mod det;
 mod excit;
 mod gmres;
+mod jmnocc;
 mod mol;
 mod nocc;
 mod parse;
@@ -34,6 +35,7 @@ mod write;
 pub use det::DeterministicOptions;
 pub use excit::ExcitationOptions;
 pub use gmres::GMRESOptions;
+pub use jmnocc::{JMNOCCMCOptions, JMPropagator};
 pub use mol::MolOptions;
 pub use nocc::{NOCCMCOptions, NOCCNewton, NOCCPreconditioner};
 pub use prop::{PropagationOptions, Propagator};
@@ -64,6 +66,8 @@ pub struct Input {
     pub snoci: Option<SNOCIOptions>,
     /// NOCCMC options.
     pub noccmc: Option<NOCCMCOptions>,
+    /// Deterministic JM-NOCCMC options.
+    pub jmnoccmc: Option<JMNOCCMCOptions>,
     /// Excitation generation options.
     pub excit: ExcitationOptions,
     /// Shared propagation options.
@@ -116,6 +120,7 @@ impl Default for Input {
             qmc: None,
             snoci: None,
             noccmc: None,
+            jmnoccmc: None,
             excit: ExcitationOptions::default(),
             prop: None,
             wicks: WicksOptions::default(),

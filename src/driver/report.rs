@@ -650,6 +650,15 @@ pub fn print_report(
         );
     }
 
+    if let Some(e_jm) = res.e_jmnoccmc_det {
+        println!(
+            "State(JM-NOCCMC-deterministic): E: {}, [E - {}]: {}",
+            e_jm,
+            label,
+            e_jm - e0
+        );
+    }
+
     if !res.hstates.is_empty() {
         if let Some(e_snoci) = res.e_snoci {
             println!(

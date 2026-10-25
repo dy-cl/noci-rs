@@ -5,12 +5,13 @@ use mpi::topology::Communicator;
 use num_complex::Complex64;
 
 // Crate-root imports.
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 use crate::driver::nocc::run_gnocc;
+use crate::driver::nocc::run_jmnoccmc;
 use crate::driver::noci::{run_qmc_deterministic_noci, run_qmc_stochastic_noci, run_snoci};
 use crate::driver::reference::ReferenceRun;
 use crate::input::Input;
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 use crate::nocc::AmplitudeGuess;
 use crate::{AoData, PostSCFData};
 
@@ -18,7 +19,7 @@ use crate::{AoData, PostSCFData};
 #[derive(Clone, Default)]
 pub struct PostGuess {
     /// Converged GNOCC amplitudes and their natural orbitals.
-    #[cfg(feature = "nocc")]
+    #[cfg(feature = "gnocc")]
     pub nocc: Option<AmplitudeGuess>,
 }
 
@@ -28,6 +29,8 @@ pub struct PostReferenceResults {
     pub e_noci_qmc_det: Option<f64>,
     /// Stochastic NOCI-QMC energy if calculated.
     pub e_noci_qmc_stoch: Option<f64>,
+    /// Deterministic JM-NOCCMC energy if calculated.
+    pub e_jmnoccmc_det: Option<f64>,
     /// Selected NOCI energy if calculated.
     pub e_snoci: Option<f64>,
     /// NOCI-PT2 energy if calculated.
@@ -46,6 +49,7 @@ impl PostReferenceResults {
         Self {
             e_noci_qmc_det: None,
             e_noci_qmc_stoch: None,
+            e_jmnoccmc_det: None,
             e_snoci: None,
             e_pt2: None,
             guess: PostGuess::default(),
@@ -68,7 +72,7 @@ pub fn run_real_post_reference(
     reference: &mut ReferenceRun<f64>,
     input: &mut Input,
     tol: f64,
-    #[cfg_attr(not(feature = "nocc"), allow(unused_variables))] previous: &PostGuess,
+    #[cfg_attr(not(feature = "gnocc"), allow(unused_variables))] previous: &PostGuess,
     world: &impl Communicator,
 ) -> PostReferenceResults {
     // Assemble the immutable post-SCF view shared by all optional methods.
@@ -92,7 +96,13 @@ pub fn run_real_post_reference(
         ));
     }
 
-    #[cfg(feature = "nocc")]
+    // Deterministic JM-NOCCMC is replicated only on the root rank.
+    if world.rank() == 0 && input.jmnoccmc.is_some() {
+        let wicks = reference.wicks.as_ref().map(|ws| ws.view());
+        out.e_jmnoccmc_det = run_jmnoccmc(&post, input, wicks);
+    }
+
+    #[cfg(feature = "gnocc")]
     if input.noccmc.is_some() {
         out.guess.nocc = run_gnocc(
             &post,

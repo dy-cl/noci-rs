@@ -13,10 +13,10 @@ use crate::{Error, Result};
 // Parent/sibling imports.
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
-    InitialShift, Input, Metadynamics, MolOptions, NOCCMCOptions, NOCCNewton, NOCCPreconditioner,
-    PropagationOptions, Propagator, QMCOptions, SCFExcitation, SCFInfo, SNOCIOptions,
-    SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin, SpinBias, StateRecipe, StateType,
-    WicksOptions, WicksStorage, WriteOptions,
+    InitialShift, Input, JMNOCCMCOptions, JMPropagator, Metadynamics, MolOptions, NOCCMCOptions,
+    NOCCNewton, NOCCPreconditioner, PropagationOptions, Propagator, QMCOptions, SCFExcitation,
+    SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin, SpinBias,
+    StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -900,6 +900,54 @@ fn read_noccmc(noccmc_tbl: Option<Table>) -> Option<NOCCMCOptions> {
     })
 }
 
+/// Read JM-NOCCMC options from optional Lua table.
+/// # Arguments:
+/// - `jmnoccmc_tbl`: Optional Lua jmnoccmc table.
+/// # Returns:
+/// - `Option<JMNOCCMCOptions>`: Parsed JM-NOCCMC options.
+fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
+    jmnoccmc_tbl.map(|t| {
+        let defaults = JMNOCCMCOptions::default();
+
+        // Validate the propagator name before assembling the options.
+        let propagator_str: String = t
+            .get("propagator")
+            .unwrap_or_else(|_| defaults.propagator.as_str().to_string());
+        let propagator: JMPropagator = propagator_str.parse().unwrap_or_else(|msg| {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        });
+
+        // The single-reference terms need the expansion up to two ranks above the clusters.
+        let cluster_rank: usize = t.get("cluster_rank").unwrap_or(defaults.cluster_rank);
+        let expansion_rank = t.get::<_, Option<usize>>("expansion_rank").ok().flatten();
+        if let Some(rank) = expansion_rank
+            && rank < cluster_rank + 2
+        {
+            eprintln!(
+                "jmnoccmc.expansion_rank = {rank} is below cluster_rank + 2 = {}",
+                cluster_rank + 2
+            );
+            std::process::exit(1);
+        }
+
+        JMNOCCMCOptions {
+            cluster_rank,
+            expansion_rank,
+            propagator,
+            dt: t.get("dt").unwrap_or(defaults.dt),
+            damping: t.get("damping").unwrap_or(defaults.damping),
+            max_steps: t.get("max_steps").unwrap_or(defaults.max_steps),
+            residual_tol: t.get("residual_tol").unwrap_or(defaults.residual_tol),
+            diagnostics: t
+                .get::<_, Option<bool>>("diagnostics")
+                .ok()
+                .flatten()
+                .unwrap_or(defaults.diagnostics),
+        }
+    })
+}
+
 /// Read GMRES options from an optional nested Lua table, keeping the given defaults for missing
 /// keys.
 /// # Arguments:
@@ -1058,6 +1106,7 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
     let qmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("qmc").unwrap_or(None);
     let snoci_tbl: Option<Table> = globals.get::<_, Option<Table>>("snoci").unwrap_or(None);
     let noccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("noccmc").unwrap_or(None);
+    let jmnoccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("jmnoccmc").unwrap_or(None);
 
     // QMC defaults depend on the propagator, so parse `prop -> qmc` rather than constructing the
     // two option structures independently.
@@ -1073,6 +1122,7 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
         qmc,
         snoci: read_snoci(snoci_tbl),
         noccmc: read_noccmc(noccmc_tbl),
+        jmnoccmc: read_jmnoccmc(jmnoccmc_tbl),
         excit: read_excit(excit_tbl),
         prop,
         wicks: read_wicks(wicks_tbl),

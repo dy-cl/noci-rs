@@ -1,4 +1,4 @@
-// driver/nocc.rs
+// driver/nocc/gnocc.rs
 
 // External crate imports.
 use mpi::topology::Communicator;

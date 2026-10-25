@@ -1,12 +1,12 @@
 // elements/nonorthogonalwicks/eval/helpers.rs
 
 // External crate imports.
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 use ndarray::{Array2, ArrayView2, s};
 
 // Crate-root imports.
 use crate::NOCIScalar;
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 use crate::maths::adjoint;
 use crate::maths::{adjugate_transpose_dynamic, minor_dynamic, mix_columns_dynamic};
 use crate::time_call;
@@ -76,7 +76,7 @@ pub(super) struct Minor {
 /// # Returns
 /// - `Array2<T>`: Extended fundamental-contraction matrix used to build augmented RDM determinants.
 #[inline(always)]
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(super) fn extend_rdm_d<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     d: &ArrayView2<'_, T>,

@@ -291,6 +291,29 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
+    // Print the deterministic JM-NOCCMC enablement state.
+    println!("JMNOCCMC");
+    match &input.jmnoccmc {
+        Some(j) => {
+            println!("ENABLED: true");
+            println!("CLUSTER_RANK: {}", j.cluster_rank);
+            match j.expansion_rank {
+                Some(rank) => println!("EXPANSION_RANK: {}", rank),
+                None => println!("EXPANSION_RANK: all"),
+            }
+            println!("PROPAGATOR: {}", j.propagator.as_str());
+            println!("DT: {}", j.dt);
+            println!("DAMPING: {}", j.damping);
+            println!("MAX_STEPS: {}", j.max_steps);
+            println!("RESIDUAL_TOL: {:e}", j.residual_tol);
+            println!("DIAGNOSTICS: {}", j.diagnostics);
+        }
+        None => {
+            println!("ENABLED: false");
+        }
+    }
+    println!();
+
     // Print output and restart policy.
     println!("WRITE");
     println!("VERBOSE: {}", input.write.verbose);

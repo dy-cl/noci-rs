@@ -7,7 +7,7 @@
 //!   [doi:10.1063/5.0045442](https://doi.org/10.1063/5.0045442).
 
 mod pairs;
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 mod rdm;
 mod rules;
 
@@ -19,7 +19,7 @@ pub(crate) use rules::{build_s_pair, occ_coeffs, pair_density};
 pub(in crate::elements) use pairs::{
     calculate_f_pair_naive, calculate_hs_pair_naive, calculate_m_pair_naive,
 };
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(in crate::elements) use rdm::{
     rdm1_pair_naive, rdm2_pair_naive, rdm3_pair_naive, rdm4_pair_naive,
 };

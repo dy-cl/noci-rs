@@ -1,7 +1,7 @@
 // maths/linalg.rs
 
 // External crate imports.
-use ndarray::{Array1, Array2, Axis, ShapeBuilder};
+use ndarray::{Array1, Array2, ArrayBase, Axis, Data, Ix1, Ix2, ShapeBuilder};
 use ndarray_linalg::{Eig, Eigh, EighInto, Inverse, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -551,16 +551,21 @@ pub fn max_hermitian_error<T: StateScalar>(a: &Array2<T>) -> f64 {
     err
 }
 
-/// Calculate a matrix-vector product `H C = U` in parallel.
+/// Calculate a matrix-vector product `H C = U` in parallel over the rows of `H`.
 /// # Arguments  
-/// - `h`: Matrix.
-/// - `c`: Vector.
+/// - `h`: Matrix, owned or a view such as a column slice.
+/// - `c`: Vector, owned or a view.
 /// # Returns
 /// - `Array1<T>`: Matrix-vector product.
-pub fn parallel_matvec<T: StateScalar>(
-    h: &Array2<T>,
-    c: &Array1<T>,
-) -> Array1<T> {
+pub fn parallel_matvec<T, A, B>(
+    h: &ArrayBase<A, Ix2>,
+    c: &ArrayBase<B, Ix1>,
+) -> Array1<T>
+where
+    T: StateScalar,
+    A: Data<Elem = T> + Sync,
+    B: Data<Elem = T> + Sync,
+{
     let result: Vec<T> = h
         .axis_iter(Axis(0))
         .into_par_iter()

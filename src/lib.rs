@@ -25,9 +25,10 @@
 //! generalised Slater-Condon or extended nonorthogonal Wick engines. The [`noci`] family holds
 //! its full NOCI matrices and factorised operators with its deterministic propagation,
 //! stochastic NOCIQMC and selected NOCI/NOCI-PT2 methods in `noci::deterministic`,
-//! `noci::stochastic` and `noci::selected`. The feature-gated `nocc` family holds a shared
-//! layer of cumulants, excitation spaces, term evaluation and working equations, with the
-//! deterministic GNOCC solver in `nocc::deterministic`. A method folder depends only on its
+//! `noci::stochastic` and `noci::selected`. The [`nocc`] family holds the deterministic
+//! Jeziorski-Monkhorst NOCC propagation in `nocc::deterministic` and, behind the `gnocc`
+//! feature, a shared layer of cumulants, excitation spaces, term evaluation and working
+//! equations with the deterministic GNOCC solver. A method folder depends only on its
 //! family's shared layer and on the modules below it, such as [`elements`], [`determinant`],
 //! [`maths`] and [`scf`], never on a sibling method folder.
 
@@ -40,7 +41,6 @@ pub mod input;
 pub mod integrals;
 pub mod maths;
 pub mod mpiutils;
-#[cfg(feature = "nocc")]
 pub mod nocc;
 pub mod noci;
 pub mod paths;

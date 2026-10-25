@@ -6,7 +6,7 @@ use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
 
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 mod nocc {
     use std::env;
     use std::fmt::Write;
@@ -522,6 +522,6 @@ fn main() {
 
     generate_eval();
 
-    #[cfg(feature = "nocc")]
+    #[cfg(feature = "gnocc")]
     nocc::run();
 }

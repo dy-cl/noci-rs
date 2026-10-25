@@ -8,7 +8,7 @@ mod overlap;
 mod prepare;
 mod preparehamiltonianoverlap;
 mod prepareonebodyoverlap;
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 mod rdm;
 
 // Crate-visible type re-exports.
@@ -23,5 +23,5 @@ pub(crate) use preparehamiltonianoverlap::{
     xw_hamiltonian_overlap_prepared, xw_hamiltonian_overlap_prepared_batched,
 };
 pub(crate) use prepareonebodyoverlap::{xw_f_overlap_prepared, xw_f_overlap_prepared_batched};
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(crate) use rdm::xw_rdmk_same_prepared_batched;

@@ -21,7 +21,6 @@
 
 mod config;
 mod geometry;
-#[cfg(feature = "nocc")]
 mod nocc;
 mod noci;
 mod post;

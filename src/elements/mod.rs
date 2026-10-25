@@ -35,7 +35,7 @@ pub use nonorthogonalwicks::build_wicks_shared;
 
 // Crate-visible type re-exports.
 pub(crate) use orthogonal::OrthogonalHamiltonianScratch;
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(crate) use rdm::{RDM1, RDM2, RDM3, RDM4};
 pub(crate) use types::{DetPair, FockData};
 
@@ -51,5 +51,5 @@ pub(crate) use orthogonal::{
 };
 pub(crate) use overlap::calculate_s_pair;
 pub(crate) use rdm::noci_density;
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(crate) use rdm::{rdm1, rdm2, rdm3, rdm4};

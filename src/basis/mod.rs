@@ -35,4 +35,6 @@ pub use generate::generate_reference_noci_basis;
 pub use normalise::hermitian_hnoci_basis;
 
 // Crate-visible function re-exports.
-pub(crate) use excitation::{excitation_between, excitation_phase_bits, undo_excitation};
+pub(crate) use excitation::{
+    apply_excitation, excitation_between, excitation_phase_bits, undo_excitation,
+};

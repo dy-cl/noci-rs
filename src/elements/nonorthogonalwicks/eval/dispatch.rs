@@ -118,7 +118,7 @@ macro_rules! dispatch_hamiltonian_ranks_inner {
 
 include!(concat!(env!("OUT_DIR"), "/dispatch.rs"));
 
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 /// Dispatch a scalar same-spin rank-`K` RDM and excitation-rank tuple.
 macro_rules! dispatch_rdm_scalar_ranks {
     (
@@ -176,7 +176,7 @@ macro_rules! dispatch_rdm_scalar_ranks {
     }};
 }
 
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 /// Dispatch a SIMD same-spin rank-`K` RDM and excitation-rank tuple.
 macro_rules! dispatch_rdm_ranks {
     (
@@ -242,7 +242,7 @@ pub(super) use dispatch_onebody_scalar_ranks;
 pub(super) use dispatch_overlap_ranks;
 pub(super) use dispatch_overlap_scalar_ranks;
 pub(super) use dispatch_pair_ranks;
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(super) use dispatch_rdm_ranks;
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(super) use dispatch_rdm_scalar_ranks;

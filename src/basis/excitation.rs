@@ -107,6 +107,31 @@ pub(crate) fn excitation_phase_bits(
     if odd { -1.0 } else { 1.0 }
 }
 
+/// Apply the string excitation `\hat\tau = a^\dagger_{\mathrm{parts}} a_{\mathrm{holes}}` to the
+/// determinant with occupation `occ`, giving `\hat\tau|occ\rangle = \pm|occ'\rangle` or zero. The
+/// annihilators act from the highest hole down and the creators from the lowest particle up, as
+/// in [`excitation_phase_bits`], so a fixed `(holes, parts)` is one fixed operator on every
+/// determinant.
+/// # Arguments
+/// - `occ`: Occupancy bitstring.
+/// - `holes`: Orbitals annihilated by the excitation.
+/// - `parts`: Orbitals created by the excitation, disjoint from `holes`.
+/// # Returns
+/// - `Option<(u128, f64)>`: Excited occupation and its sign, or `None` if the excitation
+///   annihilates the determinant.
+#[inline(always)]
+pub(crate) fn apply_excitation(
+    occ: u128,
+    holes: u128,
+    parts: u128,
+) -> Option<(u128, f64)> {
+    if occ & holes != holes || occ & !holes & parts != 0 {
+        return None;
+    }
+    let phase = excitation_phase_bits(occ, holes, parts);
+    Some(((occ & !holes) | parts, phase))
+}
+
 /// Undo a spin-specific excitation from a child occupation bitstring.
 /// # Arguments
 /// - `occ`: Child occupation bitstring.

@@ -1,8 +1,11 @@
 // nocc/mod.rs
-//! Highly experimental nonorthogonal generalised-normal-ordered coupled cluster.
+//! Highly experimental nonorthogonal coupled cluster.
 //!
-//! This feature-gated module develops coupled-cluster theory using a correlated NOCI reference
-//! state
+//! Two formulations are developed. Jeziorski-Monkhorst NOCC (JM-NOCCMC) gives every
+//! nonorthogonal reference its own cluster operator, `|\Psi\rangle = \sum_x c_x e^{\hat T_x}|{}^x\Psi\rangle`,
+//! and is propagated deterministically in `deterministic`. Generalised-normal-ordered NOCC
+//! (GNOCC), behind the `gnocc` feature, develops coupled-cluster theory using a correlated NOCI
+//! reference state
 //!
 //! `|\Phi\rangle = |\Psi_{\mathrm{NOCI}}\rangle = \sum_x c_x|{}^x\Psi\rangle.`
 //!
@@ -24,7 +27,7 @@
 //!
 //! `with the coupled-cluster solution satisfying R_\mu = 0 for every retained excitation.`
 //!
-//! The module implements deterministic GNOCC: the generated metric, residual, energy and
+//! The `gnocc` feature implements deterministic GNOCC: the generated metric, residual, energy and
 //! zeroth-order coupling expressions, the orbital and excitation spaces, the one- through
 //! four-body cumulants of the reference, and the macro-micro amplitude solver. The reduced
 //! density matrices of the reference come from [`crate::elements`]. It is organised as a
@@ -33,36 +36,53 @@
 //!
 //! This implementation is highly experimental and is intended for method development rather
 //! than production calculations. Its equations, truncations and interfaces remain subject to
-//! substantial change and require further validation. Enabling the `nocc` feature also performs
+//! substantial change and require further validation. Enabling the `gnocc` feature also performs
 //! extensive build-time equation generation.
 //!
 //! # References
 //!
 //! - Generalised normal ordering and extended Wick theory: Kutzelnigg and Mukherjee,
 //!   *J. Chem. Phys.* **107**, 432 (1997), [doi:10.1063/1.474405](https://doi.org/10.1063/1.474405).
+//! - Jeziorski-Monkhorst multireference coupled cluster: Jeziorski and Monkhorst, *Phys. Rev. A*
+//!   **24**, 1668 (1981), [doi:10.1103/PhysRevA.24.1668](https://doi.org/10.1103/PhysRevA.24.1668).
 //! - Stochastic coupled cluster: Thom, *Phys. Rev. Lett.* **105**, 263004 (2010),
 //!   [doi:10.1103/PhysRevLett.105.263004](https://doi.org/10.1103/PhysRevLett.105.263004).
 //! - Spin-free generalised normal-ordered coupled cluster: Lee and Tew, *J. Chem. Phys.*
 //!   **164**, 134118 (2026), [doi:10.1063/5.0311996](https://doi.org/10.1063/5.0311996).
 
+#[cfg(feature = "gnocc")]
 mod cumulants;
 mod deterministic;
+#[cfg(feature = "gnocc")]
 mod equations;
+#[cfg(feature = "gnocc")]
 mod setup;
+#[cfg(feature = "gnocc")]
 mod space;
+#[cfg(feature = "gnocc")]
 mod terms;
 
 // Restricted type re-exports.
+#[cfg(feature = "gnocc")]
 pub(crate) use deterministic::AmplitudeSolution;
+pub(crate) use deterministic::JMEquations;
+#[cfg(feature = "gnocc")]
 pub(crate) use setup::ReferenceState;
+#[cfg(feature = "gnocc")]
 pub(crate) use space::AmplitudeGuess;
+#[cfg(feature = "gnocc")]
 pub(crate) use terms::TermEvaluator;
 
 // Restricted function re-exports.
+#[cfg(feature = "gnocc")]
 pub(crate) use cumulants::cumulants;
+#[cfg(feature = "gnocc")]
 pub(crate) use deterministic::solve_amplitudes;
+pub(crate) use deterministic::{jm_space, propagate_amplitudes, report_converged};
+#[cfg(feature = "gnocc")]
 pub(crate) use setup::{
     noci_natural_orbitals, print_noci_natural_orbitals, reference_energy, transform_ao_data,
     transform_noci_basis,
 };
+#[cfg(feature = "gnocc")]
 pub(crate) use space::{build_excitations, build_fois_basis, build_spaces};

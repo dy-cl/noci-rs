@@ -27,7 +27,7 @@ Some numerical tests are sensitive to BLAS and CPU differences. If a test fails
 only because of a small numerical discrepancy, include the failure and details
 of your platform in the pull request.
 
-Do not use `--features nocc` or `--all-features` unless your change concerns the
+Do not use `--features gnocc` or `--all-features` unless your change concerns the
 experimental NOCC implementation, as compiling these can take a large
 amount of time.
 

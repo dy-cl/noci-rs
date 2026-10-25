@@ -49,7 +49,7 @@ members = [
 [features]
 default = []
 timings = []
-nocc = ["dep:wick-build"]
+gnocc = ["dep:wick-build"]
 
 [profile.release]
 opt-level = 3

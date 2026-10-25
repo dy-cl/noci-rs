@@ -4,7 +4,7 @@
 //! packed implementations because they require different arithmetic traits and numerical paths.
 
 // External crate imports.
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 use ndarray::Array2;
 use ndarray::{ArrayView2, ArrayViewMut2};
 use ndarray_linalg::{Determinant, FactorizeInto, InverseInto, SVD};
@@ -23,7 +23,7 @@ use crate::maths::Simd;
 /// - `nel`: Number of occupied orbitals.
 /// # Returns
 /// - `T`: Determinant coefficient for the occupied rows and first `nel` columns.
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(crate) fn det_occupied_minor_dynamic<T: NOCIScalar>(
     c: &Array2<T>,
     mask: u128,

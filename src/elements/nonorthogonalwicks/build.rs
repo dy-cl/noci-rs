@@ -87,10 +87,10 @@ pub struct SameSpinBuild<T: NOCIScalar> {
     /// `Fundamental contraction matrices Y^{(m_i)} for m_i = 0 and m_i = 1.`
     pub y: [Array2<T>; 2],
     /// `Fundamental contraction matrices X^{(m_i)} represented in the external RDM basis.`
-    #[cfg(feature = "nocc")]
+    #[cfg(feature = "gnocc")]
     pub xrdm: [Array2<T>; 2],
     /// `Fundamental contraction matrices Y^{(m_i)} represented in the external RDM basis.`
-    #[cfg(feature = "nocc")]
+    #[cfg(feature = "gnocc")]
     pub yrdm: [Array2<T>; 2],
     /// `Scalar Fock one-body intermediates {}^x F_0^{(m_i)}.`
     pub f0f: [T; 2],
@@ -225,11 +225,11 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         let x = [x0, x1];
         let y = [y0, y1];
 
-        #[cfg(feature = "nocc")]
+        #[cfg(feature = "gnocc")]
         let xrdm = [x0rdm, x1rdm];
-        #[cfg(feature = "nocc")]
+        #[cfg(feature = "gnocc")]
         let yrdm = [y0rdm, y1rdm];
-        #[cfg(not(feature = "nocc"))]
+        #[cfg(not(feature = "gnocc"))]
         drop((x0rdm, x1rdm, y0rdm, y1rdm));
 
         // Construct the left and right partial transformations required by the
@@ -397,9 +397,9 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         Self {
             x,
             y,
-            #[cfg(feature = "nocc")]
+            #[cfg(feature = "gnocc")]
             xrdm,
-            #[cfg(feature = "nocc")]
+            #[cfg(feature = "gnocc")]
             yrdm,
             f0h,
             fh,

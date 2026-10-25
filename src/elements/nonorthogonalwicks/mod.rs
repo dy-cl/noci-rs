@@ -35,7 +35,7 @@ mod build;
 mod eval;
 mod layout;
 mod pairs;
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 mod rdm;
 mod scratch;
 mod shared;
@@ -50,12 +50,12 @@ pub use view::WicksView;
 // Crate-visible type re-exports.
 pub(crate) use build::{DiffSpinBuild, SameSpinBuild};
 pub(crate) use eval::{SameSpinOneBodyBatch, SameSpinOrthogonalOverlapBatch, SameSpinOverlapBatch};
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(crate) use scratch::WickScratch;
 pub(crate) use scratch::WickScratchSpin;
 pub(crate) use storage::{WICKS_DISK_CACHE_VERSION, WicksDiskMeta, WicksRma};
 pub(crate) use types::{DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinMeta};
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(crate) use view::SameSpinView;
 pub(crate) use view::WicksPairView;
 
@@ -63,7 +63,7 @@ pub(crate) use view::WicksPairView;
 pub use shared::build_wicks_shared;
 
 // Crate-visible function re-exports.
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(crate) use eval::xw_rdmk_same_prepared_batched;
 pub(crate) use eval::{
     xw_f_overlap_prepared, xw_f_overlap_prepared_batched, xw_hamiltonian_overlap_prepared,
@@ -78,7 +78,7 @@ pub(crate) use storage::{create_wicks_mmap, load_wicks_mmap};
 pub(in crate::elements) use pairs::{
     calculate_f_pair_wicks, calculate_hs_pair_wicks, calculate_m_pair_wicks, calculate_s_pair_wicks,
 };
-#[cfg(feature = "nocc")]
+#[cfg(feature = "gnocc")]
 pub(in crate::elements) use rdm::{
     rdm1_pair_wicks, rdm2_pair_wicks, rdm3_pair_wicks, rdm4_pair_wicks,
 };
