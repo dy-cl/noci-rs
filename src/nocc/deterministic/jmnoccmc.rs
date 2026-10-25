@@ -124,15 +124,6 @@ impl JMSpace {
             .flat_map(|b| (b.columns.start..b.columns.start + b.projected).map(NOCIIndex))
             .collect()
     }
-
-    /// Global determinant indices of the expansion columns.
-    /// # Arguments:
-    /// - `self`: JM-NOCCMC spaces.
-    /// # Returns:
-    /// - `Vec<NOCIIndex>`: Expansion-space determinants in column order.
-    pub fn columns(&self) -> Vec<NOCIIndex> {
-        (0..self.space.len()).map(NOCIIndex).collect()
-    }
 }
 
 /// Rectangular Hamiltonian and overlap between the projection and expansion spaces.
@@ -399,21 +390,6 @@ fn apply_exponential(
     out
 }
 
-/// Correlated reference `|\Phi_x\rangle = e^{\hat T_x}|{}^x\Psi\rangle` over the block.
-/// # Arguments:
-/// - `block`: Reference block.
-/// - `t`: Amplitudes of the block's cluster operator.
-/// # Returns:
-/// - `Array1<f64>`: Expansion of `|\Phi_x\rangle` over the block's determinants.
-fn correlated_reference(
-    block: &ReferenceBlock,
-    t: &Array1<f64>,
-) -> Array1<f64> {
-    let mut reference = Array1::<f64>::zeros(block.size);
-    reference[0] = 1.0;
-    apply_exponential(block, t, &reference, 1.0)
-}
-
 impl JMEquations {
     /// Assemble JM-NOCCMC from its spaces and the rectangular matrices built over them.
     /// # Arguments:
@@ -449,18 +425,6 @@ impl JMEquations {
         }
     }
 
-    /// Zero amplitudes for every reference.
-    /// # Arguments:
-    /// - `self`: Propagation data.
-    /// # Returns:
-    /// - `Vec<Array1<f64>>`: Zero amplitudes.
-    pub fn zero_amplitudes(&self) -> Vec<Array1<f64>> {
-        self.blocks
-            .iter()
-            .map(|b| Array1::zeros(b.excitations.len()))
-            .collect()
-    }
-
     /// Evaluate the effective matrices and the residuals of every reference.
     /// `H|\Phi_x\rangle` and `|\Phi_x\rangle` are projected onto the projection rows, giving
     /// `S^e` and `H^e` from the reference rows and, for each reference `y`, the projections
@@ -483,7 +447,9 @@ impl JMEquations {
             .iter()
             .zip(t)
             .map(|(block, tx)| {
-                let phi = correlated_reference(block, tx);
+                let mut reference = Array1::<f64>::zeros(block.size);
+                reference[0] = 1.0;
+                let phi = apply_exponential(block, tx, &reference, 1.0);
                 let cols = s![.., block.columns.clone()];
                 (
                     parallel_matvec(&self.h.slice(cols), &phi),
@@ -555,7 +521,7 @@ impl JMEquations {
         t: &[Array1<f64>],
         step: f64,
     ) -> Array2<f64> {
-        let flat = flatten(t);
+        let flat = t.iter().flatten().copied().collect::<Array1<f64>>();
         let columns = (0..flat.len())
             .into_par_iter()
             .map(|j| {
@@ -563,8 +529,20 @@ impl JMEquations {
                 plus[j] += step;
                 let mut minus = flat.clone();
                 minus[j] -= step;
-                let rp = flatten(&self.evaluate(&self.split(&plus)).residual);
-                let rm = flatten(&self.evaluate(&self.split(&minus)).residual);
+                let rp = self
+                    .evaluate(&self.split(&plus))
+                    .residual
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .collect::<Array1<f64>>();
+                let rm = self
+                    .evaluate(&self.split(&minus))
+                    .residual
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .collect::<Array1<f64>>();
                 (rp - rm) / (2.0 * step)
             })
             .collect::<Vec<_>>();
@@ -597,15 +575,6 @@ impl JMEquations {
     }
 }
 
-/// Concatenate per-reference vectors.
-/// # Arguments:
-/// - `v`: Per-reference vectors.
-/// # Returns:
-/// - `Array1<f64>`: Concatenation.
-fn flatten(v: &[Array1<f64>]) -> Array1<f64> {
-    v.iter().flat_map(|x| x.iter().copied()).collect()
-}
-
 /// Eigenvalues of the effective Hamiltonian, sorted by real part.
 /// # Arguments:
 /// - `g`: Effective Hamiltonian.
@@ -630,24 +599,33 @@ pub fn propagate_amplitudes(
     jm: &JMEquations,
     options: &JMNOCCMCOptions,
 ) -> Option<(Vec<Array1<f64>>, JMEvaluation)> {
-    let mut t = jm.zero_amplitudes();
+    let mut t = jm
+        .blocks
+        .iter()
+        .map(|b| Array1::zeros(b.excitations.len()))
+        .collect::<Vec<_>>();
     let mut previous = f64::NAN;
 
     print_jm_table_header();
     for iter in 0..options.max_steps {
         let ev = jm.evaluate(&t);
-        let e = jm_energies(&ev.g)[0].re;
-        let flat = flatten(&ev.residual);
-        let rmax = flat.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
-        let rnorm = flat.dot(&flat).sqrt();
-        let tnorm = flatten(&t).dot(&flatten(&t)).sqrt();
-        print_jm_table_row(iter, e, (e - previous).abs(), rmax, rnorm, tnorm);
-        previous = e;
+        let rmax = ev
+            .residual
+            .iter()
+            .flatten()
+            .fold(0.0_f64, |m, r| m.max(r.abs()));
+        let rnorm = ev.residual.iter().map(|r| r.dot(r)).sum::<f64>().sqrt();
 
-        if !rnorm.is_finite() {
-            println!("JM-NOCCMC propagation diverged.");
+        // A diverged step leaves G non-finite, which the eigensolver rejects.
+        if !rnorm.is_finite() || !ev.g.iter().all(|g| g.is_finite()) {
+            println!("JM-NOCCMC propagation diverged at step {}.", iter);
             return None;
         }
+
+        let e = jm_energies(&ev.g)[0].re;
+        let tnorm = t.iter().map(|x| x.dot(x)).sum::<f64>().sqrt();
+        print_jm_table_row(iter, e, (e - previous).abs(), rmax, rnorm, tnorm);
+        previous = e;
         if rmax < options.residual_tol {
             println!("JM-NOCCMC converged after {} steps.", iter);
             return Some((t, ev));
@@ -689,7 +667,7 @@ pub fn report_converged(
         let propagator = match options.propagator {
             JMPropagator::Plain => jac.clone(),
             JMPropagator::Diagonal => {
-                let d = flatten(&jm.denominators);
+                let d = jm.denominators.iter().flatten().collect::<Vec<_>>();
                 Array2::from_shape_fn(jac.dim(), |(i, j)| jac[(i, j)] / d[i])
             }
         };

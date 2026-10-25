@@ -2,6 +2,7 @@
 
 // Crate-root imports.
 use crate::PostSCFData;
+use crate::determinant::NOCIIndex;
 use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WicksView;
 use crate::input::Input;
@@ -35,7 +36,7 @@ pub(crate) fn run_jmnoccmc(
     println!("Building JM-NOCCMC spaces....");
     let space = jm_space(post.space, options);
     let rows = space.rows();
-    let columns = space.columns();
+    let columns = (0..space.space.len()).map(NOCIIndex).collect::<Vec<_>>();
     println!(
         "Built JM-NOCCMC spaces of {} projection and {} expansion determinants over {} references.",
         rows.len(),
