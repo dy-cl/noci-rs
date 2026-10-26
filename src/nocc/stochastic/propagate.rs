@@ -26,8 +26,12 @@ use super::linked::linked_attempt;
 use super::population::{Block, Excitor, ExcitorKey, ExcitorUpdate, ReferenceSpaces, rank};
 use super::report::{print_header, print_row};
 
-/// Number of cluster attempts in one parallel task.
+/// Smallest number of cluster attempts in one parallel task.
 const CHUNK: usize = 256;
+
+/// Number of parallel tasks per block and kind on each Rayon thread, bounding the per-task
+/// spawn maps held at once.
+const TASKSPERTHREAD: usize = 4;
 
 /// Salt of the rank-local population-rounding stream.
 const ROUNDSALT: u64 = 0x8EBC6AF09C88C6E3;
@@ -49,8 +53,8 @@ enum Task {
 
 /// Output of one parallel task.
 struct TaskOutput {
-    /// Spawned population changes.
-    spawns: Vec<(ExcitorKey, f64)>,
+    /// Population changes per unit time, summed per excitor.
+    spawns: FastMap<ExcitorKey, f64>,
     /// Contribution to `N_z H^e_{zz}` of each block.
     energy: Vec<f64>,
     /// Coupling projections.
@@ -154,7 +158,7 @@ fn run_task(
     let (attempts, ranks) = attempts;
     let m = blocks.len();
     let mut out = TaskOutput {
-        spawns: Vec::new(),
+        spawns: FastMap::default(),
         energy: vec![0.0; m],
         projections: Projections::new(m),
     };
@@ -337,11 +341,13 @@ pub(crate) fn jm_qmc_step(
             let attempts = (0..m)
                 .map(|z| ((nref[z].abs() + totals[m + z]) / ranks).ceil().max(1.0))
                 .collect::<Vec<_>>();
+            let threads = rayon::current_num_threads();
             let mut tasks = Vec::new();
             for (z, &a) in attempts.iter().enumerate() {
                 let a = a as usize;
-                for start in (0..a).step_by(CHUNK) {
-                    let count = CHUNK.min(a - start);
+                let chunk = CHUNK.max(a.div_ceil(TASKSPERTHREAD * threads));
+                for start in (0..a).step_by(chunk) {
+                    let count = chunk.min(a - start);
                     tasks.push(Task::Linked(z, count));
                     if m > 1 {
                         tasks.push(Task::Coupling(z, count));
@@ -361,11 +367,13 @@ pub(crate) fn jm_qmc_step(
                 .collect::<Vec<_>>();
 
             // Combine the tasks in order.
-            let mut spawns = Vec::new();
+            let mut spawns = FastMap::default();
             let mut energies = vec![0.0; m];
             let mut projections = Projections::new(m);
             for output in &outputs {
-                spawns.extend_from_slice(&output.spawns);
+                for (&key, &dn) in &output.spawns {
+                    *spawns.entry(key).or_insert(0.0) += dn;
+                }
                 for (e, v) in energies.iter_mut().zip(&output.energy) {
                     *e += v;
                 }
@@ -398,13 +406,11 @@ pub(crate) fn jm_qmc_step(
                         .filter(|((block, _, _), _)| *block == y)
                         .map(|((_, alpha, beta), v)| ((alpha, beta), v))
                         .collect::<Vec<_>>();
-                    spawns.extend(left_action(
-                        b,
-                        y,
-                        &entries,
-                        spaces.cluster_rank,
-                        (ranks, irank == 0),
-                    ));
+                    for (key, dn) in
+                        left_action(b, y, &entries, spaces.cluster_rank, (ranks, irank == 0))
+                    {
+                        *spawns.entry(key).or_insert(0.0) += dn;
+                    }
                 }
             }
 

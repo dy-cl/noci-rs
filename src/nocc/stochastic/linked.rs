@@ -27,7 +27,7 @@ use rand::Rng;
 use crate::determinant::ExcitedDeterminant;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{NOCIData, calculate_hs_excited};
-use crate::qmc::QmcRng;
+use crate::qmc::{FastMap, QmcRng};
 
 // Parent/sibling imports.
 use super::cluster::collapse;
@@ -130,7 +130,7 @@ fn proposal(
 /// - `cluster`: Cluster excitors and weight `w`.
 /// - `rng`: Random-number generator.
 /// - `scratch`: Wick scratch, unused by same-frame elements.
-/// - `out`: Population changes per unit time.
+/// - `out`: Population changes per unit time, summed per excitor.
 /// # Returns:
 /// - `f64`: Contribution `w\langle{}^z\Psi|\hat H|\hat\tau_C{}^z\Psi\rangle` to `N_z H^e_{zz}`.
 pub(super) fn linked_attempt(
@@ -140,7 +140,7 @@ pub(super) fn linked_attempt(
     cluster: (&[Excitor], f64),
     rng: &mut QmcRng,
     scratch: &mut WickScratchSpin<f64>,
-    out: &mut Vec<(ExcitorKey, f64)>,
+    out: &mut FastMap<ExcitorKey, f64>,
 ) -> f64 {
     let (excitors, weight) = cluster;
     let reference = &spaces.references[z];
@@ -155,7 +155,7 @@ pub(super) fn linked_attempt(
         }
         if (1..=spaces.cluster_rank).contains(&r) {
             let v = commutator(data, reference, excitors, &collapsed, scratch);
-            out.push((key(&collapsed), -weight * v));
+            *out.entry(key(&collapsed)).or_insert(0.0) -= weight * v;
         }
     }
 
@@ -191,7 +191,7 @@ pub(super) fn linked_attempt(
     let v = commutator(data, reference, excitors, &projectee, scratch);
     if v != 0.0 {
         let p = proposal(reference, excitors, &projectee, pgen);
-        out.push((key(&projectee), -weight * v / p));
+        *out.entry(key(&projectee)).or_insert(0.0) -= weight * v / p;
     }
     energy
 }
