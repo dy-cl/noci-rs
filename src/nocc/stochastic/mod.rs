@@ -34,7 +34,6 @@ mod effective;
 mod linked;
 mod population;
 mod propagate;
-mod report;
 
 // Crate-visible function re-exports.
 pub(crate) use propagate::jm_qmc_step;

@@ -15,7 +15,8 @@ use crate::mpiutils::all_reduce_array1;
 use crate::nocc::jm_energies;
 use crate::qmc::{
     ExchangeScratch, FastMap, QmcRng, coalesce, compress_sparse, exchange_updates, gather_updates,
-    owner_words, pack_updates, rank_seed, stop_requested, stream, update_shift,
+    owner_words, pack_updates, print_table_header, print_table_row, rank_seed, stop_requested,
+    stream, update_shift,
 };
 
 // Parent/sibling imports.
@@ -24,7 +25,6 @@ use super::coupling::{Projections, left_action, project_cluster};
 use super::effective::{Effective, ground_energy, reblocked_energy, scaled};
 use super::linked::linked_attempt;
 use super::population::{Block, Excitor, ExcitorKey, ExcitorUpdate, ReferenceSpaces, rank};
-use super::report::{print_header, print_row};
 
 /// Smallest number of cluster attempts in one parallel task.
 const CHUNK: usize = 256;
@@ -276,19 +276,24 @@ pub(crate) fn jm_qmc_step(
     // Hamiltonian of uncorrelated references, `G = S^{-1}H`.
     let norm = c0.iter().map(|c| c.abs()).sum::<f64>();
     let assignment = |iteration: usize| base ^ (iteration as u64).wrapping_mul(ASSIGNSTRIDE);
+    let trial = (0..m)
+        .map(|z| {
+            if c0.len() == m && norm > 0.0 {
+                c0[z] / norm
+            } else {
+                1.0 / m as f64
+            }
+        })
+        .collect::<Vec<_>>();
     let mut populations = FastMap::default();
     for (z, reference) in spaces.references.iter().enumerate() {
-        let c = if c0.len() == m && norm > 0.0 {
-            c0[z] / norm
-        } else {
-            1.0 / m as f64
-        };
+        let c = trial[z];
         let key = (z, reference.alpha, reference.beta);
         if owner(&key, assignment(0), nranks) == irank {
             populations.insert(key, qmc.initial_population * c);
         }
     }
-    let mut lagged = {
+    let (mut lagged, e0) = {
         let mut scratch = WickScratchSpin::new();
         let mut effective = Effective::new(m);
         for (z, bra) in spaces.references.iter().enumerate() {
@@ -298,11 +303,13 @@ pub(crate) fn jm_qmc_step(
                 effective.he[(z, x)] = h;
             }
         }
-        effective.g().expect("singular reference overlap")
+        (
+            effective.g().expect("singular reference overlap"),
+            effective.he[(0, 0)],
+        )
     };
 
-    print_header(irank);
-    let initial = shift;
+    print_table_header(irank, ["NWalk", "NRef", "-", "-"]);
     let mut reached = false;
     let local_norm = populations.values().map(|n: &f64| n.abs()).sum::<f64>();
     let mut previous = all_reduce_array1(world, Array1::from_vec(vec![local_norm]))[0];
@@ -314,6 +321,7 @@ pub(crate) fn jm_qmc_step(
 
     for report in 0..qmc.nreports {
         let mut block = Effective::new(m);
+        let mut projected = (0.0, 0.0);
 
         for cycle in 0..qmc.ncycles {
             let iteration = report * qmc.ncycles + cycle;
@@ -434,6 +442,19 @@ pub(crate) fn jm_qmc_step(
                 }
             }
             let sums = all_reduce_array1(world, Array1::from_vec(sums)).to_vec();
+
+            // Projected energy onto the fixed trial `\langle\Psi_T| = \sum_z c_z\langle{}^z\Psi|`:
+            // `\sum_z c_z\sum_x\langle{}^z\Psi|\hat H|\tilde\Phi_x\rangle` over
+            // `\sum_z c_z\sum_x\langle{}^z\Psi|\tilde\Phi_x\rangle`.
+            for z in 0..m {
+                projected.0 += trial[z] * sums[z];
+                projected.1 += trial[z] * nref[z];
+                for x in (0..m).filter(|&x| x != z) {
+                    projected.0 += trial[z] * sums[m + m * m + z * m + x];
+                    projected.1 += trial[z] * sums[m + z * m + x];
+                }
+            }
+
             for x in 0..m {
                 block.se[(x, x)] += 1.0;
                 block.he[(x, x)] += sums[x] / nref[x];
@@ -516,18 +537,16 @@ pub(crate) fn jm_qmc_step(
         }
 
         // Population statistics over every rank and the shift update.
-        let mut stats = vec![0.0; 3];
+        let mut stats = vec![0.0; 2];
         for (key, n) in &populations {
             let reference = &spaces.references[key.0];
             stats[0] += n.abs();
             if (key.1, key.2) == (reference.alpha, reference.beta) {
                 stats[1] += n.abs();
-            } else {
-                stats[2] += 1.0;
             }
         }
         let stats = all_reduce_array1(world, Array1::from_vec(stats));
-        let (total, nref, excitors) = (stats[0], stats[1], stats[2]);
+        let (total, nref) = (stats[0], stats[1]);
         update_shift(
             &mut shift,
             &mut reached,
@@ -539,11 +558,13 @@ pub(crate) fn jm_qmc_step(
             ),
         );
         previous = total;
-        print_row(
+        let cycles = qmc.ncycles as f64;
+        print_table_row(
             irank,
             (report + 1) * qmc.ncycles,
-            (energy, average, initial, if reached { shift } else { 0.0 }),
-            (total, nref, excitors as usize),
+            (projected.0 / cycles, projected.1 / cycles),
+            (e0, if reached { shift } else { 0.0 }),
+            (total, nref, None),
         );
 
         if stop_requested(irank, nranks, world) {
