@@ -16,6 +16,9 @@ NEXT = 1  # Require the next N levels to be consistent within given error bars.
 # How much error can change between levels before it is not a plateau.
 PLATEAUTOL = 0.25
 
+# Stochastic JM-NOCCMC table header.
+JMHEADER = ["Iter", "EBlock", "EAverage", "ECorr", "EShift", "NWalk", "NRef", "NExcitors"]
+
 # Shoulder picking quantities.
 SHOULDER_POINTS = 10
 MIN_REFERENCE_POPULATION = 10.0
@@ -62,6 +65,10 @@ def extract(path: Path) -> pd.DataFrame:
 
     def isQMCHeader(line: str) -> bool:
         columns = line.split()
+
+        # Stochastic JM-NOCCMC reports block energies of the effective Hamiltonian.
+        if columns == JMHEADER:
+            return True
 
         if columns[:6] != [
             "Iter",
@@ -116,6 +123,15 @@ def extract(path: Path) -> pd.DataFrame:
             if line.startswith("===="):
                 break
 
+            # JM-NOCCMC rows have eight numeric columns.
+            if header == JMHEADER:
+                fields = line.split()
+                if len(fields) == len(JMHEADER) and fields[0].isdigit():
+                    rows.append(
+                        (int(fields[0]), *(float(field) for field in fields[1:]))
+                    )
+                continue
+
             match = pattern.match(line)
 
             if match is None:
@@ -143,17 +159,21 @@ def extract(path: Path) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
 
-    if header[6:] == ["NWalk", "NRef", "-", "-"]:
+    if header == JMHEADER:
+        df.columns = header
+    elif header[6:] == ["NWalk", "NRef", "-", "-"]:
         df = df.iloc[:, :8]
         df.columns = header[:8]
     else:
         df.columns = header
 
-    # Translate historical schema-1 output columns at input boundary only.
+    # Translate historical schema-1 output columns, and the JM-NOCCMC block energy, at input
+    # boundary only.
     df = df.rename(
         columns={
             "NMetric": "NRange",
             "NMetricRef": "NRangeRef",
+            "EBlock": "EProj",
         }
     )
 
