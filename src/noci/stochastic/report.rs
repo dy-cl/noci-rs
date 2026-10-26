@@ -6,7 +6,7 @@ use mpi::topology::Communicator;
 // Crate-root imports.
 use crate::input::Propagator;
 use crate::qmc::excitgen::ExcitationHist;
-use crate::qmc::stop_requested;
+use crate::qmc::{print_table_header, print_table_row, stop_requested};
 
 // Parent/sibling imports.
 use super::restart::{RestartState, write_restart_hdf5};
@@ -22,20 +22,44 @@ pub(in crate::noci::stochastic) fn print_header(
     irank: usize,
     propagator: Propagator,
 ) {
-    if irank == 0 {
-        let (n, nref, naux, naux_occ) = match propagator {
-            Propagator::SApply | Propagator::BApply => {
-                ("NRange", "NRangeRef", "NSample", "NSampleOcc")
-            }
-            _ => ("NWalk", "NRef", "-", "-"),
-        };
+    let populations = match propagator {
+        Propagator::SApply | Propagator::BApply => ["NRange", "NRangeRef", "NSample", "NSampleOcc"],
+        _ => ["NWalk", "NRef", "-", "-"],
+    };
+    print_table_header(irank, populations);
+}
 
-        println!("{}", "=".repeat(132));
-        println!(
-            "{:<8} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-            "Iter", "EProjNum", "EProjDen", "EProj", "ECorr", "EShift", n, nref, naux, naux_occ,
-        );
-    }
+/// Print an iteration line from given population statistics.
+/// # Arguments:
+/// - `irank`: Rank of the current MPI process.
+/// - `iter`: Iteration number to print.
+/// - `state`: Propagation state containing QMC statistics.
+/// - `stats`: Population statistics to print.
+/// - `energies`: Energy of the first basis determinant and the population-control shift.
+/// - `propagator`: Propagator used by the stochastic calculation.
+/// # Returns:
+/// - `()`: Writes the iteration line to stdout on rank zero.
+fn print_stats_row(
+    irank: usize,
+    iter: usize,
+    state: &PropagationState,
+    stats: &PopulationStats,
+    energies: (f64, f64),
+    propagator: Propagator,
+) {
+    let (e0, shift) = energies;
+    let shift = if state.reached { shift } else { 0.0 };
+    let sampled = match propagator {
+        Propagator::SApply | Propagator::BApply => Some((stats.nsampled, stats.nsampledo)),
+        _ => None,
+    };
+    print_table_row(
+        irank,
+        iter,
+        (state.pe.num, state.pe.den),
+        (e0, shift),
+        (stats.nw, stats.nref, sampled),
+    );
 }
 
 /// Print the initial iteration line on rank zero.
@@ -56,38 +80,7 @@ pub(in crate::noci::stochastic) fn print_initial_row(
     shift: f64,
     propagator: Propagator,
 ) {
-    if irank == 0 {
-        let shift = if state.reached { shift } else { 0.0 };
-
-        match propagator {
-            Propagator::SApply | Propagator::BApply => println!(
-                "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
-                iter,
-                state.pe.num,
-                state.pe.den,
-                state.eprojcur,
-                state.eprojcur - e0,
-                shift,
-                state.prev_pop.nw,
-                state.prev_pop.nref,
-                state.prev_pop.nsampled,
-                state.prev_pop.nsampledo,
-            ),
-            _ => println!(
-                "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16} {:>16}",
-                iter,
-                state.pe.num,
-                state.pe.den,
-                state.eprojcur,
-                state.eprojcur - e0,
-                shift,
-                state.prev_pop.nw,
-                state.prev_pop.nref,
-                "-",
-                "-",
-            ),
-        }
-    }
+    print_stats_row(irank, iter, state, &state.prev_pop, (e0, shift), propagator);
 }
 
 /// Print an iteration line using the current population statistics.
@@ -110,38 +103,7 @@ pub(in crate::noci::stochastic) fn print_row(
     shift: f64,
     propagator: Propagator,
 ) {
-    if irank == 0 {
-        let shift = if state.reached { shift } else { 0.0 };
-
-        match propagator {
-            Propagator::SApply | Propagator::BApply => println!(
-                "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
-                iter,
-                state.pe.num,
-                state.pe.den,
-                state.eprojcur,
-                state.eprojcur - e0,
-                shift,
-                stats.nw,
-                stats.nref,
-                stats.nsampled,
-                stats.nsampledo,
-            ),
-            _ => println!(
-                "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16} {:>16}",
-                iter,
-                state.pe.num,
-                state.pe.den,
-                state.eprojcur,
-                state.eprojcur - e0,
-                shift,
-                stats.nw,
-                stats.nref,
-                "-",
-                "-",
-            ),
-        }
-    }
+    print_stats_row(irank, iter, state, stats, (e0, shift), propagator);
 }
 
 /// Write the current stochastic propagation state to a restart file.
