@@ -24,36 +24,21 @@
 use rand::Rng;
 
 // Crate-root imports.
-use crate::determinant::{ExcitedDeterminant, SpinDeterminantState};
+use crate::determinant::ExcitedDeterminant;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{NOCIData, calculate_hs_excited};
 use crate::qmc::QmcRng;
-use crate::qmc::excitgen::OrthogonalUniformGenerator;
 
 // Parent/sibling imports.
 use super::cluster::collapse;
-use super::population::{Excitor, ExcitorKey, rank};
-
-/// Fixed data of one reference block for linked sampling.
-pub(super) struct LinkedBlock<'a> {
-    /// Block index `z`.
-    pub(super) index: usize,
-    /// Block reference determinant.
-    pub(super) reference: ExcitedDeterminant,
-    /// Number of spatial orbitals in the reference frame.
-    pub(super) norb: usize,
-    /// Highest excitation rank of the cluster operator.
-    pub(super) cluster_rank: usize,
-    /// Uniform Hamiltonian-connection generator of the reference frame.
-    pub(super) generator: &'a OrthogonalUniformGenerator,
-}
+use super::population::{Excitor, ExcitorKey, ReferenceSpaces, rank};
 
 /// Evaluate `V_\mu = \langle D_\mu|[\ldots[\hat H,\hat\tau_1],\ldots,\hat\tau_s]|{}^z\Psi\rangle`
 /// as `\sum_{L}(-1)^{|L|}\langle\hat\tau_L^\dagger D_\mu|\hat H|\hat\tau_{C\setminus L}{}^z\Psi\rangle`
 /// with the signs of each excitor action.
 /// # Arguments:
 /// - `data`: NOCI data holding the parent frames and MO caches.
-/// - `block`: Block reference data.
+/// - `reference`: Block reference `{}^z\Psi`.
 /// - `excitors`: Cluster excitors.
 /// - `projectee`: Projection determinant `|D_\mu\rangle`.
 /// - `scratch`: Wick scratch, unused by same-frame elements.
@@ -61,7 +46,7 @@ pub(super) struct LinkedBlock<'a> {
 /// - `f64`: Nested-commutator matrix element.
 fn commutator(
     data: &NOCIData<'_, f64>,
-    block: &LinkedBlock<'_>,
+    reference: &ExcitedDeterminant,
     excitors: &[Excitor],
     projectee: &ExcitedDeterminant,
     scratch: &mut WickScratchSpin<f64>,
@@ -70,13 +55,13 @@ fn commutator(
     let mut value = 0.0;
     for left in 0..1usize << s {
         // Right part acting on the reference.
-        let right = (0..s).filter(|k| left >> k & 1 == 0).try_fold(
-            (block.reference, 1.0),
-            |(det, sign), k| {
-                let (next, sk) = excitors[k].apply(&det)?;
-                Some((next, sign * sk))
-            },
-        );
+        let right =
+            (0..s)
+                .filter(|k| left >> k & 1 == 0)
+                .try_fold((*reference, 1.0), |(det, sign), k| {
+                    let (next, sk) = excitors[k].apply(&det)?;
+                    Some((next, sign * sk))
+                });
         // Left part inverted on the projectee.
         let bra =
             (0..s)
@@ -98,38 +83,19 @@ fn commutator(
     value
 }
 
-/// Spin components of a determinant in its parent frame, giving its occupied and virtual
-/// orbital lists.
-/// # Arguments:
-/// - `reference`: Block reference.
-/// - `det`: Determinant.
-/// - `norb`: Number of spatial orbitals.
-/// # Returns:
-/// - `(SpinDeterminantState, SpinDeterminantState)`: Alpha and beta components.
-fn components(
-    reference: &ExcitedDeterminant,
-    det: &ExcitedDeterminant,
-    norb: usize,
-) -> (SpinDeterminantState, SpinDeterminantState) {
-    (
-        SpinDeterminantState::new(reference.alpha, det.alpha, norb),
-        SpinDeterminantState::new(reference.beta, det.beta, norb),
-    )
-}
-
 /// Probability that the spawning step proposes projectee `\mu` from cluster `C`,
 /// `P(\mu|C) = 2^{-s}\sum_{R\subseteq C} P_{\text{gen}}(\hat\tau_L^\dagger D_\mu|\hat\tau_R{}^z\Psi)`,
 /// summing over the partitions whose right part collapses to `|D_n\rangle` and whose left part
 /// inverts `|D_\mu\rangle` to a distinct single or double excitation `|D_m\rangle` of it.
 /// # Arguments:
-/// - `block`: Block reference data.
+/// - `reference`: Block reference `{}^z\Psi`.
 /// - `excitors`: Cluster excitors.
 /// - `projectee`: Proposed projectee.
 /// - `pgen`: Uniform connection probability.
 /// # Returns:
 /// - `f64`: Proposal probability.
 fn proposal(
-    block: &LinkedBlock<'_>,
+    reference: &ExcitedDeterminant,
     excitors: &[Excitor],
     projectee: &ExcitedDeterminant,
     pgen: f64,
@@ -139,7 +105,7 @@ fn proposal(
     for left in 0..1usize << s {
         let right = (0..s)
             .filter(|k| left >> k & 1 == 0)
-            .try_fold(block.reference, |det, k| Some(excitors[k].apply(&det)?.0));
+            .try_fold(*reference, |det, k| Some(excitors[k].apply(&det)?.0));
         let bra = (0..s)
             .filter(|k| left >> k & 1 == 1)
             .try_fold(*projectee, |det, k| Some(excitors[k].invert(&det)?.0));
@@ -154,31 +120,31 @@ fn proposal(
 }
 
 /// Perform one linked attempt for a selected cluster: accumulate the reference projection
-/// `\langle{}^z\Psi|\hat H|\hat\tau_C{}^z\Psi\rangle` of `\bar H_z`, apply death
-/// `-\Delta\tau w V_C` on the collapsed cluster, and spawn `-\Delta\tau w V_\mu/P(\mu|C)` on one
-/// sampled projectee.
+/// `\langle{}^z\Psi|\hat H|\hat\tau_C{}^z\Psi\rangle` of `\bar H_z`, add `-w V_C` on the
+/// collapsed cluster (death), and `-w V_\mu/P(\mu|C)` on one sampled projectee (spawning). The
+/// changes estimate `-N_zR_{z\mu}` before multiplication by `\Delta\tau`.
 /// # Arguments:
 /// - `data`: NOCI data holding the parent frames and MO caches.
-/// - `block`: Block reference data.
+/// - `spaces`: Projection and expansion spaces of every reference block.
+/// - `z`: Block of the cluster.
 /// - `cluster`: Cluster excitors and weight `w`.
-/// - `dt`: Time step `\Delta\tau`.
 /// - `rng`: Random-number generator.
 /// - `scratch`: Wick scratch, unused by same-frame elements.
-/// - `out`: Spawned population changes.
+/// - `out`: Population changes per unit time.
 /// # Returns:
 /// - `f64`: Contribution `w\langle{}^z\Psi|\hat H|\hat\tau_C{}^z\Psi\rangle` to `N_z H^e_{zz}`.
 pub(super) fn linked_attempt(
     data: &NOCIData<'_, f64>,
-    block: &LinkedBlock<'_>,
+    spaces: &ReferenceSpaces,
+    z: usize,
     cluster: (&[Excitor], f64),
-    dt: f64,
     rng: &mut QmcRng,
     scratch: &mut WickScratchSpin<f64>,
     out: &mut Vec<(ExcitorKey, f64)>,
 ) -> f64 {
     let (excitors, weight) = cluster;
-    let reference = &block.reference;
-    let key = |det: &ExcitedDeterminant| (block.index, det.alpha, det.beta);
+    let reference = &spaces.references[z];
+    let key = |det: &ExcitedDeterminant| (z, det.alpha, det.beta);
     let mut energy = 0.0;
 
     // Reference projection and death on the collapsed cluster.
@@ -187,9 +153,9 @@ pub(super) fn linked_attempt(
         if r <= 2 {
             energy = weight * sign * calculate_hs_excited(data, (reference, &collapsed), scratch).0;
         }
-        if (1..=block.cluster_rank).contains(&r) {
-            let v = commutator(data, block, excitors, &collapsed, scratch);
-            out.push((key(&collapsed), -dt * weight * v));
+        if (1..=spaces.cluster_rank).contains(&r) {
+            let v = commutator(data, reference, excitors, &collapsed, scratch);
+            out.push((key(&collapsed), -weight * v));
         }
     }
 
@@ -202,11 +168,10 @@ pub(super) fn linked_attempt(
     else {
         return energy;
     };
-    let Some((connection, pgen)) = block.generator.sample(rng) else {
+    let Some((connection, pgen)) = spaces.generators[z].sample(rng) else {
         return energy;
     };
-    let (alpha, beta) = components(reference, &source, block.norb);
-    let (ca, cb) = connection.child_occupations(&alpha, &beta);
+    let (ca, cb) = connection.child_of((source.alpha, source.beta), spaces.norb[z]);
     let target = ExcitedDeterminant {
         parent: reference.parent,
         alpha: ca,
@@ -219,14 +184,14 @@ pub(super) fn linked_attempt(
         return energy;
     };
     let r = rank(reference, &projectee);
-    if r == 0 || r > block.cluster_rank {
+    if r == 0 || r > spaces.cluster_rank {
         return energy;
     }
 
-    let v = commutator(data, block, excitors, &projectee, scratch);
+    let v = commutator(data, reference, excitors, &projectee, scratch);
     if v != 0.0 {
-        let p = proposal(block, excitors, &projectee, pgen);
-        out.push((key(&projectee), -dt * weight * v / p));
+        let p = proposal(reference, excitors, &projectee, pgen);
+        out.push((key(&projectee), -weight * v / p));
     }
     energy
 }

@@ -7,15 +7,14 @@ use ndarray::Array1;
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::determinant::{ExcitedDeterminant, NOCIIndex};
+use crate::determinant::ExcitedDeterminant;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{NOCIData, calculate_hs_excited};
 use crate::input::JMNOCCMCOptions;
 use crate::mpiutils::all_reduce_array1;
-use crate::nocc::{jm_energies, reference_determinants};
-use crate::qmc::excitgen::OrthogonalUniformGenerator;
+use crate::nocc::jm_energies;
 use crate::qmc::{
-    ExchangeScratch, QmcRng, coalesce, compress_sparse, exchange_updates, gather_updates,
+    ExchangeScratch, FastMap, QmcRng, coalesce, compress_sparse, exchange_updates, gather_updates,
     owner_words, pack_updates, rank_seed, stop_requested, stream, update_shift,
 };
 
@@ -23,8 +22,8 @@ use crate::qmc::{
 use super::cluster::{collapse, select_cluster};
 use super::coupling::{Projections, left_action, project_cluster};
 use super::effective::{Effective, ground_energy, reblocked_energy, scaled};
-use super::linked::{LinkedBlock, linked_attempt};
-use super::population::{Block, Excitor, ExcitorKey, ExcitorUpdate, FixedMap, rank};
+use super::linked::linked_attempt;
+use super::population::{Block, Excitor, ExcitorKey, ExcitorUpdate, ReferenceSpaces, rank};
 use super::report::{print_header, print_row};
 
 /// Number of cluster attempts in one parallel task.
@@ -56,26 +55,6 @@ struct TaskOutput {
     energy: Vec<f64>,
     /// Coupling projections.
     projections: Projections,
-}
-
-/// Fixed data of the propagation.
-struct Setup<'a> {
-    /// NOCI data holding the parent frames, MO caches and Wick intermediates.
-    data: &'a NOCIData<'a, f64>,
-    /// Block reference determinants.
-    references: Vec<ExcitedDeterminant>,
-    /// Projection rows of every block with ranks `1..=cluster_rank`.
-    rows: Vec<Vec<ExcitedDeterminant>>,
-    /// Number of spatial orbitals of every block.
-    norb: Vec<usize>,
-    /// Uniform connection generator of every block.
-    generators: Vec<OrthogonalUniformGenerator>,
-    /// Highest excitation rank of the cluster operators.
-    cluster_rank: usize,
-    /// Highest rank and cluster size of the expansion of each `e^{\hat T_x}|{}^x\Psi\rangle`.
-    expansion_rank: usize,
-    /// Time step `\Delta\tau`.
-    dt: f64,
 }
 
 /// Rank owning an excitor during one iteration. The assignment is redrawn every iteration from
@@ -111,19 +90,19 @@ fn owner(
 /// Build the per-step view of every block from this rank's populations, with excitors in key
 /// order, and the global reference populations.
 /// # Arguments:
-/// - `setup`: Fixed propagation data.
+/// - `spaces`: Projection and expansion spaces of every reference block.
 /// - `populations`: Excitor populations owned by this rank, references included.
 /// - `nref`: Global reference populations `N_z`.
 /// # Returns:
 /// - `Vec<Block>`: Block populations of this rank.
 fn blocks(
-    setup: &Setup<'_>,
-    populations: &FixedMap<ExcitorKey, f64>,
+    spaces: &ReferenceSpaces,
+    populations: &FastMap<ExcitorKey, f64>,
     nref: &[f64],
 ) -> Vec<Block> {
     let mut keys = populations.keys().copied().collect::<Vec<_>>();
     keys.par_sort_unstable();
-    let mut out = setup
+    let mut out = spaces
         .references
         .iter()
         .zip(nref)
@@ -156,15 +135,17 @@ fn blocks(
 
 /// Run one parallel task of cluster attempts.
 /// # Arguments:
-/// - `setup`: Fixed propagation data.
-/// - `blocks`: Block populations.
+/// - `data`: NOCI data holding the parent frames, MO caches and Wick intermediates.
+/// - `spaces`: Projection and expansion spaces of every reference block.
+/// - `blocks`: Block populations of this rank.
 /// - `task`: Task kind with its block and number of attempts.
 /// - `attempts`: Attempts of the task's block on this rank and the number of ranks.
 /// - `rng`: Task random-number generator.
 /// # Returns:
-/// - `TaskOutput`: Spawns and accumulated projections.
+/// - `TaskOutput`: Population changes per unit time and accumulated projections.
 fn run_task(
-    setup: &Setup<'_>,
+    data: &NOCIData<'_, f64>,
+    spaces: &ReferenceSpaces,
     blocks: &[Block],
     task: Task,
     attempts: (f64, f64),
@@ -182,22 +163,15 @@ fn run_task(
 
     match task {
         Task::Linked(z, count) => {
-            let block = LinkedBlock {
-                index: z,
-                reference: setup.references[z],
-                norb: setup.norb[z],
-                cluster_rank: setup.cluster_rank,
-                generator: &setup.generators[z],
-            };
-            let smax = 4.min(setup.cluster_rank + 2);
+            let smax = 4.min(spaces.cluster_rank + 2);
             for _ in 0..count {
                 let weight =
                     select_cluster(&blocks[z], smax, attempts, ranks, &mut rng, &mut excitors);
                 out.energy[z] += linked_attempt(
-                    setup.data,
-                    &block,
+                    data,
+                    spaces,
+                    z,
                     (&excitors, weight),
-                    setup.dt,
                     &mut rng,
                     &mut scratch,
                     &mut out.spawns,
@@ -208,23 +182,23 @@ fn run_task(
             for _ in 0..count {
                 let weight = select_cluster(
                     &blocks[x],
-                    setup.expansion_rank,
+                    spaces.expansion_rank,
                     attempts,
                     ranks,
                     &mut rng,
                     &mut excitors,
                 );
-                let Some((det, sign)) = collapse(&setup.references[x], &excitors) else {
+                let Some((det, sign)) = collapse(&spaces.references[x], &excitors) else {
                     continue;
                 };
-                if rank(&setup.references[x], &det) > setup.expansion_rank {
+                if rank(&spaces.references[x], &det) > spaces.expansion_rank {
                     continue;
                 }
                 project_cluster(
-                    setup.data,
-                    (&setup.references, &setup.rows),
+                    data,
+                    (&spaces.states, &spaces.rows),
                     x,
-                    (&det, weight * sign),
+                    (&det.state(data.space.parents()), weight * sign),
                     &mut rng,
                     &mut scratch,
                     &mut out.projections,
@@ -282,7 +256,6 @@ pub(crate) fn jm_qmc_step(
         .qmc
         .as_ref()
         .expect("jmnoccmc.qmc options are required");
-    let mocache = data.mocache.expect("JM-NOCCMC requires MO caches");
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
     let m = data.space.len();
@@ -292,53 +265,15 @@ pub(crate) fn jm_qmc_step(
     world.process_at_rank(0).broadcast_into(&mut base);
     let local = rank_seed(base, irank);
 
-    // Block references, projection rows and connection generators.
-    let parents = data.space.parents();
-    let mut setup = Setup {
-        data,
-        references: Vec::with_capacity(m),
-        rows: Vec::with_capacity(m),
-        norb: Vec::with_capacity(m),
-        generators: Vec::with_capacity(m),
-        cluster_rank: options.cluster_rank,
-        expansion_rank: 0,
-        dt: options.dt,
-    };
-    let mut nelec = 0;
-    for z in 0..m {
-        let parent = data.space.state(NOCIIndex(z)).parent;
-        let (oa, ob) = data.space.occupations(NOCIIndex(z));
-        let norb = parents[parent].ca.ncols();
-        nelec = (oa.count_ones() + ob.count_ones()) as usize;
-        setup.references.push(ExcitedDeterminant {
-            parent,
-            alpha: oa,
-            beta: ob,
-        });
-        setup.rows.push(
-            reference_determinants(oa, ob, norb, options.cluster_rank)
-                .into_iter()
-                .skip(1)
-                .map(|(alpha, beta, _)| ExcitedDeterminant {
-                    parent,
-                    alpha,
-                    beta,
-                })
-                .collect(),
-        );
-        setup.norb.push(norb);
-        setup
-            .generators
-            .push(OrthogonalUniformGenerator::new((oa, ob), &mocache[parent]));
-    }
-    setup.expansion_rank = options.expansion_rank.unwrap_or(nelec).min(nelec);
+    let spaces = ReferenceSpaces::new(data, options);
+    let dt = options.dt;
 
     // Initial reference populations from the NOCI coefficients and the exact effective
     // Hamiltonian of uncorrelated references, `G = S^{-1}H`.
     let norm = c0.iter().map(|c| c.abs()).sum::<f64>();
     let assignment = |iteration: usize| base ^ (iteration as u64).wrapping_mul(ASSIGNSTRIDE);
-    let mut populations = FixedMap::default();
-    for (z, reference) in setup.references.iter().enumerate() {
+    let mut populations = FastMap::default();
+    for (z, reference) in spaces.references.iter().enumerate() {
         let c = if c0.len() == m && norm > 0.0 {
             c0[z] / norm
         } else {
@@ -352,8 +287,8 @@ pub(crate) fn jm_qmc_step(
     let mut lagged = {
         let mut scratch = WickScratchSpin::new();
         let mut effective = Effective::new(m);
-        for (z, bra) in setup.references.iter().enumerate() {
-            for (x, ket) in setup.references.iter().enumerate() {
+        for (z, bra) in spaces.references.iter().enumerate() {
+            for (x, ket) in spaces.references.iter().enumerate() {
                 let (h, s) = calculate_hs_excited(data, (bra, ket), &mut scratch);
                 effective.se[(z, x)] = s;
                 effective.he[(z, x)] = h;
@@ -380,7 +315,7 @@ pub(crate) fn jm_qmc_step(
             let iteration = report * qmc.ncycles + cycle;
             let ranks = nranks as f64;
             let is_reference = |key: &ExcitorKey| {
-                let reference = &setup.references[key.0];
+                let reference = &spaces.references[key.0];
                 (key.1, key.2) == (reference.alpha, reference.beta)
             };
 
@@ -395,7 +330,7 @@ pub(crate) fn jm_qmc_step(
             }
             let totals = all_reduce_array1(world, Array1::from_vec(totals)).to_vec();
             let nref = totals[..m].to_vec();
-            let current = blocks(&setup, &populations, &nref);
+            let current = blocks(&spaces, &populations, &nref);
             let gt = scaled(&lagged, &nref);
 
             // Share every block's attempts evenly between ranks and divide them into tasks.
@@ -421,7 +356,7 @@ pub(crate) fn jm_qmc_step(
                         Task::Linked(z, _) | Task::Coupling(z, _) => z,
                     };
                     let rng = stream(local, (iteration as u64) << 32, k as u64);
-                    run_task(&setup, &current, task, (attempts[z], ranks), rng)
+                    run_task(data, &spaces, &current, task, (attempts[z], ranks), rng)
                 })
                 .collect::<Vec<_>>();
 
@@ -467,9 +402,8 @@ pub(crate) fn jm_qmc_step(
                         b,
                         y,
                         &entries,
-                        setup.cluster_rank,
+                        spaces.cluster_rank,
                         (ranks, irank == 0),
-                        setup.dt,
                     ));
                 }
             }
@@ -477,7 +411,7 @@ pub(crate) fn jm_qmc_step(
             // Annihilate this rank's spawns and round small ones stochastically.
             let mut updates = spawns
                 .into_iter()
-                .map(|(key, dn)| ExcitorUpdate::new(key, dn))
+                .map(|(key, dn)| ExcitorUpdate::new(key, dt * dn))
                 .collect::<Vec<_>>();
             updates.par_sort_unstable_by_key(|u| u.excitor());
             coalesce(&mut updates);
@@ -506,7 +440,7 @@ pub(crate) fn jm_qmc_step(
             // Fixed-point-preserving death `-\Delta\tau(g_x-S)n` on every owned population.
             let growth = (0..m).map(|x| gt.row(x).sum()).collect::<Vec<_>>();
             for (key, n) in populations.iter_mut() {
-                *n *= 1.0 - setup.dt * (growth[key.0] - shift);
+                *n *= 1.0 - dt * (growth[key.0] - shift);
             }
 
             // Send the spawns, and the populations whose owner changes under the next
@@ -578,7 +512,7 @@ pub(crate) fn jm_qmc_step(
         // Population statistics over every rank and the shift update.
         let mut stats = vec![0.0; 3];
         for (key, n) in &populations {
-            let reference = &setup.references[key.0];
+            let reference = &spaces.references[key.0];
             stats[0] += n.abs();
             if (key.1, key.2) == (reference.alpha, reference.beta) {
                 stats[1] += n.abs();
@@ -595,7 +529,7 @@ pub(crate) fn jm_qmc_step(
             (
                 qmc.target_population,
                 qmc.shift_damping,
-                setup.dt * qmc.ncycles as f64,
+                dt * qmc.ncycles as f64,
             ),
         );
         previous = total;

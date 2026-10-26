@@ -20,13 +20,13 @@ use rand::Rng;
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::determinant::ExcitedDeterminant;
+use crate::determinant::{ExcitedDeterminant, ExcitedState};
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
-use crate::elements::{NOCIData, calculate_hs_excited, calculate_s_excited};
-use crate::qmc::QmcRng;
+use crate::elements::{NOCIData, calculate_hs_states, calculate_s_states};
+use crate::qmc::{FastMap, QmcRng};
 
 // Parent/sibling imports.
-use super::population::{Block, Excitor, ExcitorKey, FixedMap, rank};
+use super::population::{Block, Excitor, ExcitorKey, rank};
 
 /// Number of non-reference projection rows drawn per cluster and coupled block.
 const ROWDRAWS: usize = 4;
@@ -39,7 +39,7 @@ pub(super) struct Projections {
     /// `\sum w\langle{}^y\Psi|\hat H|D_C\rangle`, indexed `[y][x]`.
     pub(super) he: Vec<Vec<f64>>,
     /// `q^x_y(\nu)` keyed by the occupations of `\nu`, indexed `[y][x]`.
-    pub(super) q: Vec<Vec<FixedMap<(u128, u128), f64>>>,
+    pub(super) q: Vec<Vec<FastMap<(u128, u128), f64>>>,
 }
 
 impl Projections {
@@ -53,7 +53,7 @@ impl Projections {
             se: vec![vec![0.0; m]; m],
             he: vec![vec![0.0; m]; m],
             q: (0..m)
-                .map(|_| (0..m).map(|_| FixedMap::default()).collect())
+                .map(|_| (0..m).map(|_| FastMap::default()).collect())
                 .collect(),
         }
     }
@@ -86,9 +86,10 @@ impl Projections {
 /// `1..=cluster_rank` with weight `n_{\text{rows}}/\text{ROWDRAWS}`.
 /// # Arguments:
 /// - `data`: NOCI data holding the parent frames and Wick intermediates.
-/// - `frames`: Reference of every block and its projection rows with ranks `1..=cluster_rank`.
+/// - `frames`: Prepared reference of every block and its prepared projection rows with ranks
+///   `1..=cluster_rank`.
 /// - `x`: Source block.
-/// - `cluster`: Collapsed determinant `|D_C\rangle` and signed weight `w\phi_C`.
+/// - `cluster`: Prepared collapsed determinant `|D_C\rangle` and signed weight `w\phi_C`.
 /// - `rng`: Random-number generator.
 /// - `scratch`: Wick scratch.
 /// - `out`: Accumulated projections.
@@ -96,9 +97,9 @@ impl Projections {
 /// - `()`: Adds the cluster's projections.
 pub(super) fn project_cluster(
     data: &NOCIData<'_, f64>,
-    frames: (&[ExcitedDeterminant], &[Vec<ExcitedDeterminant>]),
+    frames: (&[ExcitedState], &[Vec<ExcitedState>]),
     x: usize,
-    cluster: (&ExcitedDeterminant, f64),
+    cluster: (&ExcitedState, f64),
     rng: &mut QmcRng,
     scratch: &mut WickScratchSpin<f64>,
     out: &mut Projections,
@@ -111,11 +112,11 @@ pub(super) fn project_cluster(
         }
 
         // Reference row: effective overlap and Hamiltonian.
-        let (h, s) = calculate_hs_excited(data, (reference, det), scratch);
+        let (h, s) = calculate_hs_states(data, (reference, det), scratch);
         out.se[y][x] += weight * s;
         out.he[y][x] += weight * h;
         *out.q[y][x]
-            .entry((reference.alpha, reference.beta))
+            .entry((reference.det.alpha, reference.det.beta))
             .or_insert(0.0) += weight * s;
 
         // Remaining rows drawn uniformly.
@@ -126,9 +127,11 @@ pub(super) fn project_cluster(
         let scale = weight * rows.len() as f64 / ROWDRAWS as f64;
         for _ in 0..ROWDRAWS {
             let nu = &rows[rng.gen_range(0..rows.len())];
-            let s = calculate_s_excited(data, (nu, det), scratch);
+            let s = calculate_s_states(data, (nu, det), scratch);
             if s != 0.0 {
-                *out.q[y][x].entry((nu.alpha, nu.beta)).or_insert(0.0) += scale * s;
+                *out.q[y][x]
+                    .entry((nu.det.alpha, nu.det.beta))
+                    .or_insert(0.0) += scale * s;
             }
         }
     }
@@ -148,24 +151,24 @@ pub(super) fn project_cluster(
 /// - `q`: Complete projection `q(\nu)` keyed by occupations.
 /// - `cluster_rank`: Highest excitation rank of the cluster operator.
 /// - `distribution`: Number of ranks `P` and whether this rank adds the empty set.
-/// - `scale`: Factor applied to every change, such as `\Delta\tau`.
 /// # Returns:
-/// - `Vec<(ExcitorKey, f64)>`: Population changes.
+/// - `Vec<(ExcitorKey, f64)>`: Population changes per unit time.
 pub(super) fn left_action(
     block: &Block,
     index: usize,
     q: &[((u128, u128), f64)],
     cluster_rank: usize,
     distribution: (f64, bool),
-    scale: f64,
 ) -> Vec<(ExcitorKey, f64)> {
     let reference = &block.reference;
     let (ranks, empty) = distribution;
-    let amplitudes = block
+    // Excitors in increasing rank, so the enumeration stops at the first one over budget.
+    let mut amplitudes = block
         .excitors
         .iter()
         .map(|&(excitor, n)| (excitor, ranks * n / block.nref))
         .collect::<Vec<(Excitor, f64)>>();
+    amplitudes.sort_by_key(|(excitor, _)| rank(reference, &excitor.det));
 
     // Depth-first enumeration of sets of distinct excitors in increasing order; each excitor
     // carries `P t`, and the leading `1/P` gives the weight `P^{|K|-1}`.
@@ -183,7 +186,7 @@ pub(super) fn left_action(
         }
         for (k, &(excitor, t)) in amplitudes.iter().enumerate().skip(start) {
             if r + rank(reference, &excitor.det) > cluster_rank {
-                continue;
+                break;
             }
             if let Some((next, sign)) = excitor.apply(&det) {
                 visit(next, -coefficient * t * sign, k + 1, context, out);
@@ -202,11 +205,11 @@ pub(super) fn left_action(
             // The empty set enters once with weight one, the other sets with `P^{|K|-1}`.
             let mut out = Vec::new();
             if empty && rank(reference, &nu) > 0 {
-                out.push(((index, alpha, beta), scale * value));
+                out.push(((index, alpha, beta), value));
             }
             visit(
                 nu,
-                scale * value / ranks,
+                value / ranks,
                 0,
                 (reference, &amplitudes, cluster_rank, index),
                 &mut out,

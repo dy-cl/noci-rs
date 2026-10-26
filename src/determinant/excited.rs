@@ -19,9 +19,12 @@ pub(crate) struct ExcitedDeterminant {
     pub(crate) beta: u128,
 }
 
-/// Parent-relative excitation and numerical payload of an `ExcitedDeterminant`.
+/// An `ExcitedDeterminant` with its parent-relative excitation and numerical payload, prepared
+/// once for repeated matrix-element evaluation.
 #[derive(Clone)]
 pub(crate) struct ExcitedState {
+    /// Determinant in its parent frame.
+    pub(crate) det: ExcitedDeterminant,
     /// Holes and particles relative to the parent determinant in each spin.
     pub(crate) excitation: Excitation,
     /// Alpha fermionic phase relative to the parent determinant.
@@ -60,6 +63,7 @@ impl ExcitedDeterminant {
         let excitation = Excitation { alpha, beta };
         let reduced = ReducedTwoSpinState::new(phase_a * phase_b, excitation.cache());
         ExcitedState {
+            det: *self,
             excitation,
             phase_a,
             phase_b,

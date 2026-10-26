@@ -172,6 +172,64 @@ impl OrthogonalConnection {
         ReducedTwoSpinState::new(phase_a * phase_b, cache)
     }
 
+    /// Construct the child occupations directly from source occupation bitstrings, resolving the
+    /// occupied rank `k` as the `k`-th occupied orbital and the virtual rank `k` as the `k`-th
+    /// empty orbital among `norb`, without building the source's orbital lists.
+    /// # Arguments:
+    /// - `self`: Compact source-relative connection.
+    /// - `occupations`: Source alpha and beta occupation bitstrings.
+    /// - `norb`: Number of spatial orbitals in the parent frame.
+    /// # Returns:
+    /// - `(u128, u128)`: Physical alpha and beta child occupations.
+    #[inline(always)]
+    pub(crate) fn child_of(
+        self,
+        occupations: (u128, u128),
+        norb: usize,
+    ) -> (u128, u128) {
+        let (alpha, beta) = occupations;
+        let all = if norb >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << norb) - 1
+        };
+        let (va, vb) = (!alpha & all, !beta & all);
+        match self {
+            Self::AlphaSingle { occupied, virtual_ } => (
+                alpha ^ nth_bit(alpha, occupied) ^ nth_bit(va, virtual_),
+                beta,
+            ),
+            Self::BetaSingle { occupied, virtual_ } => (
+                alpha,
+                beta ^ nth_bit(beta, occupied) ^ nth_bit(vb, virtual_),
+            ),
+            Self::AlphaDouble { occupied, virtual_ } => (
+                alpha
+                    ^ nth_bit(alpha, occupied[0])
+                    ^ nth_bit(alpha, occupied[1])
+                    ^ nth_bit(va, virtual_[0])
+                    ^ nth_bit(va, virtual_[1]),
+                beta,
+            ),
+            Self::BetaDouble { occupied, virtual_ } => (
+                alpha,
+                beta ^ nth_bit(beta, occupied[0])
+                    ^ nth_bit(beta, occupied[1])
+                    ^ nth_bit(vb, virtual_[0])
+                    ^ nth_bit(vb, virtual_[1]),
+            ),
+            Self::AlphaBetaDouble {
+                occupied_a,
+                virtual_a,
+                occupied_b,
+                virtual_b,
+            } => (
+                alpha ^ nth_bit(alpha, occupied_a) ^ nth_bit(va, virtual_a),
+                beta ^ nth_bit(beta, occupied_b) ^ nth_bit(vb, virtual_b),
+            ),
+        }
+    }
+
     /// Construct physical child occupations from the resolved connection cache.
     /// Each spin sector applies
     /// `O'_\sigma = (O_\sigma \setminus I_\sigma) \cup A_\sigma`.
@@ -198,6 +256,23 @@ impl OrthogonalConnection {
                 | fixed_rank_mask(cache.beta.particles, cache.beta.rank),
         )
     }
+}
+
+/// Mask of the `n`-th set bit of an occupation, counting from the lowest orbital.
+/// # Arguments:
+/// - `bits`: Occupation or vacancy bitstring.
+/// - `n`: Rank of the requested set bit.
+/// # Returns:
+/// - `u128`: Single-bit mask of the `n`-th set bit.
+#[inline(always)]
+fn nth_bit(
+    mut bits: u128,
+    n: u8,
+) -> u128 {
+    for _ in 0..n {
+        bits &= bits - 1;
+    }
+    bits & bits.wrapping_neg()
 }
 
 /// Convert fixed-rank orbital labels to the physical occupation mask

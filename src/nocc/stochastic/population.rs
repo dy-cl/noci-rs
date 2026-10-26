@@ -1,21 +1,16 @@
 // nocc/stochastic/population.rs
 
-// Standard library imports.
-use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::BuildHasherDefault;
-
 // External crate imports.
 use mpi::traits::*;
 
 // Crate-root imports.
 use crate::basis::{apply_excitation, excitation_phase_bits, undo_excitation};
-use crate::determinant::ExcitedDeterminant;
+use crate::determinant::{ExcitedDeterminant, ExcitedState, NOCIIndex};
+use crate::elements::NOCIData;
+use crate::input::JMNOCCMCOptions;
+use crate::nocc::reference_determinants;
+use crate::qmc::excitgen::OrthogonalUniformGenerator;
 use crate::qmc::{FriAmplitude, KeyedUpdate};
-
-/// Hash map with a fixed hasher, so that every MPI rank iterates its replicated populations in
-/// the same order and stays bitwise identical.
-pub(super) type FixedMap<K, V> = HashMap<K, V, BuildHasherDefault<DefaultHasher>>;
 
 /// Excitor `(z, D)` of reference block `z`, identified by the occupations of its determinant
 /// `|D\rangle = \hat\tau|{}^z\Psi\rangle` in the parent frame of `z`. The block's reference has
@@ -127,6 +122,89 @@ pub(super) fn rank(
 ) -> usize {
     ((reference.alpha & !det.alpha).count_ones() + (reference.beta & !det.beta).count_ones())
         as usize
+}
+
+/// Projection and expansion spaces of every reference block: the block references, their
+/// projection rows up to the cluster rank, the expansion rank of each `e^{\hat T_x}|{}^x\Psi\rangle`
+/// and the Hamiltonian-connection generator of each reference frame.
+pub(super) struct ReferenceSpaces {
+    /// Block reference determinants.
+    pub(super) references: Vec<ExcitedDeterminant>,
+    /// Prepared block references.
+    pub(super) states: Vec<ExcitedState>,
+    /// Prepared projection rows of every block with ranks `1..=cluster_rank`.
+    pub(super) rows: Vec<Vec<ExcitedState>>,
+    /// Number of spatial orbitals of every block.
+    pub(super) norb: Vec<usize>,
+    /// Uniform connection generator of every block.
+    pub(super) generators: Vec<OrthogonalUniformGenerator>,
+    /// Highest excitation rank of the cluster operators.
+    pub(super) cluster_rank: usize,
+    /// Highest rank and cluster size of the expansion of each `e^{\hat T_x}|{}^x\Psi\rangle`.
+    pub(super) expansion_rank: usize,
+}
+
+impl ReferenceSpaces {
+    /// Build the spaces of every reference determinant of a NOCI space.
+    /// # Arguments:
+    /// - `data`: NOCI data over the reference determinants.
+    /// - `options`: JM-NOCCMC options.
+    /// # Returns:
+    /// - `ReferenceSpaces`: Spaces of every reference block.
+    /// # Panics
+    /// - Panics if the MO caches are absent.
+    pub(super) fn new(
+        data: &NOCIData<'_, f64>,
+        options: &JMNOCCMCOptions,
+    ) -> Self {
+        let mocache = data.mocache.expect("JM-NOCCMC requires MO caches");
+        let parents = data.space.parents();
+        let m = data.space.len();
+        let mut spaces = Self {
+            references: Vec::with_capacity(m),
+            states: Vec::with_capacity(m),
+            rows: Vec::with_capacity(m),
+            norb: Vec::with_capacity(m),
+            generators: Vec::with_capacity(m),
+            cluster_rank: options.cluster_rank,
+            expansion_rank: 0,
+        };
+
+        let mut nelec = 0;
+        for z in 0..m {
+            let parent = data.space.state(NOCIIndex(z)).parent;
+            let (oa, ob) = data.space.occupations(NOCIIndex(z));
+            let norb = parents[parent].ca.ncols();
+            nelec = (oa.count_ones() + ob.count_ones()) as usize;
+            let reference = ExcitedDeterminant {
+                parent,
+                alpha: oa,
+                beta: ob,
+            };
+            spaces.references.push(reference);
+            spaces.states.push(reference.state(parents));
+            spaces.rows.push(
+                reference_determinants(oa, ob, norb, options.cluster_rank)
+                    .into_iter()
+                    .skip(1)
+                    .map(|(alpha, beta, _)| {
+                        ExcitedDeterminant {
+                            parent,
+                            alpha,
+                            beta,
+                        }
+                        .state(parents)
+                    })
+                    .collect(),
+            );
+            spaces.norb.push(norb);
+            spaces
+                .generators
+                .push(OrthogonalUniformGenerator::new((oa, ob), &mocache[parent]));
+        }
+        spaces.expansion_rank = options.expansion_rank.unwrap_or(nelec).min(nelec);
+        spaces
+    }
 }
 
 /// Population of one reference block on this rank for one propagation step: the global
