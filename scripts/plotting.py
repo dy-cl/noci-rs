@@ -62,6 +62,12 @@ def isQMCHeader(header: str) -> bool:
     """
     columns = header.split()
 
+    # Stochastic JM-NOCCMC reports block energies of the effective Hamiltonian.
+    if columns == [
+        "Iter", "EBlock", "EAverage", "ECorr", "EShift", "NWalk", "NRef", "NExcitors"
+    ]:
+        return True
+
     if columns[:6] != ["Iter", "EProjNum", "EProjDen", "EProj", "ECorr", "EShift"]:
         return False
 
@@ -203,11 +209,13 @@ def readQMC(path: Path) -> pd.DataFrame:
     else:
         df.columns = header
 
-    # Translate historical schema-1 output columns at input boundary only.
+    # Translate historical schema-1 output columns, and the JM-NOCCMC block energy, at input
+    # boundary only.
     df = df.rename(
         columns={
             "NMetric": "NRange",
             "NMetricRef": "NRangeRef",
+            "EBlock": "EProj",
         }
     )
 
