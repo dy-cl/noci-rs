@@ -78,16 +78,19 @@
 //!
 //! # Shared stochastic infrastructure
 //!
-//! The stochastic implementations share:
+//! Seeded random streams, determinant ownership, sparse update exchange and annihilation across
+//! MPI ranks, pivotal FRI compression, the logarithmic shift controller, stop requests and the
+//! uniform and precomputed heat-bath (PCHB) parent-frame excitation generators come from
+//! [`crate::qmc`]. This module adds the NOCIQMC-specific pieces:
 //!
-//! - Uniform and heat-bath excitation generation, and precomputed heat-bath (PCHB) generation of
-//!   BApply parent-orthogonal connections;
+//! - Uniform, heat-bath and overlap-weighted selection of children from the whole determinant
+//!   space;
 //! - On-demand Hamiltonian and overlap matrix elements;
-//! - Determinant ownership and sparse population exchange across MPI ranks;
+//! - Dense population storage and FRI sampling of it;
 //! - Persistent Rayon worker states and nonorthogonal Wick scratch;
 //! - Projected-energy and population statistics;
-//! - Population-control shift updates;
-//! - Report-block accumulation, output, stopping conditions and restart support.
+//! - The shift-tangent controller of the range propagators;
+//! - Report-block accumulation, output and restart support.
 //!
 //! The stochastic driver selects the population representation from the configured propagator,
 //! using explicit `SApply` and `BApply` range branches and the signed-walker implementation for
@@ -99,7 +102,6 @@ mod excit;
 mod fri;
 mod init;
 mod overlapweighted;
-mod pchb;
 mod propagate;
 mod report;
 mod restart;
@@ -109,7 +111,8 @@ mod state;
 mod walkers;
 
 // Public type re-exports.
-pub use state::{ExcitationHist, QMCTimings};
+pub use crate::qmc::excitgen::ExcitationHist;
+pub use state::QMCTimings;
 
 // Public function re-exports.
 pub use propagate::qmc_step;

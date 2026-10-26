@@ -16,24 +16,26 @@ use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::input::ExcitationGen;
 use crate::noci::{OverlapFactors, OverlapScratch, SpinFactorisation};
+use crate::qmc::excitgen::ExcitationHist;
+use crate::qmc::{
+    QmcRng, coalesce, compress_sparse, exchange_updates, pack_updates, stream, target_cutoff,
+};
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::common::{
-    accumulate_generated_updates, coalesce_population_updates, exchange_accumulated_updates,
-    exchange_population_changes, population_stats_projected_energy, prepare_spawn_update_exchange,
+    accumulate_generated_updates, exchange_accumulated_updates, population_stats_projected_energy,
     propagate_iteration, take_population_changes,
 };
 use super::excit::update_overlap_weight;
-use super::fri::{compress_dense_to_sparse, compress_sparse, sample_populations, target_cutoff};
+use super::fri::{compress_dense_to_sparse, sample_populations};
 use super::init::initialise_qmc_state;
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
 use super::shift::update_shift_tangent;
 use super::state::{
-    ExcitationHist, NOCIMPIScratch, NOCIPopulationUpdate, NOCIPropagationResult,
-    NOCIThreadPropagation, OverlapDerivativeSums, QMCRunInfo, QmcRng, ShiftSpec, ShiftTangent,
-    TangentWorker,
+    NOCIMPIScratch, NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation,
+    OverlapDerivativeSums, QMCRunInfo, ShiftSpec, ShiftTangent, TangentWorker,
 };
 
 /// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
@@ -155,7 +157,7 @@ pub(in crate::noci::stochastic) fn apply_overlap_population_changes(
             crate::timers::stochastic::add_apply_remote_overlap_changes,
             {
                 mpi.gather_recv.sort_unstable_by_key(|update| update.det);
-                coalesce_population_updates(&mut mpi.gather_recv);
+                coalesce(&mut mpi.gather_recv);
 
                 apply_population_changes_local(
                     populations,
@@ -192,8 +194,8 @@ pub(in crate::noci::stochastic) fn exchange_shift_tangent(
     // Each rank holds partial contributions to `B_w = \sum_a dt \sum_x S_{wx}\tilde N_x`.
     // Redistribute them by determinant ownership before report-level FRI.
     mpi.send_ranked.append(&mut tangent.remote);
-    prepare_spawn_update_exchange(run.nranks, mpi);
-    let received = exchange_population_changes(world, mpi);
+    pack_updates(run.nranks, mpi, true);
+    let received = exchange_updates(world, mpi);
     for &update in received {
         tangent.add(update.det as usize, update.dn, true);
     }
@@ -390,9 +392,7 @@ pub fn qmc_step(
         for cycle in 0..qmc.ncycles {
             let iter = report * qmc.ncycles + cycle;
 
-            let mut rng = QmcRng::seed_from_u64(
-                run.rank_seed ^ 0xD1B54A32D192ED03 ^ (iter as u64).wrapping_mul(0x9E3779B97F4A7C15),
-            );
+            let mut rng = stream(run.rank_seed, 0xD1B54A32D192ED03, iter as u64);
 
             sample_populations(
                 &state.mc.populations,

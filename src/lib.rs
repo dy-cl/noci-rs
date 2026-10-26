@@ -19,10 +19,11 @@
 //! extended nonorthogonal Wick theorem. MPI provides distributed-memory parallelism and
 //! Rayon provides shared-memory parallelism where supported by the selected method.
 //!
-//! Methods are organised by family first and approach second, above two shared layers.
-//! [`determinant`] holds the determinant spaces, and [`elements`] evaluates every matrix
+//! Methods are organised by family first and approach second, above three shared layers.
+//! [`determinant`] holds the determinant spaces, [`elements`] evaluates every matrix
 //! element and reduced density matrix between their determinants with the orthogonal,
-//! generalised Slater-Condon or extended nonorthogonal Wick engines. The [`noci`] family holds
+//! generalised Slater-Condon or extended nonorthogonal Wick engines, and [`qmc`] holds the
+//! stochastic machinery shared by every Monte Carlo method. The [`noci`] family holds
 //! its full NOCI matrices and factorised operators with its deterministic propagation,
 //! stochastic NOCIQMC and selected NOCI/NOCI-PT2 methods in `noci::deterministic`,
 //! `noci::stochastic` and `noci::selected`. The [`nocc`] family holds the deterministic
@@ -30,7 +31,7 @@
 //! feature, a shared layer of cumulants, excitation spaces, term evaluation and working
 //! equations with the deterministic GNOCC solver. A method folder depends only on its
 //! family's shared layer and on the modules below it, such as [`elements`], [`determinant`],
-//! [`maths`] and [`scf`], never on a sibling method folder.
+//! [`qmc`], [`maths`] and [`scf`], never on a sibling method folder.
 
 pub mod basis;
 pub mod determinant;
@@ -44,6 +45,7 @@ pub mod mpiutils;
 pub mod nocc;
 pub mod noci;
 pub mod paths;
+pub mod qmc;
 pub mod scalar;
 pub mod scf;
 pub mod timers;

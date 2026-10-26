@@ -5,32 +5,33 @@ use std::path::Path;
 use std::sync::Mutex;
 
 // External crate imports.
-use mpi::datatype::{Partition, PartitionMut};
 use mpi::topology::Communicator;
-use mpi::traits::*;
 use rand::SeedableRng;
 
 // Crate-root imports.
-use crate::determinant::{AuxiliaryIndex, AuxiliarySpace, NOCIIndex};
+use crate::determinant::{AuxiliarySpace, NOCIIndex};
 use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::input::ExcitationGen;
 use crate::noci::{OverlapFactors, SpinFactorisation};
+use crate::qmc::excitgen::{ExcitationHist, OrthogonalUniformGenerator};
+use crate::qmc::{
+    QmcRng, coalesce, compress_sparse, exchange_updates, gather_updates, pack_updates, stream,
+    target_cutoff,
+};
 
 // Parent/sibling imports.
 use super::common::{
     construct_qmc_run, population_stats_projected_energy, propagate_iteration_auxiliary,
 };
-use super::excit::{AuxiliaryGenerator, OrthogonalUniformGenerator};
-use super::fri::{compress_dense_to_sparse, compress_sparse, sample_populations, target_cutoff};
+use super::excit::{AuxiliaryGenerator, pchb_generator};
+use super::fri::{compress_dense_to_sparse, sample_populations};
 use super::init::initialise_qmc_state;
-use super::pchb::PchbGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
 use super::shift::update_shift_tangent;
 use super::state::{
     AuxiliaryMPIScratch, AuxiliaryPopulationUpdate, AuxiliaryPropagationResult,
-    AuxiliaryThreadPropagation, ExcitationHist, NOCIMPIScratch, NOCIPopulationUpdate, QmcRng,
-    ShiftTangent,
+    AuxiliaryThreadPropagation, NOCIMPIScratch, NOCIPopulationUpdate, ShiftTangent,
 };
 
 /// Accumulate one cycle's `\chi_D^P` events and retain remote events for report exchange.
@@ -45,7 +46,7 @@ fn accumulate_generated_updates_auxiliary(
     result: &mut AuxiliaryPropagationResult,
     updates: &mut Vec<AuxiliaryPopulationUpdate>,
     scratch: &mut AuxiliaryMPIScratch,
-    histogram: &mut Option<super::state::ExcitationHist>,
+    histogram: &mut Option<ExcitationHist>,
 ) {
     updates.append(&mut result.local);
     scratch.send_ranked.append(&mut result.remote);
@@ -56,28 +57,6 @@ fn accumulate_generated_updates_auxiliary(
     } else {
         result.samples.clear();
     }
-}
-
-/// Coalesce repeated auxiliary determinant amplitudes in place.
-/// # Arguments:
-/// - `updates`: Sparse auxiliary updates with arbitrary ordering.
-/// # Returns
-/// - `()`: Sorts by determinant key and combines repeated amplitudes.
-fn coalesce_auxiliary_population_updates(updates: &mut Vec<AuxiliaryPopulationUpdate>) {
-    updates.sort_unstable_by_key(|update| update.det);
-
-    let mut out = 0usize;
-    for i in 0..updates.len() {
-        let update = updates[i];
-        if out != 0 && updates[out - 1].det == update.det {
-            updates[out - 1].dn += update.dn;
-        } else {
-            updates[out] = update;
-            out += 1;
-        }
-    }
-    updates.truncate(out);
-    updates.retain(|update| update.dn != 0.0);
 }
 
 /// Exchange pre-routed auxiliary events and combine them with local report updates.
@@ -92,87 +71,12 @@ fn redistribute_population_updates_auxiliary(
     scratch: &mut AuxiliaryMPIScratch,
     world: &impl Communicator,
 ) {
-    // Sort events by destination rank, then build contiguous per-rank send
-    // segments and their displacements for the variable-count exchange.
-    scratch
-        .send_ranked
-        .sort_unstable_by_key(|(peer, update)| (*peer, update.det));
-    scratch.send_counts.fill(0);
-    scratch.send_displacements.fill(0);
-    scratch.send_contig.clear();
-    for &(peer, update) in &scratch.send_ranked {
-        scratch.send_counts[peer] += 1;
-        scratch.send_contig.push(update);
-    }
-    let mut nsend = 0usize;
-    for peer in 0..scratch.send_counts.len() {
-        scratch.send_displacements[peer] = nsend as i32;
-        nsend += scratch.send_counts[peer] as usize;
-    }
-
-    // Exchange counts first so every rank can size its receive segments.
-    world.all_to_all_into(&scratch.send_counts[..], &mut scratch.recv_counts[..]);
-    let mut nrecv = 0usize;
-    for peer in 0..scratch.recv_counts.len() {
-        scratch.recv_displacements[peer] = nrecv as i32;
-        nrecv += scratch.recv_counts[peer] as usize;
-    }
-    scratch.recv_contig.resize(
-        nrecv,
-        AuxiliaryPopulationUpdate::new(AuxiliaryIndex(0), 0.0),
-    );
-    let send = Partition::new(
-        &scratch.send_contig[..],
-        &scratch.send_counts[..],
-        &scratch.send_displacements[..],
-    );
-    let mut recv = PartitionMut::new(
-        &mut scratch.recv_contig[..],
-        &scratch.recv_counts[..],
-        &scratch.recv_displacements[..],
-    );
-
-    // Exchange remote events and append already-owned local events to the
-    // same owner-local buffer.
-    world.all_to_all_varcount_into(&send, &mut recv);
+    // Send every routed event, unmerged, to its owner and append the already-owned local
+    // events to the same owner-local buffer.
+    pack_updates(scratch.send_counts.len(), scratch, false);
+    exchange_updates(world, scratch);
     scratch.recv_contig.append(local);
     scratch.send_ranked.clear();
-}
-
-/// Gather owner-compressed auxiliary vectors so every rank sees identical `\chi`.
-/// # Arguments:
-/// - `owned`: Complete compressed updates owned by this rank.
-/// - `scratch`: Reusable auxiliary MPI storage.
-/// - `world`: MPI communicator.
-/// # Returns
-/// - `&[AuxiliaryPopulationUpdate]`: Identical global compressed vector on every rank.
-fn gather_all_auxiliary_updates<'a>(
-    owned: &[AuxiliaryPopulationUpdate],
-    scratch: &'a mut AuxiliaryMPIScratch,
-    world: &impl Communicator,
-) -> &'a [AuxiliaryPopulationUpdate] {
-    let nsend = owned.len() as i32;
-    world.all_gather_into(&nsend, &mut scratch.gather_counts[..]);
-    let mut ntotal = 0usize;
-    for peer in 0..scratch.gather_counts.len() {
-        scratch.gather_displs[peer] = ntotal as i32;
-        ntotal += scratch.gather_counts[peer] as usize;
-    }
-    if ntotal == 0 {
-        scratch.gather_recv.clear();
-        return &scratch.gather_recv;
-    }
-    scratch.gather_recv.resize(
-        ntotal,
-        AuxiliaryPopulationUpdate::new(AuxiliaryIndex(0), 0.0),
-    );
-    let mut recv = PartitionMut::new(
-        &mut scratch.gather_recv[..],
-        &scratch.gather_counts[..],
-        &scratch.gather_displs[..],
-    );
-    world.all_gather_varcount_into(owned, &mut recv);
-    &scratch.gather_recv
 }
 
 /// Report persistent BApply factor backing and lazily discovered physical components.
@@ -267,7 +171,7 @@ pub fn qmc_step(
     }
     // Select the parent-orthogonal proposal; PCHB tables are built once per parent.
     let generator = if qmc.excitation_gen == ExcitationGen::Pchb {
-        let pchb = PchbGenerator::new(data, &mocache[..factorisation.nparents()]);
+        let pchb = pchb_generator(data, &mocache[..factorisation.nparents()]);
         if run.irank == 0 {
             println!(
                 "PCHB excitation tables: {:.3} MiB",
@@ -332,11 +236,7 @@ pub fn qmc_step(
         auxiliary_mpi.send_ranked.clear();
         for cycle in 0..qmc.ncycles {
             let iteration = report * qmc.ncycles + cycle;
-            let mut rng = QmcRng::seed_from_u64(
-                run.rank_seed
-                    ^ 0xD1B54A32D192ED03
-                    ^ (iteration as u64).wrapping_mul(0x9E3779B97F4A7C15),
-            );
+            let mut rng = stream(run.rank_seed, 0xD1B54A32D192ED03, iteration as u64);
             sample_populations(
                 &state.mc.populations,
                 &mut state.mc.sampled,
@@ -363,7 +263,8 @@ pub fn qmc_step(
             );
         }
         // Coalesce generated auxiliary amplitudes on their owning MPI ranks.
-        coalesce_auxiliary_population_updates(&mut local_updates);
+        local_updates.sort_unstable_by_key(|update| update.det);
+        coalesce(&mut local_updates);
         let mut owner_updates = if run.nranks == 1 {
             // Preserve allocation across reports while avoiding MPI scratch and a second coalesce.
             std::mem::take(&mut local_updates)
@@ -375,7 +276,8 @@ pub fn qmc_step(
             );
 
             let mut updates = std::mem::take(&mut auxiliary_mpi.recv_contig);
-            coalesce_auxiliary_population_updates(&mut updates);
+            updates.sort_unstable_by_key(|update| update.det);
+            coalesce(&mut updates);
             updates
         };
         // Compress the auxiliary vector before applying `B^dagger` to physical populations.
@@ -392,7 +294,7 @@ pub fn qmc_step(
         let physical_updates: &[AuxiliaryPopulationUpdate] = if run.nranks == 1 {
             &owner_updates
         } else {
-            gather_all_auxiliary_updates(&owner_updates, &mut auxiliary_mpi, world)
+            gather_updates(world, &owner_updates, &mut auxiliary_mpi)
         };
 
         if qmc.momentum_beta == 0.0 {

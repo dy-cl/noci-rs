@@ -1,17 +1,16 @@
 // noci/stochastic/report.rs
-// Standard library imports.
-use std::path::Path;
 
 // External crate imports.
 use mpi::topology::Communicator;
-use mpi::traits::*;
 
 // Crate-root imports.
 use crate::input::Propagator;
+use crate::qmc::excitgen::ExcitationHist;
+use crate::qmc::stop_requested;
 
 // Parent/sibling imports.
 use super::restart::{RestartState, write_restart_hdf5};
-use super::state::{ExcitationHist, PopulationStats, PropagationState, QMCRunInfo};
+use super::state::{PopulationStats, PropagationState, QMCRunInfo};
 
 /// Print the iteration table header on rank zero.
 /// # Arguments:
@@ -205,19 +204,8 @@ pub(in crate::noci::stochastic) fn check_stop(
     world: &impl Communicator,
     restart_path: Option<&String>,
 ) -> Option<(f64, Option<ExcitationHist>)> {
-    // Rank zero observes the stop request and broadcasts one decision so all
-    // ranks enter the collective restart write together.
-    let mut stop = 0;
-
-    if run.irank == 0 && Path::new("STOP").exists() {
-        stop = 1;
-    }
-
-    if run.nranks > 1 {
-        world.process_at_rank(0).broadcast_into(&mut stop);
-    }
-
-    if stop == 0 {
+    // Every rank receives one decision so all ranks enter the collective restart write together.
+    if !stop_requested(run.irank, run.nranks, world) {
         return None;
     }
 

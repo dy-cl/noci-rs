@@ -17,17 +17,18 @@ use std::sync::Mutex;
 use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
 use mpi::traits::*;
-use rand::SeedableRng;
 
 // Crate-root imports.
 use crate::elements::NOCIData;
 use crate::input::ExcitationGen;
 use crate::noci::SpinFactorisation;
+use crate::qmc::excitgen::ExcitationHist;
+use crate::qmc::{coalesce, stream};
 
 // Parent/sibling imports.
 use super::common::{
-    accumulate_generated_updates, coalesce_population_updates, exchange_accumulated_updates,
-    population_stats_projected_energy, propagate_iteration, take_population_changes,
+    accumulate_generated_updates, exchange_accumulated_updates, population_stats_projected_energy,
+    propagate_iteration, take_population_changes,
 };
 use super::excit::update_overlap_weight;
 use super::fri::sample_populations;
@@ -36,9 +37,9 @@ use super::report::{check_stop, print_header, print_initial_row, print_row, writ
 use super::restart::{population_representation, read_restart_hdf5};
 use super::shift::update_shift;
 use super::state::{
-    ExcitationHist, MCState, NOCIMPIScratch, NOCIPropagationResult, NOCIThreadPropagation,
-    OverlapDerivativeSums, PopulationStats, ProjectedEnergyUpdate, PropagationState, QMCRunInfo,
-    QmcRng, ShiftSpec, SparsePopulations,
+    MCState, NOCIMPIScratch, NOCIPropagationResult, NOCIThreadPropagation, OverlapDerivativeSums,
+    PopulationStats, ProjectedEnergyUpdate, PropagationState, QMCRunInfo, ShiftSpec,
+    SparsePopulations,
 };
 
 /// Initialise rank-local walker populations from the initial coefficient vector.
@@ -278,9 +279,7 @@ pub fn qmc_step(
         for cycle in 0..qmc.ncycles {
             let iter = report * qmc.ncycles + cycle;
 
-            let mut rng = QmcRng::seed_from_u64(
-                run.rank_seed ^ 0xD1B54A32D192ED03 ^ (iter as u64).wrapping_mul(0x9E3779B97F4A7C15),
-            );
+            let mut rng = stream(run.rank_seed, 0xD1B54A32D192ED03, iter as u64);
 
             sample_populations(
                 &state.mc.populations,
@@ -324,7 +323,7 @@ pub fn qmc_step(
 
         take_population_changes(&mut state.mc, &mut population_changes);
         population_changes.sort_unstable_by_key(|update| update.det);
-        coalesce_population_updates(&mut population_changes);
+        coalesce(&mut population_changes);
         apply_population_changes(&mut state.mc.populations, &population_changes, &local_pos);
 
         // Recompute projected observables and adapt shift and overlap-generator weight.

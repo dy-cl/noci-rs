@@ -2,12 +2,16 @@
 
 ## Module Layout
 
-Organise methods by family first and approach second, above two shared layers:
+Organise methods by family first and approach second, above three shared layers:
 
 1. `determinant/`: parent orbital frames, determinant identities and the determinant spaces.
 2. `elements/`: every matrix element and reduced density matrix between determinants. The
    operator files dispatch each determinant pair to one engine: `orthogonal/`, `naive/`
    (generalised Slater-Condon) or `nonorthogonalwicks/`.
+3. `qmc/`: stochastic machinery independent of the population representation: seeded random
+   streams, MPI ownership, exchange and annihilation of keyed updates, FRI compression, the
+   population-control shift, stop requests, and excitation generators within one parent frame
+   (`excitgen/`).
 
 Each family folder holds its shared layer at the root and one subfolder per approach:
 
@@ -21,8 +25,9 @@ Folders name the approach, while types and functions name the method, for exampl
 `noci::selected::snoci_step` and `SNOCIOptions`.
 
 A method subfolder may depend only on its own family's shared layer and on modules below it,
-such as `elements`, `determinant`, `maths` and `scf`. It never depends on a sibling method
-subfolder. `nocc/` may use the `noci/` shared layer but never `noci/`'s method subfolders.
+such as `elements`, `determinant`, `qmc`, `maths` and `scf`. It never depends on a sibling method
+subfolder. `nocc/` may use the `noci/` shared layer but never `noci/`'s method subfolders. `qmc/`
+never depends on a method family.
 
 ## Rust Module Headers
 

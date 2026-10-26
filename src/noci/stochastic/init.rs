@@ -9,14 +9,16 @@ use mpi::traits::*;
 use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::input::Propagator;
+use crate::qmc::excitgen::ExcitationHist;
+use crate::qmc::gather_updates;
 use crate::time_call;
 
 // Parent/sibling imports.
-use super::common::{find_s, gather_all_populations, projected_energy};
+use super::common::{find_s, projected_energy};
 use super::restart::{population_representation, read_restart_hdf5};
 use super::state::{
-    ExcitationHist, MCState, NOCIMPIScratch, NOCIPopulationUpdate, PopulationStats,
-    PropagationState, QMCRunInfo, SparsePopulations,
+    MCState, NOCIMPIScratch, NOCIPopulationUpdate, PopulationStats, PropagationState, QMCRunInfo,
+    SparsePopulations,
 };
 
 /// Initialise the persistent range-safe population vector as `S c0`.
@@ -52,7 +54,7 @@ pub(in crate::noci::stochastic) fn initialise_populations(
             })
             .collect::<Vec<_>>();
 
-        let global = gather_all_populations(world, &local, mpiscratch);
+        let global = gather_updates(world, &local, mpiscratch);
 
         let mut populations = vec![0.0; run.owned.len()];
 

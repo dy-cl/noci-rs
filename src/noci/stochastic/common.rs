@@ -6,11 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 // External crate imports.
 use mpi::collective::SystemOperation;
-use mpi::datatype::{Partition, PartitionMut};
 use mpi::topology::Communicator;
 use mpi::traits::*;
 use ndarray::Array2;
-use rand::SeedableRng;
 use rayon::prelude::*;
 
 // Crate-root imports.
@@ -21,6 +19,7 @@ use crate::input::{Input, Propagator};
 use crate::maths::general_evp;
 use crate::mpiutils::broadcast;
 use crate::noci::OverlapFactors;
+use crate::qmc::{exchange_updates, owner, pack_updates, rank_seed, stream};
 use crate::time_call;
 
 // Parent/sibling imports.
@@ -30,7 +29,7 @@ use super::restart::{basis_hash, population_representation, restart_base_seed};
 use super::state::{
     AuxiliaryPropagationResult, AuxiliaryThreadPropagation, MCState, NOCIMPIScratch,
     NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation, PopulationStats,
-    ProjectedEnergyUpdate, QMCRunInfo, QmcRng, ScratchSize, ShiftSpec, SparsePopulations, owner,
+    ProjectedEnergyUpdate, QMCRunInfo, ScratchSize, ShiftSpec, SparsePopulations,
 };
 
 /// Accumulate one signed population change in dense/sparse Monte Carlo storage.
@@ -106,54 +105,6 @@ pub(in crate::noci::stochastic) fn accumulate_generated_updates(
     scratch.send_ranked.append(&mut propagation.remote);
 }
 
-/// Pack remote population updates into deterministic destination blocks.
-/// # Arguments:
-/// - `nranks`: Number of MPI ranks.
-/// - `scratch`: Reusable MPI update storage.
-/// # Returns:
-/// - `()`: Fills contiguous send data, counts, and displacements.
-pub(in crate::noci::stochastic) fn prepare_spawn_update_exchange(
-    nranks: usize,
-    scratch: &mut NOCIMPIScratch,
-) {
-    // Sort by destination and determinant so repeated spawn events can be
-    // coalesced before MPI transmission.
-    scratch.send_counts.fill(0);
-    scratch.send_displacements.fill(0);
-    scratch
-        .send_ranked
-        .sort_unstable_by_key(|&(peer, update)| (peer, update.det));
-    let mut out = 0usize;
-    for i in 0..scratch.send_ranked.len() {
-        let (peer, update) = scratch.send_ranked[i];
-        if out != 0
-            && scratch.send_ranked[out - 1].0 == peer
-            && scratch.send_ranked[out - 1].1.det == update.det
-        {
-            scratch.send_ranked[out - 1].1.dn += update.dn;
-        } else {
-            scratch.send_ranked[out] = (peer, update);
-            out += 1;
-        }
-    }
-
-    // Keep nonzero coalesced events in per-rank contiguous segments and
-    // record the counts and displacements used by the collective exchange.
-    scratch.send_ranked.truncate(out);
-    scratch.send_contig.clear();
-    for &(peer, update) in &scratch.send_ranked {
-        if update.dn != 0.0 {
-            scratch.send_counts[peer] += 1;
-            scratch.send_contig.push(update);
-        }
-    }
-    let mut sent = 0usize;
-    for peer in 0..nranks {
-        scratch.send_displacements[peer] = sent as i32;
-        sent += scratch.send_counts[peer] as usize;
-    }
-}
-
 /// Exchange report-accumulated remote spawn updates and add owner-local results.
 /// # Arguments:
 /// - `mc`: Current Monte Carlo state.
@@ -173,8 +124,8 @@ pub(in crate::noci::stochastic) fn exchange_accumulated_updates(
         scratch.send_ranked.clear();
         return;
     }
-    prepare_spawn_update_exchange(run.nranks, scratch);
-    let received = exchange_population_changes(world, scratch);
+    pack_updates(run.nranks, scratch, true);
+    let received = exchange_updates(world, scratch);
     for &update in received {
         add_delta(mc, update.det as usize, update.dn);
     }
@@ -232,9 +183,7 @@ pub(in crate::noci::stochastic) fn propagate_iteration(
             let tid = context.index();
             let mut worker = workers_shared[tid].lock().unwrap();
             worker.clear();
-            worker.rng = QmcRng::seed_from_u64(
-                run.rank_seed ^ tid as u64 ^ (iteration as u64).wrapping_mul(0x9E3779B97F4A7C15),
-            );
+            worker.rng = stream(run.rank_seed, tid as u64, iteration as u64);
             // Generate diagonal, tangent, and off-diagonal contributions for assigned sources.
             loop {
                 let start = next.fetch_add(8, Ordering::Relaxed);
@@ -333,9 +282,7 @@ pub(in crate::noci::stochastic) fn propagate_iteration_auxiliary(
             let tid = context.index();
             let mut worker = workers_shared[tid].lock().unwrap();
             worker.clear();
-            worker.rng = QmcRng::seed_from_u64(
-                run.rank_seed ^ tid as u64 ^ (iteration as u64).wrapping_mul(0x9E3779B97F4A7C15),
-            );
+            worker.rng = stream(run.rank_seed, tid as u64, iteration as u64);
 
             // Generate auxiliary diagonal, tangent, and off-diagonal residual contributions.
             loop {
@@ -710,7 +657,7 @@ pub(in crate::noci::stochastic) fn construct_qmc_run(
             "Warning: restart base seed {restart_seed} overrides input qmc.seed {input_seed}."
         );
     }
-    let rank_seed = base_seed.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
+    let rank_seed = rank_seed(base_seed, irank);
 
     // Determine the largest Wick scratch dimensions required by the stochastic basis.
     let (maxsame, maxla, maxlb) = max_scratch_sizes(data.space);
@@ -1058,136 +1005,4 @@ pub(in crate::noci::stochastic) fn max_scratch_sizes(
     let maxla = 2 * maxexa;
     let maxlb = 2 * maxexb;
     (maxsame, maxla, maxlb)
-}
-
-/// Communicate spawned population updates between MPI ranks.
-/// Remote spawn updates are stored locally as one `Vec<NOCIPopulationUpdate>` per destination rank.
-/// This routine packs those per-destination buffers into one contiguous send buffer, exchanges the
-/// number of updates each rank will send/receive, then performs one `MPI_Alltoallv`-style exchange
-/// of the packed payloads.
-/// # Arguments:
-/// - `world`: `MPI communicator object (MPI_COMM_WORLD).`
-/// - `scratch`: Reusable MPI scratch space for counts, displacements, and contiguous send/recv buffers.
-/// # Returns
-/// - `&[NOCIPopulationUpdate]`: Flat buffer containing all spawned population updates received from other ranks.
-pub(crate) fn exchange_population_changes<'a>(
-    world: &impl CommunicatorCollectives,
-    scratch: &'a mut NOCIMPIScratch,
-) -> &'a [NOCIPopulationUpdate] {
-    time_call!(
-        crate::timers::stochastic::add_exchange_population_changes,
-        {
-            let nranks = world.size() as usize;
-
-            // Gather every rank's per-destination message sizes.
-            // After this, `recv_counts[peer]` contains how many updates rank `peer` will send to the
-            // current rank.
-            time_call!(
-                crate::timers::stochastic::add_exchange_population_change_counts,
-                {
-                    world.all_to_all_into(&scratch.send_counts[..], &mut scratch.recv_counts[..]);
-                }
-            );
-
-            // Build the incoming MPI metadata.
-            // `recv_displacements[peer]` is the starting offset of rank `peer`'s block inside the packed
-            // contiguous receive buffer `recv_contig`.
-            // `nrecv` is the total number of remote updates this rank will receive.
-            let mut nrecv = 0usize;
-            for peer in 0..nranks {
-                scratch.recv_displacements[peer] = nrecv as i32;
-                nrecv += scratch.recv_counts[peer] as usize;
-            }
-
-            // Reuse one contiguous recieve buffer large enough for all remote updates.
-            scratch.recv_contig.clear();
-            scratch
-                .recv_contig
-                .resize(nrecv, NOCIPopulationUpdate { det: 0, dn: 0.0 });
-
-            let send_part = Partition::new(
-                &scratch.send_contig[..],
-                &scratch.send_counts[..],
-                &scratch.send_displacements[..],
-            );
-            let mut recv_part = PartitionMut::new(
-                &mut scratch.recv_contig[..],
-                &scratch.recv_counts[..],
-                &scratch.recv_displacements[..],
-            );
-            time_call!(
-                crate::timers::stochastic::add_exchange_population_change_payload,
-                {
-                    world.all_to_all_varcount_into(&send_part, &mut recv_part);
-                }
-            );
-
-            // Return the receive buffer for later accumulation.
-            &scratch.recv_contig[..]
-        }
-    )
-}
-
-/// Gather variable-length population updates from all ranks into a reusable receive buffer.
-/// # Arguments:
-/// - `world`: `MPI communicator object (MPI_COMM_WORLD).`
-/// - `send`: Local population updates to gather.
-/// - `scratch`: Reusable MPI scratch space.
-/// # Returns
-/// - `&[NOCIPopulationUpdate]`: Global gathered population updates.
-pub(crate) fn gather_all_populations<'a>(
-    world: &impl Communicator,
-    send: &[NOCIPopulationUpdate],
-    scratch: &'a mut NOCIMPIScratch,
-) -> &'a [NOCIPopulationUpdate] {
-    time_call!(crate::timers::stochastic::add_gather_all_populations, {
-        // Exchange per-rank lengths first to build displacements for the
-        // variable-count gather into reusable contiguous storage.
-        let nsend = send.len() as i32;
-        world.all_gather_into(&nsend, &mut scratch.gather_counts[..]);
-
-        let mut ntot = 0usize;
-        for (i, &n) in scratch.gather_counts.iter().enumerate() {
-            scratch.gather_displs[i] = ntot as i32;
-            ntot += n as usize;
-        }
-
-        if ntot == 0 {
-            scratch.gather_recv.clear();
-            return &scratch.gather_recv[..];
-        }
-
-        scratch
-            .gather_recv
-            .resize(ntot, NOCIPopulationUpdate { det: 0, dn: 0.0 });
-        let mut recv = PartitionMut::new(
-            &mut scratch.gather_recv[..],
-            &scratch.gather_counts[..],
-            &scratch.gather_displs[..],
-        );
-        world.all_gather_varcount_into(send, &mut recv);
-        &scratch.gather_recv[..]
-    })
-}
-
-/// Combine repeated consecutive determinant updates in place.
-/// # Arguments:
-/// - `updates`: Population updates sorted by determinant index.
-/// # Returns
-/// - `()`: Compresses repeated determinant updates in place.
-pub(in crate::noci::stochastic) fn coalesce_population_updates(
-    updates: &mut Vec<NOCIPopulationUpdate>
-) {
-    let mut out = 0usize;
-    for i in 0..updates.len() {
-        if out > 0 && updates[out - 1].det == updates[i].det {
-            updates[out - 1].dn += updates[i].dn;
-        } else {
-            updates[out] = updates[i];
-            out += 1;
-        }
-    }
-
-    updates.truncate(out);
-    updates.retain(|up| up.dn != 0.0);
 }

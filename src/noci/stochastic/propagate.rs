@@ -6,9 +6,9 @@ use mpi::topology::Communicator;
 // Crate-root imports.
 use crate::elements::NOCIData;
 use crate::input::Propagator;
+use crate::qmc::excitgen::ExcitationHist;
 
 // Parent/sibling imports.
-use super::state::ExcitationHist;
 
 /// Propagate according to the stochastic update equations selected by `prop.propagator`.
 /// # Arguments:

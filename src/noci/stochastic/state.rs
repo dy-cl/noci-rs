@@ -12,16 +12,13 @@ use crate::elements::{
 };
 use crate::input::{ExcitationGen, Propagator};
 use crate::noci::OverlapFactors;
+use crate::qmc::excitgen::{ExcitationHist, PchbScratch};
+use crate::qmc::{ExchangeScratch, FriAmplitude, KeyedUpdate, QmcRng, compress_sparse, owner};
 
 // Parent/sibling imports.
 use super::common::find_hs_batched;
 use super::excit::{AuxiliaryGenerator, init_heat_bath, pgen_heat_bath};
-use super::fri::{FriAmplitude, compress_sparse};
 use super::overlapweighted::{OverlapProposal, OverlapWeightedGenerator};
-use super::pchb::PchbScratch;
-
-/// Stable RNG used by seeded QMC streams.
-pub(crate) type QmcRng = rand_xoshiro::Xoshiro256PlusPlus;
 
 /// Population representation persisted by a stochastic propagator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -283,20 +280,6 @@ impl SparsePopulations {
     }
 }
 
-/// Given a determinant index return which MPI rank owns it.
-/// # Arguments
-/// - `det`: Determinant index.
-/// - `nranks`: Number of MPI ranks.
-/// # Returns
-/// - `usize`: MPI rank that owns the determinant.
-#[inline(always)]
-pub(crate) fn owner(
-    det: usize,
-    nranks: usize,
-) -> usize {
-    (mix_owner_key(det as u64) as usize) % nranks
-}
-
 /// Map one orthogonal determinant to a deterministic MPI owner.
 /// # Arguments:
 /// - `det`: Deterministic flattened auxiliary determinant identity.
@@ -307,22 +290,7 @@ pub(in crate::noci::stochastic) fn auxiliary_owner(
     det: AuxiliaryIndex,
     nranks: usize,
 ) -> usize {
-    (mix_owner_key(det.0 as u64) as usize) % nranks
-}
-
-/// Apply the shared deterministic avalanche mix used by stochastic ownership maps.
-/// # Arguments:
-/// - `x`: Unsigned key word.
-/// # Returns:
-/// - `u64`: Mixed key word.
-#[inline(always)]
-fn mix_owner_key(mut x: u64) -> u64 {
-    x ^= x >> 33;
-    x = x.wrapping_mul(0xff51afd7ed558ccd);
-    x ^= x >> 33;
-    x = x.wrapping_mul(0xc4ceb9fe1a85ec53);
-    x ^= x >> 33;
-    x
+    owner(det.0, nranks)
 }
 
 /// Storage for the range-preserving Monte Carlo state.
@@ -1341,7 +1309,7 @@ impl AuxiliaryThreadPropagation {
 
 /// Storage for a sparse real population change communicated across MPI ranks.
 #[repr(C)]
-#[derive(Copy, Clone, Equivalence)]
+#[derive(Copy, Clone, Default, Equivalence)]
 pub(crate) struct NOCIPopulationUpdate {
     /// Determinant index to which the population change applies.
     pub det: u64,
@@ -1351,12 +1319,38 @@ pub(crate) struct NOCIPopulationUpdate {
 
 /// Storage for one sparse parent-orthogonal population change communicated across MPI ranks.
 #[repr(C)]
-#[derive(Copy, Clone, Equivalence)]
+#[derive(Copy, Clone, Default, Equivalence)]
 pub(crate) struct AuxiliaryPopulationUpdate {
     /// Deterministic flattened auxiliary determinant index.
     pub(crate) det: u64,
     /// Signed orthogonal-space residual amplitude.
     pub(crate) dn: f64,
+}
+
+impl KeyedUpdate for NOCIPopulationUpdate {
+    type Key = u64;
+
+    /// Return the determinant index the population change applies to.
+    /// # Arguments:
+    /// - `self`: Sparse population update.
+    /// # Returns:
+    /// - `u64`: Determinant index.
+    fn key(&self) -> u64 {
+        self.det
+    }
+}
+
+impl KeyedUpdate for AuxiliaryPopulationUpdate {
+    type Key = u64;
+
+    /// Return the flattened auxiliary determinant the residual amplitude applies to.
+    /// # Arguments:
+    /// - `self`: Sparse orthogonal population update.
+    /// # Returns:
+    /// - `u64`: Flattened auxiliary determinant index.
+    fn key(&self) -> u64 {
+        self.det
+    }
 }
 
 impl AuxiliaryPopulationUpdate {
@@ -1422,175 +1416,8 @@ pub(in crate::noci::stochastic) struct HeatBath {
     pub(in crate::noci::stochastic) ks: Vec<f64>,
 }
 
-/// Storage for histogrammed data.
-#[derive(Clone)]
-pub struct ExcitationHist {
-    /// Lower logarithmic bound of the histogram range.
-    pub logmin: f64,
-    /// Upper logarithmic bound of the histogram range.
-    pub logmax: f64,
-    /// Number of samples that fell below the histogram range.
-    pub noverflow_low: u64,
-    /// Number of samples that fell above the histogram range.
-    pub noverflow_high: u64,
-    /// Bin counts over the configured logarithmic range.
-    pub counts: Vec<u64>,
-    /// Total number of bins in the histogram.
-    pub nbins: usize,
-    /// Total number of samples processed by the histogram.
-    pub ntotal: u64,
-}
-
-impl ExcitationHist {
-    /// Constructor for ExcitationHist object. Creates ExcitationHist with chosen parameters.
-    /// # Arguments:
-    /// - `logmin`: Minimum histogram value on a logarithmic scale.
-    /// - `logmax`: Maximum histogram value on a logarithmic scale.
-    /// - `nbins`: Number of histogram bins.
-    /// # Returns
-    /// - `ExcitationHist`: Empty histogram with the requested parameters.
-    pub(in crate::noci::stochastic) fn new(
-        logmin: f64,
-        logmax: f64,
-        nbins: usize,
-    ) -> Self {
-        Self {
-            logmin,
-            logmax,
-            noverflow_low: 0,
-            noverflow_high: 0,
-            counts: vec![0u64; nbins],
-            nbins,
-            ntotal: 0,
-        }
-    }
-
-    /// Add the absolute magnitude of an unrounded spawned population change.
-    /// # Arguments:
-    /// `self`: ExcitationHist.
-    /// - `pspawn`: Spawning probability as defined in population dynamics routines.
-    /// # Returns
-    /// - `()`: Updates the histogram in place.
-    pub(in crate::noci::stochastic) fn add(
-        &mut self,
-        pspawn: f64,
-    ) {
-        self.ntotal += 1;
-
-        if !pspawn.is_finite() || pspawn <= 0.0 {
-            self.noverflow_low += 1;
-            return;
-        }
-
-        let logpspawn = pspawn.ln();
-
-        if logpspawn < self.logmin {
-            self.noverflow_low += 1;
-            return;
-        }
-        if logpspawn >= self.logmax {
-            self.noverflow_high += 1;
-            return;
-        }
-
-        // Fractional position of logpspawn in histogram range.
-        let t = (logpspawn - self.logmin) / (self.logmax - self.logmin);
-        // Convert to bin units.
-        let b = (t * self.nbins as f64) as usize;
-        self.counts[b] += 1;
-    }
-}
-
 /// Reusable MPI scratch for walker-update collectives.
-#[derive(Default)]
-pub(crate) struct NOCIMPIScratch {
-    /// Number of sparse updates contributed by each rank for all-gather.
-    pub(crate) gather_counts: Vec<i32>,
-    /// Displacements for gathered sparse updates.
-    pub(crate) gather_displs: Vec<i32>,
-    /// Reusable receive buffer for gathered sparse updates.
-    pub(crate) gather_recv: Vec<NOCIPopulationUpdate>,
-    /// Number of spawn updates sent to each rank.
-    pub(crate) send_counts: Vec<i32>,
-    /// Displacements into the contiguous spawn-send buffer for each rank.
-    pub(crate) send_displacements: Vec<i32>,
-    /// Number of spawn updates received from each rank.
-    pub(crate) recv_counts: Vec<i32>,
-    /// Displacements into the contiguous spawn-receive buffer for each rank.
-    pub(crate) recv_displacements: Vec<i32>,
-    /// Reusable contiguous send buffer for spawn exchange.
-    pub(crate) send_contig: Vec<NOCIPopulationUpdate>,
-    /// Reusable remote spawn updates with destination ranks.
-    pub(crate) send_ranked: Vec<(usize, NOCIPopulationUpdate)>,
-    /// Reusable contiguous receive buffer for spawn exchange.
-    pub(crate) recv_contig: Vec<NOCIPopulationUpdate>,
-}
+pub(crate) type NOCIMPIScratch = ExchangeScratch<NOCIPopulationUpdate>;
 
 /// Reusable MPI scratch for parent-orthogonal residual collectives.
-#[derive(Default)]
-pub(crate) struct AuxiliaryMPIScratch {
-    /// Number of sparse orthogonal updates contributed by each rank for all-gather.
-    pub(crate) gather_counts: Vec<i32>,
-    /// Displacements for gathered sparse orthogonal updates.
-    pub(crate) gather_displs: Vec<i32>,
-    /// Reusable receive buffer for gathered sparse orthogonal updates.
-    pub(crate) gather_recv: Vec<AuxiliaryPopulationUpdate>,
-    /// Number of orthogonal updates sent to each deterministic owner rank.
-    pub(crate) send_counts: Vec<i32>,
-    /// Displacements into the contiguous orthogonal send buffer.
-    pub(crate) send_displacements: Vec<i32>,
-    /// Number of orthogonal updates received from each rank.
-    pub(crate) recv_counts: Vec<i32>,
-    /// Displacements into the contiguous orthogonal receive buffer.
-    pub(crate) recv_displacements: Vec<i32>,
-    /// Reusable contiguous orthogonal send buffer.
-    pub(crate) send_contig: Vec<AuxiliaryPopulationUpdate>,
-    /// Reusable orthogonal updates paired with deterministic owner ranks.
-    pub(crate) send_ranked: Vec<(usize, AuxiliaryPopulationUpdate)>,
-    /// Reusable contiguous orthogonal receive buffer.
-    pub(crate) recv_contig: Vec<AuxiliaryPopulationUpdate>,
-}
-
-impl NOCIMPIScratch {
-    /// Construct reusable MPI scratch buffers.
-    /// # Arguments:
-    /// - `nranks`: Number of MPI ranks.
-    /// # Returns
-    /// - `NOCIMPIScratch`: Scratch storage sized for the communicator.
-    pub(in crate::noci::stochastic) fn new(nranks: usize) -> Self {
-        Self {
-            gather_counts: vec![0; nranks],
-            gather_displs: vec![0; nranks],
-            gather_recv: Vec::new(),
-            send_counts: vec![0; nranks],
-            send_displacements: vec![0; nranks],
-            recv_counts: vec![0; nranks],
-            recv_displacements: vec![0; nranks],
-            send_contig: Vec::new(),
-            send_ranked: Vec::new(),
-            recv_contig: Vec::new(),
-        }
-    }
-}
-
-impl AuxiliaryMPIScratch {
-    /// Construct reusable MPI storage for distributed `\chi_D^P` updates.
-    /// # Arguments:
-    /// - `nranks`: Number of MPI ranks.
-    /// # Returns
-    /// - `Self`: Empty orthogonal communication buffers sized for the communicator.
-    pub(in crate::noci::stochastic) fn new(nranks: usize) -> Self {
-        Self {
-            gather_counts: vec![0; nranks],
-            gather_displs: vec![0; nranks],
-            gather_recv: Vec::new(),
-            send_counts: vec![0; nranks],
-            send_displacements: vec![0; nranks],
-            recv_counts: vec![0; nranks],
-            recv_displacements: vec![0; nranks],
-            send_contig: Vec::new(),
-            send_ranked: Vec::new(),
-            recv_contig: Vec::new(),
-        }
-    }
-}
+pub(crate) type AuxiliaryMPIScratch = ExchangeScratch<AuxiliaryPopulationUpdate>;

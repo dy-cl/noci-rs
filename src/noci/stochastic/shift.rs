@@ -8,6 +8,7 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::input::Input;
+use crate::qmc::update_shift as qmc_update_shift;
 
 // Parent/sibling imports.
 use super::state::{PopulationStats, PropagationState, QMCRunInfo};
@@ -29,13 +30,12 @@ pub(in crate::noci::stochastic) fn update_shift(
     let qmc = input.qmc.as_ref().unwrap();
     let dteff = input.prop_ref().dt * qmc.ncycles as f64;
 
-    if !state.reached && stats.nw >= qmc.target_population {
-        state.reached = true;
-    }
-
-    if state.reached {
-        *shift -= (qmc.shift_damping / dteff) * (stats.nw / state.prev_pop.nw).ln();
-    }
+    qmc_update_shift(
+        shift,
+        &mut state.reached,
+        (stats.nw, state.prev_pop.nw),
+        (qmc.target_population, qmc.shift_damping, dteff),
+    );
 
     state.prev_pop = *stats;
 }

@@ -12,9 +12,10 @@ use mpi::traits::*;
 // Crate-root imports.
 use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::input::Propagator;
+use crate::qmc::excitgen::ExcitationHist;
 
 // Parent/sibling imports.
-use super::state::{ExcitationHist, PopulationRepresentation};
+use super::state::PopulationRepresentation;
 
 /// Storage required to resume stochastic propagation.
 pub(in crate::noci::stochastic) struct RestartState {

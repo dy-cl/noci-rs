@@ -1,5 +1,6 @@
-// noci/stochastic/pchb.rs
-//! Precomputed heat-bath generation of parent-orthogonal BApply connections.
+// qmc/excitgen/pchb.rs
+//! Precomputed heat-bath generation of single and double excitations within one orthonormal
+//! parent orbital frame.
 //!
 //! Every weight is determinant independent and precomputed once per parent. Doubles use
 //! `w_{ij}^{ab}=|\langle ai||jb\rangle|` for same-spin and `w_{ij}^{ab}=|(ai|jb)|` for alpha-beta
@@ -30,10 +31,11 @@ use ndarray::{Array2, Array4};
 use rand::Rng;
 
 // Crate-root imports.
-use crate::determinant::{NOCIIndex, OrthogonalConnection};
-use crate::elements::{
-    MOCache, NOCIData, OrthogonalHamiltonianScratch, calculate_h_pairs_orthogonal_batched,
-};
+use crate::determinant::OrthogonalConnection;
+use crate::elements::MOCache;
+
+// Parent/sibling imports.
+use super::FrameSource;
 
 /// Enumerate unordered orbital pairs `(p,q)`, `p<q`, in compact-label order.
 /// The label of `(p,q)` is `p(2n-p-1)/2 + q-p-1`.
@@ -236,65 +238,6 @@ impl PchbParent {
             * size_of::<f64>()
     }
 
-    /// Evaluate the exact reference singles `|H_{a\leftarrow i,0}|` for every occupied `i` and
-    /// virtual `a` of the parent reference with the orthogonal Slater-Condon kernel.
-    /// # Arguments:
-    /// - `self`: Parent-local PCHB weights to extend.
-    /// - `data`: NOCI data holding the determinant space and parent MO caches.
-    /// - `reference`: Retained index of this parent's reference determinant.
-    /// - `scratch`: Reusable orthogonal Hamiltonian grouping storage.
-    /// # Returns:
-    /// - `()`: Fills `exact_a` and `exact_b`.
-    fn reference_singles(
-        &mut self,
-        data: &NOCIData<'_, f64>,
-        reference: NOCIIndex,
-        scratch: &mut OrthogonalHamiltonianScratch,
-    ) {
-        // Enumerate every reference single in source-rank form with its orbital labels.
-        let alpha = data.space.alpha(reference);
-        let beta = data.space.beta(reference);
-        let mut labels = Vec::new();
-        let mut pairs = Vec::new();
-        for (x, &i) in alpha.occupied.iter().enumerate() {
-            for (y, &a) in alpha.virtuals.iter().enumerate() {
-                labels.push((true, i as usize, a as usize));
-                pairs.push((
-                    reference,
-                    OrthogonalConnection::AlphaSingle {
-                        occupied: x as u8,
-                        virtual_: y as u8,
-                    },
-                ));
-            }
-        }
-        for (x, &i) in beta.occupied.iter().enumerate() {
-            for (y, &a) in beta.virtuals.iter().enumerate() {
-                labels.push((false, i as usize, a as usize));
-                pairs.push((
-                    reference,
-                    OrthogonalConnection::BetaSingle {
-                        occupied: x as u8,
-                        virtual_: y as u8,
-                    },
-                ));
-            }
-        }
-
-        // Evaluate `H_{a\leftarrow i,0}` once and store magnitudes by orbital label.
-        let mut values = vec![0.0; pairs.len()];
-        calculate_h_pairs_orthogonal_batched(data, &pairs, scratch, &mut values);
-        self.exact_a = vec![0.0; self.na * self.na];
-        self.exact_b = vec![0.0; self.nb * self.nb];
-        for (&(spin, i, a), value) in labels.iter().zip(values) {
-            if spin {
-                self.exact_a[i * self.na + a] = value.abs();
-            } else {
-                self.exact_b[i * self.nb + a] = value.abs();
-            }
-        }
-    }
-
     /// Return the single-excitation weights for one source.
     /// # Arguments:
     /// - `self`: Parent-local PCHB weights.
@@ -330,7 +273,7 @@ enum Hole {
 }
 
 /// Per-source sampling state built once before all attempts from one source.
-pub(in crate::noci::stochastic) struct PchbScratch {
+pub(crate) struct PchbScratch {
     /// Parent orbital frame of the prepared source.
     parent: usize,
     /// Whether the prepared source is its parent's reference with exact single weights.
@@ -353,7 +296,7 @@ impl PchbScratch {
     /// Construct empty per-source PCHB storage.
     /// # Returns:
     /// - `Self`: Empty scratch reused across sources.
-    pub(in crate::noci::stochastic) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             parent: 0,
             reference: false,
@@ -464,36 +407,37 @@ fn sample_particles<R: Rng + ?Sized, F: Fn(u8, u8) -> f64>(
 }
 
 /// Precomputed heat-bath generator over every parent's orthogonal connections.
-pub(in crate::noci::stochastic) struct PchbGenerator {
+pub(crate) struct PchbGenerator {
     /// Parent-local excitation weights.
     parents: Vec<PchbParent>,
 }
 
 impl PchbGenerator {
-    /// Precompute excitation weights for every parent, including exact singles from each
-    /// retained parent reference.
+    /// Precompute the occupation-independent excitation weights of every parent.
     /// # Arguments:
-    /// - `data`: NOCI data holding the determinant space and parent MO caches.
     /// - `mocache`: Parent MO integral caches, one per parent reference.
     /// # Returns:
     /// - `Self`: PCHB generator shared read-only by every worker.
-    pub(in crate::noci::stochastic) fn new(
-        data: &NOCIData<'_, f64>,
-        mocache: &[MOCache<f64>],
-    ) -> Self {
-        let mut parents: Vec<PchbParent> = mocache.iter().map(PchbParent::new).collect();
-
-        // A parent reference is the retained determinant without parent-relative holes.
-        let mut scratch = OrthogonalHamiltonianScratch::new(parents.len());
-        for index in (0..data.space.len()).map(NOCIIndex) {
-            let parent = data.space.state(index).parent;
-            let (alpha, beta) = data.space.excitations(index);
-            if alpha.holes == 0 && beta.holes == 0 && parent < parents.len() {
-                parents[parent].reference_singles(data, index, &mut scratch);
-            }
+    pub(crate) fn new(mocache: &[MOCache<f64>]) -> Self {
+        Self {
+            parents: mocache.iter().map(PchbParent::new).collect(),
         }
+    }
 
-        Self { parents }
+    /// Install the exact reference singles `|H_{a\leftarrow i,0}|` of one parent, used in place of
+    /// the contracted bound when the source is that parent's reference determinant.
+    /// # Arguments:
+    /// - `self`: PCHB generator.
+    /// - `parent`: Parent whose reference singles are given.
+    /// - `exact`: Alpha and beta magnitudes indexed `i n + a` by orbital label.
+    /// # Returns:
+    /// - `()`: Replaces the parent's exact reference singles.
+    pub(crate) fn set_reference_singles(
+        &mut self,
+        parent: usize,
+        exact: (Vec<f64>, Vec<f64>),
+    ) {
+        (self.parents[parent].exact_a, self.parents[parent].exact_b) = exact;
     }
 
     /// Return the heap storage of all precomputed weights.
@@ -501,7 +445,7 @@ impl PchbGenerator {
     /// - `self`: PCHB generator.
     /// # Returns:
     /// - `usize`: Total bytes held by parent weights.
-    pub(in crate::noci::stochastic) fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         self.parents.iter().map(PchbParent::bytes).sum()
     }
 
@@ -510,28 +454,26 @@ impl PchbGenerator {
     /// source replaces `s_i^a` by the exact `|H_{a\leftarrow i,0}|`.
     /// # Arguments:
     /// - `self`: PCHB generator.
-    /// - `source`: Retained source determinant `x`.
-    /// - `data`: NOCI data holding the determinant space.
+    /// - `source`: Source determinant `x` in its parent frame.
     /// - `scratch`: Per-source sampling state to overwrite.
     /// # Returns:
     /// - `()`: Fills `scratch` for all attempts from `source`.
-    pub(in crate::noci::stochastic) fn prepare(
+    pub(crate) fn prepare(
         &self,
-        source: NOCIIndex,
-        data: &NOCIData<'_, f64>,
+        source: &FrameSource<'_>,
         scratch: &mut PchbScratch,
     ) {
-        let parent = data.space.state(source).parent;
+        let parent = source.parent;
         let tables = &self.parents[parent];
-        let alpha = data.space.alpha(source);
-        let beta = data.space.beta(source);
+        let alpha = &source.alpha;
+        let beta = &source.beta;
         scratch.parent = parent;
-        scratch.reference = alpha.excitation.holes == 0
-            && beta.excitation.holes == 0
-            && !tables.exact_a.is_empty();
+        scratch.reference = source.reference && !tables.exact_a.is_empty();
         let (single_a, single_b) = tables.singles(scratch.reference);
-        scratch.virtuals_a.clone_from(&alpha.virtuals);
-        scratch.virtuals_b.clone_from(&beta.virtuals);
+        scratch.virtuals_a.clear();
+        scratch.virtuals_a.extend_from_slice(alpha.virtuals);
+        scratch.virtuals_b.clear();
+        scratch.virtuals_b.extend_from_slice(beta.virtuals);
 
         // Map orbital labels to the occupied/virtual ranks used by `OrthogonalConnection`.
         scratch.rank_a.clear();
@@ -565,12 +507,12 @@ impl PchbGenerator {
         };
 
         // Single holes carry `S_i=\sum_{a\in V_x}s_i^a` restricted to the source's virtuals.
-        for &i in &alpha.occupied {
+        for &i in alpha.occupied {
             let row = &single_a[i as usize * tables.na..(i as usize + 1) * tables.na];
             let weight = alpha.virtuals.iter().map(|&a| row[a as usize]).sum();
             push(Hole::AlphaSingle(i), weight);
         }
-        for &i in &beta.occupied {
+        for &i in beta.occupied {
             let row = &single_b[i as usize * tables.nb..(i as usize + 1) * tables.nb];
             let weight = beta.virtuals.iter().map(|&a| row[a as usize]).sum();
             push(Hole::BetaSingle(i), weight);
@@ -595,8 +537,8 @@ impl PchbGenerator {
                 );
             }
         }
-        for &i in &alpha.occupied {
-            for &j in &beta.occupied {
+        for &i in alpha.occupied {
+            for &j in beta.occupied {
                 let label = i as usize * tables.nb + j as usize;
                 push(
                     Hole::MixedDouble(i, j, label as u32),
@@ -616,7 +558,7 @@ impl PchbGenerator {
     /// # Returns:
     /// - `Option<(OrthogonalConnection, f64)>`: Source-relative connection and `P_\text{gen}`, or
     ///   `None` when the source has no weight or the chosen holes have no valid particles.
-    pub(in crate::noci::stochastic) fn sample<R: Rng + ?Sized>(
+    pub(crate) fn sample<R: Rng + ?Sized>(
         &self,
         scratch: &PchbScratch,
         rng: &mut R,
