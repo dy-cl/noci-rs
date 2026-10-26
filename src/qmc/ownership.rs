@@ -14,6 +14,21 @@ pub(crate) fn owner(
     (mix(key as u64) as usize) % nranks
 }
 
+/// Map a key of several words, such as occupation words and a reassignment salt, to a
+/// deterministic MPI owner by folding the words through the avalanche mix.
+/// # Arguments
+/// - `words`: Key words.
+/// - `nranks`: Number of MPI ranks.
+/// # Returns
+/// - `usize`: MPI rank that owns the key.
+#[inline(always)]
+pub(crate) fn owner_words(
+    words: &[u64],
+    nranks: usize,
+) -> usize {
+    (words.iter().fold(0u64, |h, &w| mix(h ^ w)) as usize) % nranks
+}
+
 /// Apply the deterministic avalanche mix shared by stochastic ownership maps.
 /// # Arguments:
 /// - `x`: Unsigned key word.

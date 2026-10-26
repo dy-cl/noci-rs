@@ -19,11 +19,16 @@ use super::population::{Block, Excitor};
 /// `w = \frac{N_z}{s!\,p(s)\,A}\prod_k\frac{\operatorname{sign}(n_{\mu_k})N_{\text{ex}}}{N_z}`
 ///
 /// makes the sum of `w f` over `A` attempts an unbiased estimate of the expansion, with
-/// `t_{z\mu}=n_{z\mu}/N_z`. Repeated excitors are allowed.
+/// `t_{z\mu}=n_{z\mu}/N_z`. Repeated excitors are allowed. With the excitors distributed over
+/// `P` ranks by a random assignment, each rank forms clusters from its own excitors only and its
+/// weights carry `P^{d-1}`, the inverse probability that the cluster's `d` distinct excitors share
+/// a rank, so the sum over ranks is unbiased over the assignment. A repeated excitor, which
+/// contributes through the commutators of linked CCMC, always shares its own rank.
 /// # Arguments:
 /// - `block`: Block population.
 /// - `smax`: Largest cluster size.
-/// - `attempts`: Number of attempts `A` sharing the expansion.
+/// - `attempts`: Number of attempts `A` sharing the expansion on this rank.
+/// - `ranks`: Number of ranks `P` holding the distributed excitors.
 /// - `rng`: Random-number generator.
 /// - `excitors`: Output excitors of the cluster.
 /// # Returns:
@@ -37,6 +42,7 @@ pub(super) fn select_cluster(
     block: &Block,
     smax: usize,
     attempts: f64,
+    ranks: f64,
     rng: &mut QmcRng,
     excitors: &mut Vec<Excitor>,
 ) -> f64 {
@@ -45,7 +51,7 @@ pub(super) fn select_cluster(
 
     // Without excitors only the reference cluster exists.
     if nex == 0.0 || smax == 0 {
-        return block.nref / attempts;
+        return block.nref / (ranks * attempts);
     }
 
     // Draw the size from the truncated geometric distribution.
@@ -75,7 +81,11 @@ pub(super) fn select_cluster(
         weight *= n.signum() * nex / block.nref / k as f64;
     }
 
-    weight / (ps * attempts)
+    // Count the distinct excitors, which are the ones independently assigned to ranks.
+    let distinct = (0..s)
+        .filter(|&k| excitors[..k].iter().all(|e| e.det != excitors[k].det))
+        .count();
+    weight * ranks.powi(distinct as i32 - 1) / (ps * attempts)
 }
 
 /// Collapse a cluster onto the block reference, `\prod_k\hat\tau_{\mu_k}|{}^z\Psi\rangle`.

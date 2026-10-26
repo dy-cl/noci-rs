@@ -33,7 +33,7 @@ pub(crate) use exchange::{coalesce, exchange_updates, gather_updates, pack_updat
 pub(crate) use fri::{
     compress_sparse, cutoff_candidate, pivotal_push, resolve_pivotal, target_cutoff,
 };
-pub(crate) use ownership::owner;
+pub(crate) use ownership::{owner, owner_words};
 pub(crate) use report::stop_requested;
 pub(crate) use rng::{rank_seed, stream};
 pub(crate) use shift::update_shift;

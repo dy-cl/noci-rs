@@ -17,6 +17,7 @@
 
 // External crate imports.
 use rand::Rng;
+use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::determinant::ExcitedDeterminant;
@@ -85,7 +86,7 @@ impl Projections {
 /// `1..=cluster_rank` with weight `n_{\text{rows}}/\text{ROWDRAWS}`.
 /// # Arguments:
 /// - `data`: NOCI data holding the parent frames and Wick intermediates.
-/// - `blocks`: Block populations.
+/// - `frames`: Reference of every block and its projection rows with ranks `1..=cluster_rank`.
 /// - `x`: Source block.
 /// - `cluster`: Collapsed determinant `|D_C\rangle` and signed weight `w\phi_C`.
 /// - `rng`: Random-number generator.
@@ -95,7 +96,7 @@ impl Projections {
 /// - `()`: Adds the cluster's projections.
 pub(super) fn project_cluster(
     data: &NOCIData<'_, f64>,
-    blocks: &[Block],
+    frames: (&[ExcitedDeterminant], &[Vec<ExcitedDeterminant>]),
     x: usize,
     cluster: (&ExcitedDeterminant, f64),
     rng: &mut QmcRng,
@@ -103,25 +104,28 @@ pub(super) fn project_cluster(
     out: &mut Projections,
 ) {
     let (det, weight) = cluster;
-    for (y, block) in blocks.iter().enumerate() {
+    let (references, rows) = frames;
+    for (y, reference) in references.iter().enumerate() {
         if y == x {
             continue;
         }
 
         // Reference row: effective overlap and Hamiltonian.
-        let (h, s) = calculate_hs_excited(data, (&block.reference, det), scratch);
+        let (h, s) = calculate_hs_excited(data, (reference, det), scratch);
         out.se[y][x] += weight * s;
         out.he[y][x] += weight * h;
-        let reference = (block.reference.alpha, block.reference.beta);
-        *out.q[y][x].entry(reference).or_insert(0.0) += weight * s;
+        *out.q[y][x]
+            .entry((reference.alpha, reference.beta))
+            .or_insert(0.0) += weight * s;
 
         // Remaining rows drawn uniformly.
-        if block.rows.is_empty() {
+        let rows = &rows[y];
+        if rows.is_empty() {
             continue;
         }
-        let scale = weight * block.rows.len() as f64 / ROWDRAWS as f64;
+        let scale = weight * rows.len() as f64 / ROWDRAWS as f64;
         for _ in 0..ROWDRAWS {
-            let nu = &block.rows[rng.gen_range(0..block.rows.len())];
+            let nu = &rows[rng.gen_range(0..rows.len())];
             let s = calculate_s_excited(data, (nu, det), scratch);
             if s != 0.0 {
                 *out.q[y][x].entry((nu.alpha, nu.beta)).or_insert(0.0) += scale * s;
@@ -135,32 +139,36 @@ pub(super) fn project_cluster(
 /// `\sum_\nu\langle D_\mu|e^{-\hat T_y}|D_\nu\rangle q(\nu)` with
 /// `\langle D_\mu|e^{-\hat T_y}|D_\nu\rangle = \sum_K(-1)^{|K|}\prod_{k\in K}t_{yk}\langle D_\mu|\hat\tau_K|D_\nu\rangle`
 /// over sets `K` of distinct excitors, since a repeated excitor vanishes and the `|K|!` orderings
-/// cancel the factorial of the exponential.
+/// cancel the factorial of the exponential. With the excitors distributed over `P` ranks, each
+/// rank sums the sets of its own excitors with weight `P^{|K|-1}`, the inverse probability that
+/// they share a rank, and only rank zero adds the empty set.
 /// # Arguments:
-/// - `block`: Population of block `y` with index `index`.
+/// - `block`: Population of block `y` on this rank.
 /// - `index`: Block index `y`.
-/// - `q`: Combined projection `q(\nu)` keyed by occupations.
+/// - `q`: Complete projection `q(\nu)` keyed by occupations.
 /// - `cluster_rank`: Highest excitation rank of the cluster operator.
+/// - `distribution`: Number of ranks `P` and whether this rank adds the empty set.
 /// - `scale`: Factor applied to every change, such as `\Delta\tau`.
-/// - `out`: Population changes.
 /// # Returns:
-/// - `()`: Appends the changes.
+/// - `Vec<(ExcitorKey, f64)>`: Population changes.
 pub(super) fn left_action(
     block: &Block,
     index: usize,
-    q: &FixedMap<(u128, u128), f64>,
+    q: &[((u128, u128), f64)],
     cluster_rank: usize,
+    distribution: (f64, bool),
     scale: f64,
-    out: &mut Vec<(ExcitorKey, f64)>,
-) {
+) -> Vec<(ExcitorKey, f64)> {
     let reference = &block.reference;
+    let (ranks, empty) = distribution;
     let amplitudes = block
         .excitors
         .iter()
-        .map(|&(excitor, n)| (excitor, n / block.nref))
+        .map(|&(excitor, n)| (excitor, ranks * n / block.nref))
         .collect::<Vec<(Excitor, f64)>>();
 
-    // Depth-first enumeration of sets of distinct excitors in increasing order.
+    // Depth-first enumeration of sets of distinct excitors in increasing order; each excitor
+    // carries `P t`, and the leading `1/P` gives the weight `P^{|K|-1}`.
     fn visit(
         det: ExcitedDeterminant,
         coefficient: f64,
@@ -170,7 +178,7 @@ pub(super) fn left_action(
     ) {
         let (reference, amplitudes, cluster_rank, index) = context;
         let r = rank(reference, &det);
-        if r > 0 {
+        if start > 0 {
             out.push(((index, det.alpha, det.beta), coefficient));
         }
         for (k, &(excitor, t)) in amplitudes.iter().enumerate().skip(start) {
@@ -183,21 +191,28 @@ pub(super) fn left_action(
         }
     }
 
-    for (&(alpha, beta), &value) in q {
-        if value == 0.0 {
-            continue;
-        }
-        let nu = ExcitedDeterminant {
-            parent: reference.parent,
-            alpha,
-            beta,
-        };
-        visit(
-            nu,
-            scale * value,
-            0,
-            (reference, &amplitudes, cluster_rank, index),
-            out,
-        );
-    }
+    q.par_iter()
+        .filter(|(_, value)| *value != 0.0)
+        .map(|&((alpha, beta), value)| {
+            let nu = ExcitedDeterminant {
+                parent: reference.parent,
+                alpha,
+                beta,
+            };
+            // The empty set enters once with weight one, the other sets with `P^{|K|-1}`.
+            let mut out = Vec::new();
+            if empty && rank(reference, &nu) > 0 {
+                out.push(((index, alpha, beta), scale * value));
+            }
+            visit(
+                nu,
+                scale * value / ranks,
+                0,
+                (reference, &amplitudes, cluster_rank, index),
+                &mut out,
+            );
+            out
+        })
+        .flatten()
+        .collect()
 }

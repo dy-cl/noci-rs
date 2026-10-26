@@ -9,7 +9,7 @@ use std::hash::BuildHasherDefault;
 use mpi::traits::*;
 
 // Crate-root imports.
-use crate::basis::excitation_phase_bits;
+use crate::basis::{apply_excitation, excitation_phase_bits, undo_excitation};
 use crate::determinant::ExcitedDeterminant;
 use crate::qmc::{FriAmplitude, KeyedUpdate};
 
@@ -73,24 +73,15 @@ impl Excitor {
         &self,
         det: &ExcitedDeterminant,
     ) -> Option<(ExcitedDeterminant, f64)> {
-        let valid = |occ: u128, holes: u128, parts: u128| {
-            occ & holes == holes && (occ & !holes) & parts == 0
-        };
-        if !valid(det.alpha, self.holes.0, self.parts.0)
-            || !valid(det.beta, self.holes.1, self.parts.1)
-        {
-            return None;
-        }
-        let sign = self.sign
-            * excitation_phase_bits(det.alpha, self.holes.0, self.parts.0)
-            * excitation_phase_bits(det.beta, self.holes.1, self.parts.1);
+        let (alpha, sa) = apply_excitation(det.alpha, self.holes.0, self.parts.0)?;
+        let (beta, sb) = apply_excitation(det.beta, self.holes.1, self.parts.1)?;
         Some((
             ExcitedDeterminant {
                 parent: det.parent,
-                alpha: (det.alpha & !self.holes.0) | self.parts.0,
-                beta: (det.beta & !self.holes.1) | self.parts.1,
+                alpha,
+                beta,
             },
-            sign,
+            self.sign * sa * sb,
         ))
     }
 
@@ -106,9 +97,8 @@ impl Excitor {
         &self,
         det: &ExcitedDeterminant,
     ) -> Option<(ExcitedDeterminant, f64)> {
-        let valid = |occ: u128, holes: u128, parts: u128| {
-            occ & parts == parts && (occ & !parts) & holes == 0
-        };
+        // A preimage needs every particle occupied and every hole empty in `|D'\rangle`.
+        let valid = |occ: u128, holes: u128, parts: u128| occ & parts == parts && occ & holes == 0;
         if !valid(det.alpha, self.holes.0, self.parts.0)
             || !valid(det.beta, self.holes.1, self.parts.1)
         {
@@ -116,8 +106,8 @@ impl Excitor {
         }
         let source = ExcitedDeterminant {
             parent: det.parent,
-            alpha: (det.alpha & !self.parts.0) | self.holes.0,
-            beta: (det.beta & !self.parts.1) | self.holes.1,
+            alpha: undo_excitation(det.alpha, self.holes.0, self.parts.0),
+            beta: undo_excitation(det.beta, self.holes.1, self.parts.1),
         };
         let (_, sign) = self.apply(&source)?;
         Some((source, sign))
@@ -139,9 +129,9 @@ pub(super) fn rank(
         as usize
 }
 
-/// Population of one reference block for one propagation step: the reference population
-/// `N_z`, every excitor with its population `n_{z\mu}`, and the cumulative magnitudes used to
-/// select excitors with probability `|n_{z\mu}|/N_{\text{ex}}`.
+/// Population of one reference block on this rank for one propagation step: the global
+/// reference population `N_z`, every locally owned excitor with its population `n_{z\mu}`, and
+/// the cumulative magnitudes used to select excitors with probability `|n_{z\mu}|/N_{\text{ex}}`.
 pub(super) struct Block {
     /// Block reference determinant.
     pub(super) reference: ExcitedDeterminant,
@@ -151,8 +141,6 @@ pub(super) struct Block {
     pub(super) excitors: Vec<(Excitor, f64)>,
     /// Cumulative `|n_{z\mu}|` aligned with `excitors`.
     pub(super) cumulative: Vec<f64>,
-    /// Determinants of the projection space with ranks `1..=cluster_rank`.
-    pub(super) rows: Vec<ExcitedDeterminant>,
 }
 
 impl Block {
