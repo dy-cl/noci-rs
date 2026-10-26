@@ -8,4 +8,4 @@ mod jmnoccmc;
 // Restricted function re-exports.
 #[cfg(feature = "gnocc")]
 pub(super) use gnocc::run_gnocc;
-pub(super) use jmnoccmc::run_jmnoccmc;
+pub(super) use jmnoccmc::{run_jmnoccmc, run_jmnoccmc_stochastic};

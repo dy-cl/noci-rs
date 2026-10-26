@@ -3,8 +3,9 @@
 //!
 //! Two formulations are developed. Jeziorski-Monkhorst NOCC (JM-NOCCMC) gives every
 //! nonorthogonal reference its own cluster operator, `|\Psi\rangle = \sum_x c_x e^{\hat T_x}|{}^x\Psi\rangle`,
-//! and is propagated deterministically in `deterministic`. Generalised-normal-ordered NOCC
-//! (GNOCC), behind the `gnocc` feature, develops coupled-cluster theory using a correlated NOCI
+//! and is propagated deterministically in `deterministic` and by linked coupled cluster Monte
+//! Carlo in `stochastic`. Generalised-normal-ordered NOCC (GNOCC), behind the `gnocc` feature,
+//! develops coupled-cluster theory using a correlated NOCI
 //! reference state
 //!
 //! `|\Phi\rangle = |\Psi_{\mathrm{NOCI}}\rangle = \sum_x c_x|{}^x\Psi\rangle.`
@@ -32,7 +33,7 @@
 //! four-body cumulants of the reference, and the macro-micro amplitude solver. The reduced
 //! density matrices of the reference come from [`crate::elements`]. It is organised as a
 //! shared layer (`setup`, `cumulants`, `space`, `terms` and `equations`) with the approach in
-//! `deterministic`; stochastic NOCCMC is planned as a sibling of `deterministic`.
+//! `deterministic`.
 //!
 //! This implementation is highly experimental and is intended for method development rather
 //! than production calculations. Its equations, truncations and interfaces remain subject to
@@ -55,10 +56,12 @@ mod cumulants;
 mod deterministic;
 #[cfg(feature = "gnocc")]
 mod equations;
+mod jm;
 #[cfg(feature = "gnocc")]
 mod setup;
 #[cfg(feature = "gnocc")]
 mod space;
+mod stochastic;
 #[cfg(feature = "gnocc")]
 mod terms;
 
@@ -79,6 +82,7 @@ pub(crate) use cumulants::cumulants;
 #[cfg(feature = "gnocc")]
 pub(crate) use deterministic::solve_amplitudes;
 pub(crate) use deterministic::{jm_space, propagate_amplitudes, report_converged};
+pub(in crate::nocc) use jm::{jm_energies, reference_determinants};
 #[cfg(feature = "gnocc")]
 pub(crate) use setup::{
     noci_natural_orbitals, print_noci_natural_orbitals, reference_energy, transform_ao_data,
@@ -86,3 +90,4 @@ pub(crate) use setup::{
 };
 #[cfg(feature = "gnocc")]
 pub(crate) use space::{build_excitations, build_fois_basis, build_spaces};
+pub(crate) use stochastic::jm_qmc_step;

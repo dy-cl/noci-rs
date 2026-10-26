@@ -931,6 +931,15 @@ fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
             std::process::exit(1);
         }
 
+        // A nested qmc table selects stochastic propagation, which samples connections uniformly.
+        let qmc = read_qmc(t.get::<_, Option<Table>>("qmc").ok().flatten(), None);
+        if let Some(qmc) = qmc.as_ref()
+            && qmc.excitation_gen != ExcitationGen::Uniform
+        {
+            eprintln!("jmnoccmc.qmc supports excitation_gen = \"uniform\" only");
+            std::process::exit(1);
+        }
+
         JMNOCCMCOptions {
             cluster_rank,
             expansion_rank,
@@ -944,6 +953,7 @@ fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
                 .ok()
                 .flatten()
                 .unwrap_or(defaults.diagnostics),
+            qmc,
         }
     })
 }

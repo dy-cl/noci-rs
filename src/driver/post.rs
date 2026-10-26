@@ -7,7 +7,7 @@ use num_complex::Complex64;
 // Crate-root imports.
 #[cfg(feature = "gnocc")]
 use crate::driver::nocc::run_gnocc;
-use crate::driver::nocc::run_jmnoccmc;
+use crate::driver::nocc::{run_jmnoccmc, run_jmnoccmc_stochastic};
 use crate::driver::noci::{run_qmc_deterministic_noci, run_qmc_stochastic_noci, run_snoci};
 use crate::driver::reference::ReferenceRun;
 use crate::input::Input;
@@ -31,6 +31,8 @@ pub struct PostReferenceResults {
     pub e_noci_qmc_stoch: Option<f64>,
     /// Deterministic JM-NOCCMC energy if calculated.
     pub e_jmnoccmc_det: Option<f64>,
+    /// Stochastic JM-NOCCMC energy if calculated.
+    pub e_jmnoccmc_stoch: Option<f64>,
     /// Selected NOCI energy if calculated.
     pub e_snoci: Option<f64>,
     /// NOCI-PT2 energy if calculated.
@@ -50,6 +52,7 @@ impl PostReferenceResults {
             e_noci_qmc_det: None,
             e_noci_qmc_stoch: None,
             e_jmnoccmc_det: None,
+            e_jmnoccmc_stoch: None,
             e_snoci: None,
             e_pt2: None,
             guess: PostGuess::default(),
@@ -96,10 +99,24 @@ pub fn run_real_post_reference(
         ));
     }
 
-    // Deterministic JM-NOCCMC is replicated only on the root rank.
-    if world.rank() == 0 && input.jmnoccmc.is_some() {
+    // Deterministic JM-NOCCMC is replicated only on the root rank; the stochastic propagation,
+    // selected by a nested qmc table, uses every rank.
+    if let Some(options) = input.jmnoccmc.as_ref() {
         let wicks = reference.wicks.as_ref().map(|ws| ws.view());
-        out.e_jmnoccmc_det = run_jmnoccmc(&post, input, wicks);
+        if options.qmc.is_some() {
+            let e = run_jmnoccmc_stochastic(
+                &post,
+                input,
+                (&reference.c0, reference.e_noci),
+                wicks,
+                world,
+            );
+            if world.rank() == 0 {
+                out.e_jmnoccmc_stoch = Some(e);
+            }
+        } else if world.rank() == 0 {
+            out.e_jmnoccmc_det = run_jmnoccmc(&post, input, wicks);
+        }
     }
 
     #[cfg(feature = "gnocc")]

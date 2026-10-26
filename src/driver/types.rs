@@ -32,6 +32,8 @@ pub struct GeometryResults {
     pub e_noci_qmc_stoch: Option<f64>,
     /// Deterministic JM-NOCCMC energy if calculated.
     pub e_jmnoccmc_det: Option<f64>,
+    /// Stochastic JM-NOCCMC energy if calculated.
+    pub e_jmnoccmc_stoch: Option<f64>,
     /// Selected NOCI energy if calculated.
     pub e_snoci: Option<f64>,
     /// NOCI-PT2 energy if calculated.
@@ -74,6 +76,7 @@ impl GeometryResults {
             e_noci_qmc_det: post.e_noci_qmc_det,
             e_noci_qmc_stoch: post.e_noci_qmc_stoch,
             e_jmnoccmc_det: post.e_jmnoccmc_det,
+            e_jmnoccmc_stoch: post.e_jmnoccmc_stoch,
             e_snoci: post.e_snoci,
             e_pt2: post.e_pt2,
             guess: post.guess,
@@ -112,6 +115,7 @@ impl GeometryResults {
             e_noci_qmc_det: post.e_noci_qmc_det,
             e_noci_qmc_stoch: post.e_noci_qmc_stoch,
             e_jmnoccmc_det: post.e_jmnoccmc_det,
+            e_jmnoccmc_stoch: post.e_jmnoccmc_stoch,
             e_snoci: post.e_snoci,
             e_pt2: post.e_pt2,
             guess: post.guess,

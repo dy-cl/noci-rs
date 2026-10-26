@@ -1,12 +1,15 @@
 // driver/nocc/jmnoccmc.rs
 
+// External crate imports.
+use mpi::topology::Communicator;
+
 // Crate-root imports.
 use crate::PostSCFData;
 use crate::determinant::NOCIIndex;
 use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WicksView;
 use crate::input::Input;
-use crate::nocc::{JMEquations, jm_space, propagate_amplitudes, report_converged};
+use crate::nocc::{JMEquations, jm_qmc_step, jm_space, propagate_amplitudes, report_converged};
 use crate::noci::build_noci_hs;
 
 /// Perform the deterministic JM-NOCCMC propagation on the reference determinants.
@@ -58,4 +61,41 @@ pub(crate) fn run_jmnoccmc(
     let jm = JMEquations::new(space, h, s);
     let (t, ev) = propagate_amplitudes(&jm, options)?;
     Some(report_converged(&jm, &t, &ev, options))
+}
+
+/// Perform the stochastic JM-NOCCMC propagation on the reference determinants with every MPI
+/// rank.
+/// # Arguments:
+/// - `post`: Data shared by post-SCF methods.
+/// - `input`: User input specifications.
+/// - `reference`: Reference NOCI coefficients and energy, giving the initial reference
+///   populations and shift.
+/// - `wicks`: Optional precomputed Wick's intermediates of the reference parents.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `f64`: Averaged ground-state JM-NOCCMC energy.
+/// # Panics
+/// - Panics if the JM-NOCCMC options are absent.
+pub(crate) fn run_jmnoccmc_stochastic(
+    post: &PostSCFData<'_, f64>,
+    input: &Input,
+    reference: (&[f64], f64),
+    wicks: Option<&WicksView<f64>>,
+    world: &impl Communicator,
+) -> f64 {
+    let options = input
+        .jmnoccmc
+        .as_ref()
+        .expect("JM-NOCCMC options are required");
+    let (c0, e_noci) = reference;
+
+    if world.rank() == 0 {
+        println!("{}", "=".repeat(100));
+        println!(
+            "Running stochastic JM-NOCCMC propagation over {} references....",
+            post.space.len()
+        );
+    }
+    let data = NOCIData::new(post.ao, post.space, input, post.tol, wicks).withmocache(post.mocache);
+    jm_qmc_step(&data, options, c0, e_noci, world)
 }

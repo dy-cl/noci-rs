@@ -3,6 +3,9 @@
 // Standard library imports.
 use std::str::FromStr;
 
+// Parent/sibling imports.
+use super::qmc::QMCOptions;
+
 /// Amplitude update of the deterministic JM-NOCCMC propagation.
 #[derive(Clone, Copy)]
 pub enum JMPropagator {
@@ -68,6 +71,9 @@ pub struct JMNOCCMCOptions {
     pub residual_tol: f64,
     /// Whether to report the stability of the linearised update at convergence.
     pub diagnostics: bool,
+    /// Stochastic propagation options. When present the plain update is sampled by coupled
+    /// cluster Monte Carlo with time step `dt` instead of being propagated deterministically.
+    pub qmc: Option<QMCOptions>,
 }
 
 impl Default for JMNOCCMCOptions {
@@ -84,6 +90,7 @@ impl Default for JMNOCCMCOptions {
             max_steps: 10000,
             residual_tol: 1e-9,
             diagnostics: false,
+            qmc: None,
         }
     }
 }

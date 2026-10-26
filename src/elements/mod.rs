@@ -17,6 +17,7 @@
 pub mod nonorthogonalwicks;
 
 mod cache;
+mod excited;
 mod fock;
 mod hs;
 mod m;
@@ -41,6 +42,7 @@ pub(crate) use types::{DetPair, FockData};
 
 // Crate-visible function re-exports.
 pub(crate) use cache::build_fock_mo_cache;
+pub(crate) use excited::{calculate_hs_excited, calculate_s_excited};
 pub(crate) use fock::{calculate_f_pair, compare_f_pair_wicks_naive};
 pub(crate) use hs::{calculate_hs_pair, calculate_hs_pair_dense, compare_hs_pair_wicks_naive};
 pub(crate) use m::calculate_m_pair;
