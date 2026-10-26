@@ -21,7 +21,7 @@ use crate::qmc::{
 // Parent/sibling imports.
 use super::cluster::{collapse, select_cluster};
 use super::coupling::{Projections, left_action, project_cluster};
-use super::effective::{Effective, scaled};
+use super::effective::{Effective, ground_energy, reblocked_energy, scaled};
 use super::linked::{LinkedBlock, linked_attempt};
 use super::population::{Block, Excitor, ExcitorKey, ExcitorUpdate, FixedMap, rank};
 use super::report::{print_header, print_row};
@@ -325,6 +325,7 @@ pub(crate) fn jm_qmc_step(
     let mut reached = false;
     let mut previous = populations.values().map(|n: &f64| n.abs()).sum::<f64>();
     let mut cumulative = Effective::new(m);
+    let mut history = Vec::new();
     let mut energy = f64::NAN;
     let mut average = f64::NAN;
 
@@ -477,9 +478,10 @@ pub(crate) fn jm_qmc_step(
         }
         if reached {
             cumulative.add(&block);
-            if let Some(g) = cumulative.g() {
-                average = jm_energies(&g)[0].re;
+            if let Some(e) = ground_energy(&cumulative) {
+                average = e;
             }
+            history.push(block);
         }
 
         // Population statistics and the shift update.
@@ -517,5 +519,17 @@ pub(crate) fn jm_qmc_step(
         }
     }
 
+    // Ratio estimate over every report block after the shift starts, with its reblocked error.
+    if let Some((e, error)) = reblocked_energy(&history) {
+        if irank == 0 {
+            println!(
+                "Stochastic JM-NOCCMC energy over {} report blocks: {:.10} +/- {:.10}",
+                history.len(),
+                e,
+                error
+            );
+        }
+        return e;
+    }
     if average.is_finite() { average } else { energy }
 }
