@@ -95,6 +95,15 @@ use super::types::{FockMOCache, MOCache, NOCIScalar};
 In `mod.rs` files, keep the module-header order above. Private imports used only by the
 `mod.rs` implementation come after submodules and re-exports.
 
+## Rust Structs
+
+Do not define generic context structs, such as `Setup`, `Context` or `State`, that bundle loosely
+related data only so one call can receive everything a routine needs. A struct groups fields that
+describe one concept and is named after it, for example `ReferenceSpaces` for the projection and
+expansion spaces of every reference block. Otherwise pass the values as arguments; when clippy's
+`too_many_arguments` would fire, combine closely related arguments into a tuple, for example
+`attempts: (f64, f64)` for a count and its scaling.
+
 ## Rust Constants
 
 Name constants as one upper-case word without underscores, joining the parts of a compound name,
