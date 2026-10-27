@@ -324,7 +324,7 @@ pub(crate) fn jm_qmc_step(
         )
     };
 
-    print_table_header(irank, ["NWalk", "NRef", "-", "-"]);
+    print_table_header(irank, ["NWalk", "NRef", "-", "NExcitors"]);
     let mut reached = false;
     let local_norm = populations.values().map(|n: &f64| n.abs()).sum::<f64>();
     let mut previous = all_reduce_array1(world, Array1::from_vec(vec![local_norm]))[0];
@@ -588,16 +588,19 @@ pub(crate) fn jm_qmc_step(
         }
 
         // Population statistics over every rank and the shift update.
-        let mut stats = vec![0.0; 2];
+        // Total and reference populations and the number of occupied excitors.
+        let mut stats = vec![0.0; 3];
         for (key, n) in &populations {
             let reference = &spaces.references[key.0];
             stats[0] += n.abs();
             if (key.1, key.2) == (reference.alpha, reference.beta) {
                 stats[1] += n.abs();
+            } else {
+                stats[2] += 1.0;
             }
         }
         let stats = all_reduce_array1(world, Array1::from_vec(stats));
-        let (total, nref) = (stats[0], stats[1]);
+        let (total, nref, nexcitors) = (stats[0], stats[1], stats[2] as i64);
         update_shift(
             &mut shift,
             &mut reached,
@@ -615,7 +618,7 @@ pub(crate) fn jm_qmc_step(
             (report + 1) * qmc.ncycles,
             (projected.0 / cycles, projected.1 / cycles),
             (e0, if reached { shift } else { 0.0 }),
-            (total, nref, None),
+            (total, nref, None, Some(nexcitors)),
         );
 
         if stop_requested(irank, nranks, world) {

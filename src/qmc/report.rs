@@ -64,8 +64,9 @@ pub(crate) fn print_table_header(
 /// - `projected`: Projected-energy numerator and denominator.
 /// - `energies`: Energy `E_0` defining the correlation energy, and the shift (zero before
 ///   population control starts).
-/// - `populations`: Total and reference populations, and the sampled population and its number
-///   of occupied entries where the method has them.
+/// - `populations`: Total and reference populations, and the sampled population and the number
+///   of occupied entries of the sampled vector where the method has them, each printed as `-`
+///   when absent.
 /// # Returns:
 /// - `()`: Writes the row.
 pub(crate) fn print_table_row(
@@ -73,7 +74,7 @@ pub(crate) fn print_table_row(
     iter: usize,
     projected: (f64, f64),
     energies: (f64, f64),
-    populations: (f64, f64, Option<(f64, i64)>),
+    populations: (f64, f64, Option<f64>, Option<i64>),
 ) {
     if irank != 0 {
         return;
@@ -81,33 +82,20 @@ pub(crate) fn print_table_row(
     let (num, den) = projected;
     let (e0, shift) = energies;
     let eproj = num / den;
-    let (nw, nref, sampled) = populations;
-    match sampled {
-        Some((nsampled, nsampledo)) => println!(
-            "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
-            iter,
-            num,
-            den,
-            eproj,
-            eproj - e0,
-            shift,
-            nw,
-            nref,
-            nsampled,
-            nsampledo,
-        ),
-        None => println!(
-            "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16} {:>16}",
-            iter,
-            num,
-            den,
-            eproj,
-            eproj - e0,
-            shift,
-            nw,
-            nref,
-            "-",
-            "-",
-        ),
-    }
+    let (nw, nref, nsampled, noccupied) = populations;
+    let nsampled = nsampled.map_or_else(|| "-".to_string(), |n| format!("{n:.6}"));
+    let noccupied = noccupied.map_or_else(|| "-".to_string(), |n| n.to_string());
+    println!(
+        "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16} {:>16}",
+        iter,
+        num,
+        den,
+        eproj,
+        eproj - e0,
+        shift,
+        nw,
+        nref,
+        nsampled,
+        noccupied,
+    );
 }

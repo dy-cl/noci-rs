@@ -58,7 +58,12 @@ fn print_stats_row(
         iter,
         (state.pe.num, state.pe.den),
         (e0, shift),
-        (stats.nw, stats.nref, sampled),
+        (
+            stats.nw,
+            stats.nref,
+            sampled.map(|(n, _)| n),
+            sampled.map(|(_, o)| o),
+        ),
     );
 }
 

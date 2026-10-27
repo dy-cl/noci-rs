@@ -74,6 +74,7 @@ def isQMCHeader(header: str) -> bool:
     # NMetric names are legacy output compatibility only; new output uses NRange.
     return columns[6:] in (
         ["NWalk", "NRef", "-", "-"],
+        ["NWalk", "NRef", "-", "NExcitors"],
         ["NMetric", "NMetricRef", "NSample", "NSampleOcc"],
         ["NRange", "NRangeRef", "NSample", "NSampleOcc"],
     )
@@ -84,7 +85,7 @@ def qmcPopulationColumns(df: pd.DataFrame):
     Return population columns present in a stochastic QMC table.
     """
     if "NWalk" in df.columns:
-        return "NWalk", "NRef", None, None
+        return "NWalk", "NRef", None, "NExcitors" if "NExcitors" in df.columns else None
 
     return "NRange", "NRangeRef", "NSample", "NSampleOcc"
 
@@ -206,6 +207,10 @@ def readQMC(path: Path) -> pd.DataFrame:
     if header[6:] == ["NWalk", "NRef", "-", "-"]:
         df = df.iloc[:, :8]
         df.columns = header[:8]
+    elif header[6:] == ["NWalk", "NRef", "-", "NExcitors"]:
+        # JM-NOCCMC has no sampled vector; its last column counts the occupied excitors.
+        df = df.drop(columns=8)
+        df.columns = header[:8] + header[9:]
     else:
         df.columns = header
 
