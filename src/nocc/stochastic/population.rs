@@ -208,9 +208,10 @@ impl ReferenceSpaces {
 }
 
 /// Population of one reference block on this rank for one propagation step: the global
-/// reference population `N_z`, every locally owned excitor with its population `n_{z\mu}`, and
-/// the alias table selecting excitors with probability `|n_{z\mu}|/N_{\text{ex}}`. Its size is
-/// the number of occupied excitors, never that of the excitor space.
+/// reference population `N_z`, every locally owned excitor with its population `n_{z\mu}`, the
+/// alias table selecting excitors with probability `|n_{z\mu}|/N_{\text{ex}}` for linked
+/// clusters, and the per-level and combination tables of the even selection of coupling
+/// clusters. Its size is the number of occupied excitors, never that of the excitor space.
 pub(super) struct Block {
     /// Block reference determinant.
     pub(super) reference: ExcitedDeterminant,
@@ -220,6 +221,13 @@ pub(super) struct Block {
     pub(super) excitors: Vec<(Excitor, f64)>,
     /// Alias table over `|n_{z\mu}|` aligned with `excitors`.
     pub(super) selection: AliasTable,
+    /// Indices into `excitors` of each excitation level `1,\ldots,l`, with an alias table over
+    /// their `|n_{z\mu}|`.
+    pub(super) levels: Vec<(Vec<usize>, AliasTable)>,
+    /// Combinations `\eta` of excitors per level sampled by the coupling.
+    pub(super) combinations: Vec<Vec<usize>>,
+    /// Alias table over the combination weights `a_\eta`, whose total is `A`.
+    pub(super) coupling: AliasTable,
 }
 
 impl Block {

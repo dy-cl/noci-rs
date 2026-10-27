@@ -20,7 +20,7 @@ use crate::qmc::{
 };
 
 // Parent/sibling imports.
-use super::cluster::{collapse, select_cluster};
+use super::cluster::{collapse, coupling_combinations, select_cluster, select_coupling_cluster};
 use super::coupling::{left_action, project_cluster};
 use super::effective::{Effective, ground_energy, reblocked_energy, scaled};
 use super::linked::linked_attempt;
@@ -83,17 +83,20 @@ fn owner(
 }
 
 /// Build the per-step view of every block from this rank's populations, with excitors in key
-/// order, and the global reference populations.
+/// order, the global reference populations and the selection tables of linked and coupling
+/// clusters.
 /// # Arguments:
 /// - `spaces`: Projection and expansion spaces of every reference block.
 /// - `populations`: Excitor populations owned by this rank, references included.
 /// - `nref`: Global reference populations `N_z`.
+/// - `ranks`: Number of ranks `P` holding the distributed excitors.
 /// # Returns:
 /// - `Vec<Block>`: Block populations of this rank.
 fn blocks(
     spaces: &ReferenceSpaces,
     populations: &FastMap<ExcitorKey, f64>,
     nref: &[f64],
+    ranks: f64,
 ) -> Vec<Block> {
     let mut keys = populations.keys().copied().collect::<Vec<_>>();
     keys.par_sort_unstable();
@@ -118,10 +121,28 @@ fn blocks(
     out.into_iter()
         .map(|(reference, nref, excitors)| {
             let weights = excitors.iter().map(|(_, n)| n.abs()).collect::<Vec<_>>();
+
+            // Excitors of each level and the weights of the coupling combinations.
+            let levels = (1..=spaces.cluster_rank)
+                .map(|j| {
+                    let indices = (0..excitors.len())
+                        .filter(|&i| rank(&reference, &excitors[i].0.det) == j)
+                        .collect::<Vec<_>>();
+                    let level = indices.iter().map(|&i| weights[i]).collect::<Vec<_>>();
+                    (indices, AliasTable::new(&level))
+                })
+                .collect::<Vec<_>>();
+            let totals = levels.iter().map(|(_, t)| t.total()).collect::<Vec<_>>();
+            let (combinations, coupling) =
+                coupling_combinations(&totals, nref, spaces.expansion_rank, ranks);
+
             Block {
                 reference,
                 nref,
                 selection: AliasTable::new(&weights),
+                levels,
+                combinations,
+                coupling: AliasTable::new(&coupling),
                 excitors,
             }
         })
@@ -176,14 +197,11 @@ fn run_task(
         }
         Task::Coupling(x, count) => {
             for _ in 0..count {
-                let weight = select_cluster(
-                    &blocks[x],
-                    spaces.expansion_rank,
-                    attempts,
-                    ranks,
-                    &mut rng,
-                    &mut out.excitors,
-                );
+                let weight =
+                    select_coupling_cluster(&blocks[x], attempts, &mut rng, &mut out.excitors);
+                if weight == 0.0 {
+                    continue;
+                }
                 let Some((det, sign)) = collapse(&spaces.references[x], &out.excitors) else {
                     continue;
                 };
@@ -343,7 +361,7 @@ pub(crate) fn jm_qmc_step(
             }
             let totals = all_reduce_array1(world, Array1::from_vec(totals)).to_vec();
             let nref = totals[..m].to_vec();
-            let current = blocks(&spaces, &populations, &nref);
+            let current = blocks(&spaces, &populations, &nref, ranks);
             let gt = scaled(&lagged, &nref);
 
             // Share every block's attempts evenly between ranks and divide them into tasks.

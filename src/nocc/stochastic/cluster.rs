@@ -84,6 +84,115 @@ pub(super) fn select_cluster(
     weight * ranks.powi(distinct as i32 - 1) / (ps * attempts)
 }
 
+/// Combinations of the truncated expansion sampled by the coupling between references, with
+/// their weights. Writing `\hat T_x=\sum_j\hat T_{xj}` by excitation level, the unlinked expansion
+/// `N_xe^{\hat T_x/N_x}=N_x\prod_j e^{\hat T_{xj}/N_x}` is a sum over combinations
+/// `\eta=(\eta_1,\ldots,\eta_l)` of `\eta_j` excitors of level `j`, of size `s=\sum_j\eta_j`,
+/// kept only when its excitation level `\sum_j j\eta_j` is within the expansion rank (truncated
+/// selection). Drawing its excitors of level `j` with probability `|n_\mu|/L_j`, where `L_j` is
+/// the population magnitude of that level on this rank, the combination contributes the weight
+///
+/// `a_\eta = |N_x|^{1-s}P^{s-1}\prod_j\frac{L_j^{\eta_j}}{\eta_j!},`
+///
+/// in which `P^{s-1}` is the inverse probability that its `s` excitors share a rank; a repeated
+/// excitor collapses to zero, so contributing excitors are always distinct. The reference term is
+/// `a_0=|N_x|/P`. Combinations of zero weight are omitted.
+/// # Arguments:
+/// - `levels`: Population magnitudes `L_j` of levels `j=1,\ldots,l` on this rank.
+/// - `nref`: Reference population `N_x`.
+/// - `expansion_rank`: Highest excitation level of a combination.
+/// - `ranks`: Number of ranks `P` holding the distributed excitors.
+/// # Returns:
+/// - `(Vec<Vec<usize>>, Vec<f64>)`: Combinations `\eta` and their weights `a_\eta`.
+/// # References
+/// - C. J. C. Scott and A. J. W. Thom, *J. Chem. Phys.* **147**, 124105 (2017),
+///   [doi:10.1063/1.4991795](https://doi.org/10.1063/1.4991795).
+pub(super) fn coupling_combinations(
+    levels: &[f64],
+    nref: f64,
+    expansion_rank: usize,
+    ranks: f64,
+) -> (Vec<Vec<usize>>, Vec<f64>) {
+    // Every combination of counts per level within the expansion rank.
+    let mut combinations = vec![(Vec::new(), 0usize)];
+    for j in 1..=levels.len() {
+        combinations = combinations
+            .into_iter()
+            .flat_map(|(eta, rank)| {
+                (0..=(expansion_rank - rank) / j).map(move |count| {
+                    let mut eta = eta.clone();
+                    eta.push(count);
+                    (eta, rank + j * count)
+                })
+            })
+            .collect();
+    }
+
+    let factorial = |k: usize| (1..=k).map(|i| i as f64).product::<f64>();
+    combinations
+        .into_iter()
+        .map(|(eta, _)| {
+            let s = eta.iter().sum::<usize>() as i32;
+            let weight = eta
+                .iter()
+                .zip(levels)
+                .map(|(&count, &l)| l.powi(count as i32) / factorial(count))
+                .product::<f64>()
+                * nref.abs().powi(1 - s)
+                * ranks.powi(s - 1);
+            (eta, weight)
+        })
+        .filter(|(_, weight)| *weight > 0.0)
+        .unzip()
+}
+
+/// Select one cluster of a block for the coupling between references by even selection: draw a
+/// combination `\eta` with probability `a_\eta/A`, `A=\sum_\eta a_\eta`, then `\eta_j` ordered
+/// excitors of each level `j` with probability `|n_\mu|/L_j`. Every cluster then carries the same
+/// weight magnitude,
+///
+/// `w = \frac{A}{n_{\text{attempts}}}\operatorname{sign}(N_x)^{1-s}\prod_k\operatorname{sign}(n_{\mu_k}),`
+///
+/// so that no single sample of the coupling can outweigh another, however large the particle
+/// ratio `N_{\text{ex}}/N_x`. The sum of `w f` over the attempts is an unbiased estimate of
+/// `\sum_\eta a_\eta\langle\operatorname{sign}f\rangle_\eta`, the expansion of `N_xe^{\hat T_x/N_x}`.
+/// # Arguments:
+/// - `block`: Block population with its level and combination tables.
+/// - `attempts`: Number of coupling attempts on this block on this rank.
+/// - `rng`: Random-number generator.
+/// - `excitors`: Output excitors of the cluster.
+/// # Returns:
+/// - `f64`: Cluster weight `w`, zero if the block has no reference population.
+/// # References
+/// - C. J. C. Scott and A. J. W. Thom, *J. Chem. Phys.* **147**, 124105 (2017),
+///   [doi:10.1063/1.4991795](https://doi.org/10.1063/1.4991795).
+pub(super) fn select_coupling_cluster(
+    block: &Block,
+    attempts: f64,
+    rng: &mut QmcRng,
+    excitors: &mut Vec<Excitor>,
+) -> f64 {
+    excitors.clear();
+    let total = block.coupling.total();
+    if total == 0.0 || block.nref == 0.0 {
+        return 0.0;
+    }
+
+    let eta = &block.combinations[block.coupling.sample(rng)];
+    let mut sign = 1.0;
+    for ((indices, selection), &count) in block.levels.iter().zip(eta) {
+        for _ in 0..count {
+            let (excitor, n) = block.excitors[indices[selection.sample(rng)]];
+            excitors.push(excitor);
+            sign *= n.signum();
+        }
+    }
+    if excitors.len().is_multiple_of(2) {
+        sign *= block.nref.signum();
+    }
+    sign * total / attempts
+}
+
 /// Collapse a cluster onto the block reference, `\prod_k\hat\tau_{\mu_k}|{}^z\Psi\rangle`.
 /// # Arguments:
 /// - `reference`: Block reference.
