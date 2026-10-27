@@ -25,8 +25,12 @@ MIN_REFERENCE_POPULATION = 10.0
 SHOULDER_TAIL_POINTS = 20
 SHOULDER_PROMINENCE = 1.15
 
-# Equilibration picking quantity.
+# Equilibration picking quantities.
 MSER_START_MAX_FRAC = 0.84
+# The data after the equilibration start must span at least this fraction of the iterations
+# taken to reach population control. MSER and the trial-overlap tests only see drifts shorter
+# than their window, so a window shorter than the slow relaxation looks stationary.
+MINWINDOW = 1.0
 
 # Reference overlap detection.
 TRIAL_OVERLAP_BLOCKS = 8
@@ -54,7 +58,8 @@ def parse() -> argparse.Namespace:
         help=(
             "First iteration included in the blocking analysis. "
             "If omitted, determine the equilibration start automatically "
-            "using the shoulder, MSER, and trial overlap."
+            "using the shoulder, MSER, and trial overlap, and require the data after it to "
+            "span at least the iterations taken to reach population control."
         ),
     )
     return parser.parse_args()
@@ -823,6 +828,15 @@ def equilibrationStart(df: pd.DataFrame) -> int:
 
     start = max(mserCandidate, trialStart)
 
+    # Require enough data after the start for a slow drift to be visible to the tests above.
+    window = int(df["Iter"].max()) - start
+    required = int(MINWINDOW * (activeStart - int(df["Iter"].min())))
+    if window < required:
+        raise ValueError(
+            f"Only {window} iterations after the equilibration start {start}; "
+            f"at least {required} are required (the iterations before population control)"
+        )
+
     print(f"Shoulder check: PASS, end iteration: {shoulderEnd}")
     print(f"First active-shift iteration: {activeStart}")
     print(f"MSER EProj start: {energyStart}")
@@ -832,6 +846,7 @@ def equilibrationStart(df: pd.DataFrame) -> int:
     print(f"Trial-overlap fitted suffix drift: {drift:.8g}")
     print(f"Trial-overlap slope |z|: {slopeZ:.3f}")
     print(f"Trial-overlap max adjacent-quarter |z|: {quarterZ:.3f}")
+    print(f"Iterations after the start: {window} (at least {required} required)")
     print(f"Using equilibration start: {start}")
 
     return start
