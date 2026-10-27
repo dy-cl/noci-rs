@@ -179,7 +179,12 @@ impl JMTaskPropagation {
         }
         self.coupling_hs.clear();
         self.coupling_hs.resize(hs_pairs.len(), (0.0, 0.0));
-        calculate_hs_states(data, &hs_pairs, &mut self.wick_scratch, &mut self.coupling_hs);
+        calculate_hs_states(
+            data,
+            &hs_pairs,
+            &mut self.wick_scratch,
+            &mut self.coupling_hs,
+        );
         self.coupling_s.clear();
         self.coupling_s.resize(s_pairs.len(), 0.0);
         calculate_s_states(data, &s_pairs, &mut self.wick_scratch, &mut self.coupling_s);
@@ -213,4 +218,3 @@ impl JMTaskPropagation {
         self.coupling_requests.clear();
     }
 }
-

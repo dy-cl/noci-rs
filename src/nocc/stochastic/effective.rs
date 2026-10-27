@@ -45,6 +45,20 @@ impl Effective {
         self.he += &other.he;
     }
 
+    /// Scale the accumulation, as when forgetting old report blocks.
+    /// # Arguments:
+    /// - `self`: Accumulators.
+    /// - `factor`: Scale factor.
+    /// # Returns:
+    /// - `()`: Scales both accumulators in place.
+    pub(super) fn scale(
+        &mut self,
+        factor: f64,
+    ) {
+        self.se *= factor;
+        self.he *= factor;
+    }
+
     /// Effective Hamiltonian `G=(S^e)^{-1}H^e` of the accumulation.
     /// # Arguments:
     /// - `self`: Accumulators.

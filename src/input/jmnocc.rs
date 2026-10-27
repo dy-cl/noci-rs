@@ -74,6 +74,9 @@ pub struct JMNOCCMCOptions {
     /// Stochastic propagation options. When present the plain update is sampled by coupled
     /// cluster Monte Carlo with time step `dt` instead of being propagated deterministically.
     pub qmc: Option<QMCOptions>,
+    /// Memory, in report blocks, of the running effective overlap and Hamiltonian from which
+    /// stochastic propagation takes `G`; each block is forgotten by `\lambda = 1 - 1/\text{memory}`.
+    pub memory_effective: f64,
 }
 
 impl Default for JMNOCCMCOptions {
@@ -91,6 +94,7 @@ impl Default for JMNOCCMCOptions {
             residual_tol: 1e-9,
             diagnostics: false,
             qmc: None,
+            memory_effective: 100.0,
         }
     }
 }

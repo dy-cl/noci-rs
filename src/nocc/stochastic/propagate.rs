@@ -156,8 +156,14 @@ fn run_task(
         Task::Linked(z, count) => {
             let smax = 4.min(spaces.cluster_rank + 2);
             for _ in 0..count {
-                let weight =
-                    select_cluster(&blocks[z], smax, attempts, ranks, &mut rng, &mut out.excitors);
+                let weight = select_cluster(
+                    &blocks[z],
+                    smax,
+                    attempts,
+                    ranks,
+                    &mut rng,
+                    &mut out.excitors,
+                );
                 linked_attempt(
                     spaces,
                     z,
@@ -210,7 +216,10 @@ fn run_task(
 /// `\Delta N=-\Delta\tau(G-S)N` of the effective Hamiltonian, converging to its ground-state
 /// coefficients, while the amplitudes follow `t \leftarrow t - \Delta\tau R` exactly. The
 /// same-reference part of `N_xR_{x\mu}` is sampled by linked CCMC, the coupling between
-/// references through sampled projections, and `G` is taken from the previous report block.
+/// references through sampled projections. `G=\bar S^{-1}\bar H` is taken from running sums
+/// `\bar S \leftarrow \lambda\bar S+S^e` and `\bar H \leftarrow \lambda\bar H+H^e` of the
+/// report blocks so far, with `\lambda = 1 - 1/\text{memory\_effective}`, so that one noisy
+/// block with a nearly singular `S^e` cannot make `G` diverge.
 /// The populations are distributed over the MPI ranks by a hash of the excitor redrawn every
 /// iteration: each rank forms clusters from its own excitors with the weight `P^{s-1}`, its
 /// spawns and the excitors changing owner are exchanged in one step, and annihilation happens on
@@ -306,6 +315,7 @@ pub(crate) fn jm_qmc_step(
     let mut merged = FastMap::<ExcitorKey, f64>::default();
     let mut coupled = FastMap::<ExcitorKey, f64>::default();
     let mut cumulative = Effective::new(m);
+    let mut running = Effective::new(m);
     let mut history = Vec::new();
     let mut energy = f64::NAN;
     let mut average = f64::NAN;
@@ -365,7 +375,15 @@ pub(crate) fn jm_qmc_step(
                         Task::Linked(z, _) | Task::Coupling(z, _) => z,
                     };
                     let rng = stream(local, (iteration as u64) << 32, k as u64);
-                    run_task(data, &spaces, &current, task, (attempts[z], ranks), rng, worker);
+                    run_task(
+                        data,
+                        &spaces,
+                        &current,
+                        task,
+                        (attempts[z], ranks),
+                        rng,
+                        worker,
+                    );
                 });
             let workers = &workers[..tasks.len()];
 
@@ -533,9 +551,14 @@ pub(crate) fn jm_qmc_step(
             populations.extend(small.iter().map(|u| (u.excitor(), u.dn)));
         }
 
-        // Report-block energy, lagged effective Hamiltonian and running average.
+        // Report-block energy, lagged effective Hamiltonian from the running sums with forgetting,
+        // and running average.
         if let Some(g) = block.g() {
             energy = jm_energies(&g)[0].re;
+        }
+        running.scale(1.0 - 1.0 / options.memory_effective);
+        running.add(&block);
+        if let Some(g) = running.g() {
             lagged = g;
         }
         if reached {

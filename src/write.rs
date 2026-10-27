@@ -307,6 +307,7 @@ pub fn print_input(input: &Input) {
             println!("MAX_STEPS: {}", j.max_steps);
             println!("RESIDUAL_TOL: {:e}", j.residual_tol);
             println!("DIAGNOSTICS: {}", j.diagnostics);
+            println!("MEMORY_EFFECTIVE: {}", j.memory_effective);
         }
         None => {
             println!("ENABLED: false");

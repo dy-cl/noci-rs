@@ -940,6 +940,16 @@ fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
             std::process::exit(1);
         }
 
+        let memory_effective = t
+            .get("memory_effective")
+            .unwrap_or(defaults.memory_effective);
+        if memory_effective < 1.0 {
+            eprintln!(
+                "jmnoccmc.memory_effective = {memory_effective} must be at least one report block"
+            );
+            std::process::exit(1);
+        }
+
         JMNOCCMCOptions {
             cluster_rank,
             expansion_rank,
@@ -954,6 +964,7 @@ fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
                 .flatten()
                 .unwrap_or(defaults.diagnostics),
             qmc,
+            memory_effective,
         }
     })
 }
