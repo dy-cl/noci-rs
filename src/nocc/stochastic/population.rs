@@ -10,7 +10,7 @@ use crate::elements::NOCIData;
 use crate::input::JMNOCCMCOptions;
 use crate::nocc::reference_determinants;
 use crate::qmc::excitgen::OrthogonalUniformGenerator;
-use crate::qmc::{FriAmplitude, KeyedUpdate};
+use crate::qmc::{AliasTable, FriAmplitude, KeyedUpdate};
 
 /// Excitor `(z, D)` of reference block `z`, identified by the occupations of its determinant
 /// `|D\rangle = \hat\tau|{}^z\Psi\rangle` in the parent frame of `z`. The block's reference has
@@ -209,7 +209,8 @@ impl ReferenceSpaces {
 
 /// Population of one reference block on this rank for one propagation step: the global
 /// reference population `N_z`, every locally owned excitor with its population `n_{z\mu}`, and
-/// the cumulative magnitudes used to select excitors with probability `|n_{z\mu}|/N_{\text{ex}}`.
+/// the alias table selecting excitors with probability `|n_{z\mu}|/N_{\text{ex}}`. Its size is
+/// the number of occupied excitors, never that of the excitor space.
 pub(super) struct Block {
     /// Block reference determinant.
     pub(super) reference: ExcitedDeterminant,
@@ -217,8 +218,8 @@ pub(super) struct Block {
     pub(super) nref: f64,
     /// Excitors with their populations.
     pub(super) excitors: Vec<(Excitor, f64)>,
-    /// Cumulative `|n_{z\mu}|` aligned with `excitors`.
-    pub(super) cumulative: Vec<f64>,
+    /// Alias table over `|n_{z\mu}|` aligned with `excitors`.
+    pub(super) selection: AliasTable,
 }
 
 impl Block {
@@ -228,7 +229,7 @@ impl Block {
     /// # Returns:
     /// - `f64`: Excitor population 1-norm.
     pub(super) fn nex(&self) -> f64 {
-        self.cumulative.last().copied().unwrap_or(0.0)
+        self.selection.total()
     }
 }
 

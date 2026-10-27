@@ -14,17 +14,18 @@ use crate::input::JMNOCCMCOptions;
 use crate::mpiutils::all_reduce_array1;
 use crate::nocc::jm_energies;
 use crate::qmc::{
-    ExchangeScratch, FastMap, QmcRng, coalesce, compress_sparse, exchange_updates, gather_updates,
-    owner_words, pack_updates, print_table_header, print_table_row, rank_seed, stop_requested,
-    stream, update_shift,
+    AliasTable, ExchangeScratch, FastMap, QmcRng, coalesce, compress_sparse, exchange_updates,
+    gather_updates, owner_words, pack_updates, print_table_header, print_table_row, rank_seed,
+    stop_requested, stream, update_shift,
 };
 
 // Parent/sibling imports.
 use super::cluster::{collapse, select_cluster};
-use super::coupling::{Projections, left_action, project_cluster};
+use super::coupling::{left_action, project_cluster};
 use super::effective::{Effective, ground_energy, reblocked_energy, scaled};
 use super::linked::linked_attempt;
 use super::population::{Block, Excitor, ExcitorKey, ExcitorUpdate, ReferenceSpaces, rank};
+use super::state::JMTaskPropagation;
 
 /// Smallest number of cluster attempts in one parallel task.
 const CHUNK: usize = 256;
@@ -49,16 +50,6 @@ enum Task {
     Linked(usize, usize),
     /// Coupling attempts projecting a block onto the other references.
     Coupling(usize, usize),
-}
-
-/// Output of one parallel task.
-struct TaskOutput {
-    /// Population changes per unit time, summed per excitor.
-    spawns: FastMap<ExcitorKey, f64>,
-    /// Contribution to `N_z H^e_{zz}` of each block.
-    energy: Vec<f64>,
-    /// Coupling projections.
-    projections: Projections,
 }
 
 /// Rank owning an excitor during one iteration. The assignment is redrawn every iteration from
@@ -110,34 +101,35 @@ fn blocks(
         .references
         .iter()
         .zip(nref)
-        .map(|(reference, &nref)| Block {
-            reference: *reference,
-            nref,
-            excitors: Vec::new(),
-            cumulative: Vec::new(),
-        })
+        .map(|(reference, &nref)| (*reference, nref, Vec::new()))
         .collect::<Vec<_>>();
 
     for key in keys {
-        let block = &mut out[key.0];
+        let (reference, _, excitors) = &mut out[key.0];
         let det = ExcitedDeterminant {
-            parent: block.reference.parent,
+            parent: reference.parent,
             alpha: key.1,
             beta: key.2,
         };
-        if det != block.reference {
-            let n = populations[&key];
-            let total = block.cumulative.last().copied().unwrap_or(0.0) + n.abs();
-            block
-                .excitors
-                .push((Excitor::new(&block.reference, det), n));
-            block.cumulative.push(total);
+        if det != *reference {
+            excitors.push((Excitor::new(reference, det), populations[&key]));
         }
     }
-    out
+    out.into_iter()
+        .map(|(reference, nref, excitors)| {
+            let weights = excitors.iter().map(|(_, n)| n.abs()).collect::<Vec<_>>();
+            Block {
+                reference,
+                nref,
+                selection: AliasTable::new(&weights),
+                excitors,
+            }
+        })
+        .collect()
 }
 
-/// Run one parallel task of cluster attempts.
+/// Run one parallel task of cluster attempts, queueing their matrix elements and resolving them
+/// in one batch at the end.
 /// # Arguments:
 /// - `data`: NOCI data holding the parent frames, MO caches and Wick intermediates.
 /// - `spaces`: Projection and expansion spaces of every reference block.
@@ -145,8 +137,9 @@ fn blocks(
 /// - `task`: Task kind with its block and number of attempts.
 /// - `attempts`: Attempts of the task's block on this rank and the number of ranks.
 /// - `rng`: Task random-number generator.
+/// - `out`: Reusable task storage receiving the population changes and projections.
 /// # Returns:
-/// - `TaskOutput`: Population changes per unit time and accumulated projections.
+/// - `()`: Overwrites `out` with the task's results.
 fn run_task(
     data: &NOCIData<'_, f64>,
     spaces: &ReferenceSpaces,
@@ -154,33 +147,26 @@ fn run_task(
     task: Task,
     attempts: (f64, f64),
     mut rng: QmcRng,
-) -> TaskOutput {
+    out: &mut JMTaskPropagation,
+) {
     let (attempts, ranks) = attempts;
-    let m = blocks.len();
-    let mut out = TaskOutput {
-        spawns: FastMap::default(),
-        energy: vec![0.0; m],
-        projections: Projections::new(m),
-    };
-    let mut scratch = WickScratchSpin::new();
-    let mut excitors = Vec::new();
+    out.clear();
 
     match task {
         Task::Linked(z, count) => {
             let smax = 4.min(spaces.cluster_rank + 2);
             for _ in 0..count {
                 let weight =
-                    select_cluster(&blocks[z], smax, attempts, ranks, &mut rng, &mut excitors);
-                out.energy[z] += linked_attempt(
-                    data,
+                    select_cluster(&blocks[z], smax, attempts, ranks, &mut rng, &mut out.excitors);
+                linked_attempt(
                     spaces,
                     z,
-                    (&excitors, weight),
+                    (&out.excitors, weight),
                     &mut rng,
-                    &mut scratch,
-                    &mut out.spawns,
+                    &mut out.linked_requests,
                 );
             }
+            out.resolve_linked(data);
         }
         Task::Coupling(x, count) => {
             for _ in 0..count {
@@ -190,27 +176,25 @@ fn run_task(
                     attempts,
                     ranks,
                     &mut rng,
-                    &mut excitors,
+                    &mut out.excitors,
                 );
-                let Some((det, sign)) = collapse(&spaces.references[x], &excitors) else {
+                let Some((det, sign)) = collapse(&spaces.references[x], &out.excitors) else {
                     continue;
                 };
                 if rank(&spaces.references[x], &det) > spaces.expansion_rank {
                     continue;
                 }
                 project_cluster(
-                    data,
-                    (&spaces.states, &spaces.rows),
+                    &spaces.rows,
                     x,
-                    (&det.state(data.space.parents()), weight * sign),
+                    (det.state(data.space.parents()), weight * sign),
                     &mut rng,
-                    &mut scratch,
-                    &mut out.projections,
+                    (&mut out.coupling_clusters, &mut out.coupling_requests),
                 );
             }
+            out.resolve_coupling(data, spaces);
         }
     }
-    out
 }
 
 /// Stochastically propagate the JM-NOCCMC amplitudes by linked coupled cluster Monte Carlo
@@ -296,12 +280,16 @@ pub(crate) fn jm_qmc_step(
     let (mut lagged, e0) = {
         let mut scratch = WickScratchSpin::new();
         let mut effective = Effective::new(m);
-        for (z, bra) in spaces.references.iter().enumerate() {
-            for (x, ket) in spaces.references.iter().enumerate() {
-                let (h, s) = calculate_hs_excited(data, (bra, ket), &mut scratch);
-                effective.se[(z, x)] = s;
-                effective.he[(z, x)] = h;
-            }
+        let pairs = spaces
+            .references
+            .iter()
+            .flat_map(|bra| spaces.references.iter().map(|ket| (*bra, *ket)))
+            .collect::<Vec<_>>();
+        let mut hs = vec![(0.0, 0.0); pairs.len()];
+        calculate_hs_excited(data, &pairs, &mut scratch, &mut hs);
+        for (k, &(h, s)) in hs.iter().enumerate() {
+            effective.se[(k / m, k % m)] = s;
+            effective.he[(k / m, k % m)] = h;
         }
         (
             effective.g().expect("singular reference overlap"),
@@ -314,6 +302,9 @@ pub(crate) fn jm_qmc_step(
     let local_norm = populations.values().map(|n: &f64| n.abs()).sum::<f64>();
     let mut previous = all_reduce_array1(world, Array1::from_vec(vec![local_norm]))[0];
     let mut exchange = ExchangeScratch::new(nranks);
+    let mut workers = Vec::<JMTaskPropagation>::new();
+    let mut merged = FastMap::<ExcitorKey, f64>::default();
+    let mut coupled = FastMap::<ExcitorKey, f64>::default();
     let mut cumulative = Effective::new(m);
     let mut history = Vec::new();
     let mut energy = f64::NAN;
@@ -362,43 +353,62 @@ pub(crate) fn jm_qmc_step(
                     }
                 }
             }
-            let outputs = tasks
-                .into_par_iter()
+            if workers.len() < tasks.len() {
+                workers.resize_with(tasks.len(), || JMTaskPropagation::new(m));
+            }
+            tasks
+                .par_iter()
+                .zip(workers.par_iter_mut())
                 .enumerate()
-                .map(|(k, task)| {
+                .for_each(|(k, (&task, worker))| {
                     let z = match task {
                         Task::Linked(z, _) | Task::Coupling(z, _) => z,
                     };
                     let rng = stream(local, (iteration as u64) << 32, k as u64);
-                    run_task(data, &spaces, &current, task, (attempts[z], ranks), rng)
-                })
-                .collect::<Vec<_>>();
+                    run_task(data, &spaces, &current, task, (attempts[z], ranks), rng, worker);
+                });
+            let workers = &workers[..tasks.len()];
 
-            // Combine the tasks in order.
-            let mut spawns = FastMap::default();
-            let mut energies = vec![0.0; m];
-            let mut projections = Projections::new(m);
-            for output in &outputs {
-                for (&key, &dn) in &output.spawns {
-                    *spawns.entry(key).or_insert(0.0) += dn;
+            // Combine the tasks in order: spawns per unit time summed per excitor in a reused map,
+            // block energies and effective elements as sums.
+            merged.clear();
+            for worker in workers {
+                for (&key, &dn) in &worker.spawns {
+                    *merged.entry(key).or_insert(0.0) += dn;
                 }
-                for (e, v) in energies.iter_mut().zip(&output.energy) {
+            }
+            let mut energies = vec![0.0; m];
+            let mut se = vec![vec![0.0; m]; m];
+            let mut he = vec![vec![0.0; m]; m];
+            for worker in workers {
+                for (e, v) in energies.iter_mut().zip(&worker.energy) {
                     *e += v;
                 }
-                projections.add(&output.projections);
+                for y in 0..m {
+                    for x in 0..m {
+                        se[y][x] += worker.projections.se[y][x];
+                        he[y][x] += worker.projections.he[y][x];
+                    }
+                }
             }
 
             // Complete the projections `\sum_{x \ne y}\tilde G_{xy}q^x_y` over ranks, then add the
             // coupling through the left action of `e^{-T_y}` on this rank's excitors.
             if m > 1 {
-                let mut q = Vec::new();
-                for y in 0..m {
-                    for x in (0..m).filter(|&x| x != y) {
-                        for (&(alpha, beta), &v) in &projections.q[y][x] {
-                            q.push(ExcitorUpdate::new((y, alpha, beta), gt[(x, y)] * v));
+                coupled.clear();
+                for worker in workers {
+                    for y in 0..m {
+                        for x in (0..m).filter(|&x| x != y) {
+                            for (&(alpha, beta), &v) in &worker.projections.q[y][x] {
+                                *coupled.entry((y, alpha, beta)).or_insert(0.0) += gt[(x, y)] * v;
+                            }
                         }
                     }
                 }
+                let q = coupled
+                    .iter()
+                    .map(|(&key, &v)| ExcitorUpdate::new(key, v))
+                    .collect::<Vec<_>>();
                 let mut q = if nranks > 1 {
                     gather_updates(world, &q, &mut exchange).to_vec()
                 } else {
@@ -417,15 +427,15 @@ pub(crate) fn jm_qmc_step(
                     for (key, dn) in
                         left_action(b, y, &entries, spaces.cluster_rank, (ranks, irank == 0))
                     {
-                        *spawns.entry(key).or_insert(0.0) += dn;
+                        *merged.entry(key).or_insert(0.0) += dn;
                     }
                 }
             }
 
             // Annihilate this rank's spawns and round small ones stochastically.
-            let mut updates = spawns
-                .into_iter()
-                .map(|(key, dn)| ExcitorUpdate::new(key, dt * dn))
+            let mut updates = merged
+                .iter()
+                .map(|(&key, &dn)| ExcitorUpdate::new(key, dt * dn))
                 .collect::<Vec<_>>();
             updates.par_sort_unstable_by_key(|u| u.excitor());
             coalesce(&mut updates);
@@ -437,8 +447,8 @@ pub(crate) fn jm_qmc_step(
             sums[..m].copy_from_slice(&energies);
             for y in 0..m {
                 for x in 0..m {
-                    sums[m + y * m + x] = projections.se[y][x];
-                    sums[m + m * m + y * m + x] = projections.he[y][x];
+                    sums[m + y * m + x] = se[y][x];
+                    sums[m + m * m + y * m + x] = he[y][x];
                 }
             }
             let sums = all_reduce_array1(world, Array1::from_vec(sums)).to_vec();

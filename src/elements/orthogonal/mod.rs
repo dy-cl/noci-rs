@@ -29,4 +29,5 @@ pub(in crate::elements) use pairs::{
     calculate_hs_pair_orthogonal, calculate_hs_pairs_orthogonal_batched,
     calculate_hs_pairs_orthogonal_dense, calculate_m_pair_orthogonal,
     calculate_m_pairs_orthogonal_batched, calculate_s_pairs_orthogonal_batched,
+    prepare_orthogonal_state,
 };

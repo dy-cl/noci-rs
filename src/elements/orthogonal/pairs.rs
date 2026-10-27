@@ -46,7 +46,7 @@ pub(crate) fn calculate_s_pair_orthogonal<T: NOCIScalar>(
 /// - `Option<ReducedTwoSpinState>`: Prepared phase and labels, or `None` when the operator
 ///   cannot couple the occupations.
 #[inline(always)]
-fn prepare_orthogonal_state(
+pub(in crate::elements) fn prepare_orthogonal_state(
     l_occ: (u128, u128),
     g_occ: (u128, u128),
     rank: usize,

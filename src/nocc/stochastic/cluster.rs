@@ -13,7 +13,8 @@ use super::population::{Block, Excitor};
 /// Select one cluster of a block for the sampled expansion
 /// `\sum_s \frac{1}{s!}\sum_{\mu_1\ldots\mu_s} N_z \prod_k t_{z\mu_k}\,f(\mu_1,\ldots,\mu_s)`.
 /// The size `s` is drawn with `p(s)=2^{-(s+1)}` for `s<s_{\max}` and `p(s_{\max})=2^{-s_{\max}}`,
-/// and each of the `s` ordered excitors independently with probability `|n_\mu|/N_{\text{ex}}`,
+/// and each of the `s` ordered excitors independently with probability `|n_\mu|/N_{\text{ex}}`
+/// from the block's alias table,
 /// so that the returned weight
 ///
 /// `w = \frac{N_z}{s!\,p(s)\,A}\prod_k\frac{\operatorname{sign}(n_{\mu_k})N_{\text{ex}}}{N_z}`
@@ -71,12 +72,7 @@ pub(super) fn select_cluster(
     // Draw ordered excitors proportionally to their population magnitudes.
     let mut weight = block.nref;
     for k in 1..=s {
-        let target = rng.r#gen::<f64>() * nex;
-        let i = block
-            .cumulative
-            .partition_point(|&c| c <= target)
-            .min(block.excitors.len() - 1);
-        let (excitor, n) = block.excitors[i];
+        let (excitor, n) = block.excitors[block.selection.sample(rng)];
         excitors.push(excitor);
         weight *= n.signum() * nex / block.nref / k as f64;
     }

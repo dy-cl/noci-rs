@@ -25,34 +25,36 @@ use rand::Rng;
 
 // Crate-root imports.
 use crate::determinant::ExcitedDeterminant;
-use crate::elements::nonorthogonalwicks::WickScratchSpin;
-use crate::elements::{NOCIData, calculate_hs_excited};
-use crate::qmc::{FastMap, QmcRng};
+use crate::qmc::QmcRng;
 
 // Parent/sibling imports.
 use super::cluster::collapse;
-use super::population::{Excitor, ExcitorKey, ReferenceSpaces, rank};
+use super::population::{Excitor, ReferenceSpaces, rank};
+use super::state::{LinkedBatchedRequest, Target};
 
-/// Evaluate `V_\mu = \langle D_\mu|[\ldots[\hat H,\hat\tau_1],\ldots,\hat\tau_s]|{}^z\Psi\rangle`
-/// as `\sum_{L}(-1)^{|L|}\langle\hat\tau_L^\dagger D_\mu|\hat H|\hat\tau_{C\setminus L}{}^z\Psi\rangle`
-/// with the signs of each excitor action.
+/// Queue the terms of
+/// `V_\mu = \langle D_\mu|[\ldots[\hat H,\hat\tau_1],\ldots,\hat\tau_s]|{}^z\Psi\rangle`
+/// `= \sum_{L}(-1)^{|L|}\langle\hat\tau_L^\dagger D_\mu|\hat H|\hat\tau_{C\setminus L}{}^z\Psi\rangle`
+/// with the signs of each excitor action, each multiplied by `coefficient` and added to `target`
+/// once evaluated. Partitions whose bra and ket differ by more than a double excitation vanish
+/// and are not queued.
 /// # Arguments:
-/// - `data`: NOCI data holding the parent frames and MO caches.
 /// - `reference`: Block reference `{}^z\Psi`.
 /// - `excitors`: Cluster excitors.
 /// - `projectee`: Projection determinant `|D_\mu\rangle`.
-/// - `scratch`: Wick scratch, unused by same-frame elements.
+/// - `term`: Destination and coefficient of `V_\mu`.
+/// - `requests`: Queued same-reference requests.
 /// # Returns:
-/// - `f64`: Nested-commutator matrix element.
+/// - `()`: Queues the surviving partitions.
 fn commutator(
-    data: &NOCIData<'_, f64>,
     reference: &ExcitedDeterminant,
     excitors: &[Excitor],
     projectee: &ExcitedDeterminant,
-    scratch: &mut WickScratchSpin<f64>,
-) -> f64 {
+    term: (Target, f64),
+    requests: &mut Vec<LinkedBatchedRequest>,
+) {
+    let (target, coefficient) = term;
     let s = excitors.len();
-    let mut value = 0.0;
     for left in 0..1usize << s {
         // Right part acting on the reference.
         let right =
@@ -71,16 +73,22 @@ fn commutator(
                     Some((prev, sign * sk))
                 });
         if let (Some((ket, sr)), Some((bra, sl))) = (right, bra) {
-            let h = calculate_hs_excited(data, (&bra, &ket), scratch).0;
+            if (bra.alpha ^ ket.alpha).count_ones() + (bra.beta ^ ket.beta).count_ones() > 4 {
+                continue;
+            }
             let parity = if left.count_ones() % 2 == 0 {
                 1.0
             } else {
                 -1.0
             };
-            value += parity * sl * sr * h;
+            requests.push(LinkedBatchedRequest {
+                target,
+                coefficient: coefficient * parity * sl * sr,
+                bra,
+                ket,
+            });
         }
     }
-    value
 }
 
 /// Probability that the spawning step proposes projectee `\mu` from cluster `C`,
@@ -119,43 +127,49 @@ fn proposal(
     p / (1usize << s) as f64
 }
 
-/// Perform one linked attempt for a selected cluster: accumulate the reference projection
-/// `\langle{}^z\Psi|\hat H|\hat\tau_C{}^z\Psi\rangle` of `\bar H_z`, add `-w V_C` on the
-/// collapsed cluster (death), and `-w V_\mu/P(\mu|C)` on one sampled projectee (spawning). The
-/// changes estimate `-N_zR_{z\mu}` before multiplication by `\Delta\tau`.
+/// Perform one linked attempt for a selected cluster, queueing its matrix elements: the
+/// reference projection `\langle{}^z\Psi|\hat H|\hat\tau_C{}^z\Psi\rangle` of `\bar H_z`, `-w V_C`
+/// on the collapsed cluster (death), and `-w V_\mu/P(\mu|C)` on one sampled projectee
+/// (spawning). Once evaluated the changes estimate `-N_zR_{z\mu}` before multiplication by
+/// `\Delta\tau`.
 /// # Arguments:
-/// - `data`: NOCI data holding the parent frames and MO caches.
 /// - `spaces`: Projection and expansion spaces of every reference block.
 /// - `z`: Block of the cluster.
 /// - `cluster`: Cluster excitors and weight `w`.
 /// - `rng`: Random-number generator.
-/// - `scratch`: Wick scratch, unused by same-frame elements.
-/// - `out`: Population changes per unit time, summed per excitor.
+/// - `requests`: Queued same-reference requests.
 /// # Returns:
-/// - `f64`: Contribution `w\langle{}^z\Psi|\hat H|\hat\tau_C{}^z\Psi\rangle` to `N_z H^e_{zz}`.
+/// - `()`: Queues the attempt's requests.
 pub(super) fn linked_attempt(
-    data: &NOCIData<'_, f64>,
     spaces: &ReferenceSpaces,
     z: usize,
     cluster: (&[Excitor], f64),
     rng: &mut QmcRng,
-    scratch: &mut WickScratchSpin<f64>,
-    out: &mut FastMap<ExcitorKey, f64>,
-) -> f64 {
+    requests: &mut Vec<LinkedBatchedRequest>,
+) {
     let (excitors, weight) = cluster;
     let reference = &spaces.references[z];
-    let key = |det: &ExcitedDeterminant| (z, det.alpha, det.beta);
-    let mut energy = 0.0;
+    let key = |det: &ExcitedDeterminant| Target::Excitor((z, det.alpha, det.beta));
 
     // Reference projection and death on the collapsed cluster.
     if let Some((collapsed, sign)) = collapse(reference, excitors) {
         let r = rank(reference, &collapsed);
         if r <= 2 {
-            energy = weight * sign * calculate_hs_excited(data, (reference, &collapsed), scratch).0;
+            requests.push(LinkedBatchedRequest {
+                target: Target::Energy(z),
+                coefficient: weight * sign,
+                bra: *reference,
+                ket: collapsed,
+            });
         }
         if (1..=spaces.cluster_rank).contains(&r) {
-            let v = commutator(data, reference, excitors, &collapsed, scratch);
-            *out.entry(key(&collapsed)).or_insert(0.0) -= weight * v;
+            commutator(
+                reference,
+                excitors,
+                &collapsed,
+                (key(&collapsed), -weight),
+                requests,
+            );
         }
     }
 
@@ -166,10 +180,10 @@ pub(super) fn linked_attempt(
         .filter(|k| left >> k & 1 == 0)
         .try_fold(*reference, |det, k| Some(excitors[k].apply(&det)?.0))
     else {
-        return energy;
+        return;
     };
     let Some((connection, pgen)) = spaces.generators[z].sample(rng) else {
-        return energy;
+        return;
     };
     let (ca, cb) = connection.child_of((source.alpha, source.beta), spaces.norb[z]);
     let target = ExcitedDeterminant {
@@ -181,17 +195,19 @@ pub(super) fn linked_attempt(
         .filter(|k| left >> k & 1 == 1)
         .try_fold(target, |det, k| Some(excitors[k].apply(&det)?.0))
     else {
-        return energy;
+        return;
     };
     let r = rank(reference, &projectee);
     if r == 0 || r > spaces.cluster_rank {
-        return energy;
+        return;
     }
 
-    let v = commutator(data, reference, excitors, &projectee, scratch);
-    if v != 0.0 {
-        let p = proposal(reference, excitors, &projectee, pgen);
-        *out.entry(key(&projectee)).or_insert(0.0) -= weight * v / p;
-    }
-    energy
+    let p = proposal(reference, excitors, &projectee, pgen);
+    commutator(
+        reference,
+        excitors,
+        &projectee,
+        (key(&projectee), -weight / p),
+        requests,
+    );
 }

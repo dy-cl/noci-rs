@@ -20,6 +20,25 @@
 //! late. One population-control shift acts on all references, whose populations follow the
 //! power iteration of `G` and so carry the ground-state mixing coefficients.
 //!
+//! # Sparsity
+//!
+//! NOCIQMC keeps dense determinant-indexed storage, such as its walker vector and cached
+//! diagonal elements, because its populations must cover the overlap null space to stop noise
+//! accumulating there. JM-NOCCMC instead assumes that the references are chosen so that the
+//! excited determinants of all references together span no null space. In general this is not
+//! true, since excitations of nonorthogonal references can be linearly dependent, so it is a bad
+//! assumption that must be revisited. Under it the method is genuinely sparse: no storage or
+//! table may scale with the size of the excitor space. Populations, the alias tables that
+//! select clusters and the coupling projections are built from the occupied excitors only, and
+//! every matrix element, diagonal ones included, is evaluated on the fly from occupations and
+//! never cached per determinant. The one current exception is `ReferenceSpaces::rows`, every
+//! excitation of each reference up to the cluster rank, from which the coupling draws projection
+//! rows uniformly; it is to be replaced by drawing the rows on the fly.
+//!
+//! Wherever the two methods do the same thing, the structure mirrors NOCIQMC: each parallel
+//! task queues its matrix-element requests in reusable storage and resolves them in one call to
+//! the batched element dispatch.
+//!
 //! # References
 //! - B. Jeziorski and H. J. Monkhorst, *Phys. Rev. A* **24**, 1668 (1981),
 //!   [doi:10.1103/PhysRevA.24.1668](https://doi.org/10.1103/PhysRevA.24.1668).
@@ -34,6 +53,7 @@ mod effective;
 mod linked;
 mod population;
 mod propagate;
+mod state;
 
 // Crate-visible function re-exports.
 pub(crate) use propagate::jm_qmc_step;

@@ -4,7 +4,8 @@
 //! This layer holds the machinery that does not depend on how a method represents its
 //! wavefunction: seeded random-number streams, MPI ownership of sparse keys, exchange and
 //! annihilation of keyed population updates, Fast Randomised Iteration compression, the
-//! population-control shift, stop requests, a fast deterministic hash map, and excitation
+//! population-control shift, stop requests, a fast deterministic hash map, alias tables for
+//! constant-time weighted selection, and excitation
 //! generators within one orthonormal orbital frame. Method subfolders such as `noci::stochastic` and `nocc::stochastic` build their
 //! population storage and propagators on top of it. This layer never depends on a method family.
 //!
@@ -16,6 +17,7 @@
 
 pub(crate) mod excitgen;
 
+mod alias;
 mod exchange;
 mod fri;
 mod hash;
@@ -25,6 +27,7 @@ mod rng;
 mod shift;
 
 // Crate-visible type re-exports.
+pub(crate) use alias::AliasTable;
 pub(crate) use exchange::{ExchangeScratch, KeyedUpdate};
 pub(crate) use fri::FriAmplitude;
 pub(crate) use hash::FastMap;

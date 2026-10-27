@@ -21,12 +21,11 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::determinant::{ExcitedDeterminant, ExcitedState};
-use crate::elements::nonorthogonalwicks::WickScratchSpin;
-use crate::elements::{NOCIData, calculate_hs_states, calculate_s_states};
 use crate::qmc::{FastMap, QmcRng};
 
 // Parent/sibling imports.
 use super::population::{Block, Excitor, ExcitorKey, rank};
+use super::state::CouplingBatchedRequest;
 
 /// Number of non-reference projection rows drawn per cluster and coupled block.
 const ROWDRAWS: usize = 4;
@@ -58,81 +57,70 @@ impl Projections {
         }
     }
 
-    /// Add another set of projections.
+    /// Reset every projection to zero while retaining the map allocations.
     /// # Arguments:
-    /// - `self`: Accumulated projections.
-    /// - `other`: Projections to add.
+    /// - `self`: Projections.
     /// # Returns:
-    /// - `()`: Adds `other` in place.
-    pub(super) fn add(
-        &mut self,
-        other: &Projections,
-    ) {
-        for (y, row) in other.q.iter().enumerate() {
-            for (x, map) in row.iter().enumerate() {
-                self.se[y][x] += other.se[y][x];
-                self.he[y][x] += other.he[y][x];
-                for (&nu, &v) in map {
-                    *self.q[y][x].entry(nu).or_insert(0.0) += v;
-                }
-            }
+    /// - `()`: Clears the projections in place.
+    pub(super) fn clear(&mut self) {
+        for ((se, he), q) in self.se.iter_mut().zip(&mut self.he).zip(&mut self.q) {
+            se.iter_mut().for_each(|v| *v = 0.0);
+            he.iter_mut().for_each(|v| *v = 0.0);
+            q.iter_mut().for_each(FastMap::clear);
         }
     }
 }
 
-/// Project one sampled cluster `w\,\phi_C|D_C\rangle` of block `x` onto every other block `y`:
-/// the reference row exactly, giving `\langle{}^y\Psi|D_C\rangle` and
+/// Queue the projection of one sampled cluster `w\,\phi_C|D_C\rangle` of block `x` onto every
+/// other block `y`: the reference row exactly, giving `\langle{}^y\Psi|D_C\rangle` and
 /// `\langle{}^y\Psi|\hat H|D_C\rangle`, and `ROWDRAWS` uniformly drawn rows `\nu` of rank
 /// `1..=cluster_rank` with weight `n_{\text{rows}}/\text{ROWDRAWS}`.
 /// # Arguments:
-/// - `data`: NOCI data holding the parent frames and Wick intermediates.
-/// - `frames`: Prepared reference of every block and its prepared projection rows with ranks
-///   `1..=cluster_rank`.
+/// - `rows`: Prepared projection rows of every block with ranks `1..=cluster_rank`.
 /// - `x`: Source block.
 /// - `cluster`: Prepared collapsed determinant `|D_C\rangle` and signed weight `w\phi_C`.
 /// - `rng`: Random-number generator.
-/// - `scratch`: Wick scratch.
-/// - `out`: Accumulated projections.
+/// - `queue`: Prepared cluster determinants and coupling requests of the task.
 /// # Returns:
-/// - `()`: Adds the cluster's projections.
+/// - `()`: Queues the cluster's requests.
 pub(super) fn project_cluster(
-    data: &NOCIData<'_, f64>,
-    frames: (&[ExcitedState], &[Vec<ExcitedState>]),
+    rows: &[Vec<ExcitedState>],
     x: usize,
-    cluster: (&ExcitedState, f64),
+    cluster: (ExcitedState, f64),
     rng: &mut QmcRng,
-    scratch: &mut WickScratchSpin<f64>,
-    out: &mut Projections,
+    queue: (&mut Vec<ExcitedState>, &mut Vec<CouplingBatchedRequest>),
 ) {
     let (det, weight) = cluster;
-    let (references, rows) = frames;
-    for (y, reference) in references.iter().enumerate() {
+    let (clusters, requests) = queue;
+    let index = clusters.len();
+    clusters.push(det);
+    for (y, rows) in rows.iter().enumerate() {
         if y == x {
             continue;
         }
 
         // Reference row: effective overlap and Hamiltonian.
-        let (h, s) = calculate_hs_states(data, (reference, det), scratch);
-        out.se[y][x] += weight * s;
-        out.he[y][x] += weight * h;
-        *out.q[y][x]
-            .entry((reference.det.alpha, reference.det.beta))
-            .or_insert(0.0) += weight * s;
+        requests.push(CouplingBatchedRequest {
+            cluster: index,
+            x,
+            y,
+            row: None,
+            coefficient: weight,
+        });
 
         // Remaining rows drawn uniformly.
-        let rows = &rows[y];
         if rows.is_empty() {
             continue;
         }
         let scale = weight * rows.len() as f64 / ROWDRAWS as f64;
         for _ in 0..ROWDRAWS {
-            let nu = &rows[rng.gen_range(0..rows.len())];
-            let s = calculate_s_states(data, (nu, det), scratch);
-            if s != 0.0 {
-                *out.q[y][x]
-                    .entry((nu.det.alpha, nu.det.beta))
-                    .or_insert(0.0) += scale * s;
-            }
+            requests.push(CouplingBatchedRequest {
+                cluster: index,
+                x,
+                y,
+                row: Some(rng.gen_range(0..rows.len())),
+                coefficient: scale,
+            });
         }
     }
 }
@@ -196,14 +184,13 @@ pub(super) fn left_action(
 
     q.par_iter()
         .filter(|(_, value)| *value != 0.0)
-        .map(|&((alpha, beta), value)| {
+        .fold(Vec::new, |mut out, &((alpha, beta), value)| {
             let nu = ExcitedDeterminant {
                 parent: reference.parent,
                 alpha,
                 beta,
             };
             // The empty set enters once with weight one, the other sets with `P^{|K|-1}`.
-            let mut out = Vec::new();
             if empty && rank(reference, &nu) > 0 {
                 out.push(((index, alpha, beta), value));
             }
