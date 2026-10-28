@@ -20,26 +20,26 @@ PLATEAUTOL = 0.25
 JMHEADER = ["Iter", "EBlock", "EAverage", "ECorr", "EShift", "NWalk", "NRef", "NExcitors"]
 
 # Shoulder picking quantities.
-SHOULDER_POINTS = 10
-MIN_REFERENCE_POPULATION = 10.0
-SHOULDER_TAIL_POINTS = 20
-SHOULDER_PROMINENCE = 1.15
+SHOULDERPOINTS = 10
+MINREFERENCE = 10.0
+TAILPOINTS = 20
+PROMINENCE = 1.15
 
 # Equilibration picking quantities.
-MSER_START_MAX_FRAC = 0.84
+MSERMAX = 0.84
 # The data after the equilibration start must span at least this fraction of the iterations
 # taken to reach population control. MSER and the trial-overlap tests only see drifts shorter
 # than their window, so a window shorter than the slow relaxation looks stationary.
 MINWINDOW = 1.0
 
 # Reference overlap detection.
-TRIAL_OVERLAP_BLOCKS = 8
-TRIAL_OVERLAP_QUARTERS = 4
-TRIAL_OVERLAP_MIN_POINTS_PER_BLOCK = 2
-TRIAL_OVERLAP_SIGMA = 2.0
-TRIAL_OVERLAP_MAX_START_FRAC = 0.75
-TRIAL_OVERLAP_SCAN_POINTS = 101
-TRIAL_OVERLAP_PERSISTENCE = 3
+OVERLAPBLOCKS = 8
+OVERLAPQUARTERS = 4
+OVERLAPMINPOINTS = 2
+OVERLAPSIGMA = 2.0
+OVERLAPMAXSTART = 0.75
+OVERLAPSCAN = 101
+OVERLAPPERSISTENCE = 3
 
 
 def parse() -> argparse.Namespace:
@@ -60,6 +60,15 @@ def parse() -> argparse.Namespace:
             "If omitted, determine the equilibration start automatically "
             "using the shoulder, MSER, and trial overlap, and require the data after it to "
             "span at least the iterations taken to reach population control."
+        ),
+    )
+    parser.add_argument(
+        "--prominence",
+        type=float,
+        default=PROMINENCE,
+        help=(
+            "Smallest ratio of the shoulder peak to the late pre-control ratio for the "
+            "shoulder to count as resolved."
         ),
     )
     return parser.parse_args()
@@ -224,8 +233,8 @@ def populationColumns(df: pd.DataFrame):
 def shoulderRows(
     df: pd.DataFrame,
     *,
-    npoints=SHOULDER_POINTS,
-    minReference=MIN_REFERENCE_POPULATION,
+    npoints=SHOULDERPOINTS,
+    minReference=MINREFERENCE,
 ):
     """Return the standard pre-population-control shoulder-estimator rows."""
     if df.empty:
@@ -263,13 +272,13 @@ def shoulderResolved(
     top: pd.DataFrame,
     eligible: pd.DataFrame,
     *,
-    prominence=SHOULDER_PROMINENCE,
+    prominence=PROMINENCE,
 ) -> tuple[bool, float]:
     """Test whether the ratio peak is clearly separated from the late trajectory."""
-    if len(top) < SHOULDER_POINTS:
+    if len(top) < SHOULDERPOINTS:
         return False, np.nan
 
-    tailCount = min(SHOULDER_TAIL_POINTS, len(eligible))
+    tailCount = min(TAILPOINTS, len(eligible))
 
     tailRatio = float(eligible["Shoulder"].iloc[-tailCount:].median())
     shoulderRatio = float(top["Shoulder"].mean())
@@ -293,7 +302,7 @@ def standardError(values: pd.Series) -> float:
     return float(values.std(ddof=1) / math.sqrt(values.size))
 
 
-def shoulderSummary(df: pd.DataFrame) -> None:
+def shoulderSummary(df: pd.DataFrame, prominence: float = PROMINENCE) -> None:
     """Estimate and print the population shoulder."""
     total, _, occupied = populationColumns(df)
 
@@ -304,7 +313,7 @@ def shoulderSummary(df: pd.DataFrame) -> None:
         print(f"No shoulder estimate: {error}")
         return
 
-    resolved, prominence = shoulderResolved(top, eligible)
+    resolved, measured = shoulderResolved(top, eligible, prominence=prominence)
 
     print("Shoulder:")
 
@@ -325,8 +334,8 @@ def shoulderSummary(df: pd.DataFrame) -> None:
         + ",".join(str(int(iteration)) for iteration in top["Iter"])
     )
 
-    if np.isfinite(prominence):
-        print(f"Prominence: {prominence}")
+    if np.isfinite(measured):
+        print(f"Prominence: {measured} (at least {prominence} required)")
 
     print(f"Resolved: {resolved}")
 
@@ -583,7 +592,7 @@ def mserStart(df: pd.DataFrame, column: str) -> int:
 
     last = min(
         values.size - 2,
-        int(MSER_START_MAX_FRAC * values.size),
+        int(MSERMAX * values.size),
     )
 
     if last < 0:
@@ -630,12 +639,12 @@ def trialOverlap(df: pd.DataFrame) -> pd.DataFrame:
 def blockTrialOverlap(data: pd.DataFrame) -> pd.DataFrame:
     """Split a trial-overlap suffix into contiguous block means."""
     maxBlocks = min(
-        TRIAL_OVERLAP_BLOCKS,
-        len(data) // TRIAL_OVERLAP_MIN_POINTS_PER_BLOCK,
+        OVERLAPBLOCKS,
+        len(data) // OVERLAPMINPOINTS,
     )
-    nblocks = maxBlocks - maxBlocks % TRIAL_OVERLAP_QUARTERS
+    nblocks = maxBlocks - maxBlocks % OVERLAPQUARTERS
 
-    if nblocks < TRIAL_OVERLAP_BLOCKS:
+    if nblocks < OVERLAPBLOCKS:
         raise ValueError("Too few trial-overlap blocks")
 
     rows = []
@@ -659,7 +668,7 @@ def trialOverlapFlatness(
     """Test whether a trial-overlap suffix is statistically flat."""
     suffix = data.iloc[startIndex:].reset_index(drop=True)
     minimum = (
-        TRIAL_OVERLAP_BLOCKS * TRIAL_OVERLAP_MIN_POINTS_PER_BLOCK
+        OVERLAPBLOCKS * OVERLAPMINPOINTS
     )
 
     if len(suffix) < minimum:
@@ -692,7 +701,7 @@ def trialOverlapFlatness(
 
     for indices in np.array_split(
         np.arange(len(blocks)),
-        TRIAL_OVERLAP_QUARTERS,
+        OVERLAPQUARTERS,
     ):
         values = y[indices]
         quarterMeans.append(float(values.mean()))
@@ -702,7 +711,7 @@ def trialOverlapFlatness(
 
     quarterZ = 0.0
 
-    for i in range(TRIAL_OVERLAP_QUARTERS - 1):
+    for i in range(OVERLAPQUARTERS - 1):
         error = math.hypot(quarterErrors[i], quarterErrors[i + 1])
         difference = abs(quarterMeans[i + 1] - quarterMeans[i])
 
@@ -716,8 +725,8 @@ def trialOverlapFlatness(
         quarterZ = max(quarterZ, z)
 
     flat = (
-        slopeZ <= TRIAL_OVERLAP_SIGMA
-        and quarterZ <= TRIAL_OVERLAP_SIGMA
+        slopeZ <= OVERLAPSIGMA
+        and quarterZ <= OVERLAPSIGMA
     )
 
     return flat, drift, slopeZ, quarterZ
@@ -732,7 +741,7 @@ def trialOverlapStart(
     data = data[data["Iter"] >= candidate].reset_index(drop=True)
 
     minimum = (
-        TRIAL_OVERLAP_BLOCKS * TRIAL_OVERLAP_MIN_POINTS_PER_BLOCK
+        OVERLAPBLOCKS * OVERLAPMINPOINTS
     )
 
     if len(data) < minimum:
@@ -743,14 +752,14 @@ def trialOverlapStart(
 
     maxIndex = min(
         len(data) - minimum,
-        int(TRIAL_OVERLAP_MAX_START_FRAC * len(data)),
+        int(OVERLAPMAXSTART * len(data)),
     )
 
     indices = np.unique(
         np.linspace(
             0,
             maxIndex,
-            min(TRIAL_OVERLAP_SCAN_POINTS, maxIndex + 1),
+            min(OVERLAPSCAN, maxIndex + 1),
             dtype=int,
         )
     )
@@ -773,8 +782,8 @@ def trialOverlapStart(
         if flat:
             consecutive.append(int(i))
 
-            if len(consecutive) >= TRIAL_OVERLAP_PERSISTENCE:
-                accepted = consecutive[-TRIAL_OVERLAP_PERSISTENCE]
+            if len(consecutive) >= OVERLAPPERSISTENCE:
+                accepted = consecutive[-OVERLAPPERSISTENCE]
                 drift, slopeZ, quarterZ = diagnostics[accepted]
 
                 return (
@@ -801,10 +810,10 @@ def trialOverlapStart(
     )
 
 
-def equilibrationStart(df: pd.DataFrame) -> int:
+def equilibrationStart(df: pd.DataFrame, prominence: float = PROMINENCE) -> int:
     """Find a conservative automatic equilibration start."""
     top, eligible = shoulderRows(df)
-    shoulderIsResolved, _ = shoulderResolved(top, eligible)
+    shoulderIsResolved, _ = shoulderResolved(top, eligible, prominence=prominence)
 
     if not shoulderIsResolved:
         raise ValueError("Shoulder is not resolved")
@@ -910,11 +919,11 @@ def main() -> None:
 
     # The shoulder is defined from the constant-shift population-growth region,
     # before the population-controlled data used for blocking analysis.
-    shoulderSummary(df)
+    shoulderSummary(df, args.prominence)
     print()
 
     if args.start is None:
-        start = equilibrationStart(df)
+        start = equilibrationStart(df, args.prominence)
     else:
         start = args.start
         print(
