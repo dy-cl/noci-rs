@@ -12,6 +12,8 @@ mod rdm;
 mod rules;
 
 // Crate-visible function re-exports.
+#[cfg(feature = "reference-optimisation")]
+pub(crate) use pairs::calculate_hs_pair_naive as calculate_hs_pair_naive_reshf;
 pub(crate) use pairs::calculate_s_pair_naive;
 pub(crate) use rules::{build_s_pair, occ_coeffs, pair_density};
 
