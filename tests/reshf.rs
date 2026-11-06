@@ -765,3 +765,18 @@ fn reshf_energy_is_the_reference_noci_energy_of_its_states() {
         "reference NOCI energy of the ResHF states",
     );
 }
+
+/// ResHF with the fixture's own options reproduces the expected energy from its MOM states.
+#[test]
+#[serial]
+fn reshf_optimise_reproduces_the_fixture_energy() {
+    let (input, ao, states, want) = reference_states("RESHF_H2_STO-3G_1_5");
+
+    let got = reshf_optimise(&ao, &input, &states);
+    println!(
+        "fixture: E = {:.12}, {} iterations",
+        got.energy, got.iterations
+    );
+    assert!(got.converged, "ResHF of the fixture did not converge");
+    assert_close(got.energy, want, 1e-8, "ResHF energy of the fixture");
+}
