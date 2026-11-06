@@ -16,6 +16,7 @@
 //!   Hartree-Fock", [arXiv:2411.00712](https://arxiv.org/abs/2411.00712).
 
 mod ci;
+mod fock;
 mod pair;
 
 // Public type re-exports.
@@ -24,4 +25,5 @@ pub use pair::{ResHFPair, ResHFPairs};
 
 // Public function re-exports.
 pub use ci::{reshf_expansion, reshf_solve};
+pub use fock::reshf_fock;
 pub use pair::{reshf_pair, reshf_pairs};

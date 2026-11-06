@@ -9,14 +9,16 @@ mod common;
 use std::sync::Arc;
 
 // External crate imports.
-use ndarray::Array2;
+use ndarray::{Array2, s};
 use noci_rs::basis::generate_reference_noci_basis;
 use noci_rs::determinant::{NOCIIndex, NOCISpace};
 use noci_rs::elements::NOCIData;
 use noci_rs::input::{Input, SCFExcitation, Spin};
 use noci_rs::noci::build_noci_hs;
-use noci_rs::noci::optimised::{ResHFPair, reshf_expansion, reshf_pair, reshf_pairs};
-use noci_rs::scf::{DensityMode, density, energy, fock, occ_first};
+use noci_rs::noci::optimised::{
+    ResHFPair, reshf_expansion, reshf_fock, reshf_pair, reshf_pairs, reshf_solve,
+};
+use noci_rs::scf::{DensityMode, density, energy, fock, occ_first, orbital_gradient};
 use noci_rs::{AoData, SCFState};
 use serde::Deserialize;
 use serial_test::serial;
@@ -455,5 +457,144 @@ fn reshf_pair_of_orthogonal_determinants_is_finite() {
             pair_is_finite(&pair),
             "orthogonal pair has a non-finite entry"
         );
+    }
+}
+
+/// Resonating Fock matrices of `dets` with the ground state weighted alone, from floored pairs.
+/// # Arguments:
+/// - `ao`: Contains AO integrals and other system data.
+/// - `dets`: Determinants of the expansion.
+/// - `cutoff`: Relative singular value floor.
+/// # Returns
+/// - `Vec<[Array2<f64>; 2]>`: `F^{A,\alpha}` and `F^{A,\beta}` for each determinant.
+fn ground_state_fock(
+    ao: &AoData,
+    dets: &[SCFState],
+    cutoff: f64,
+) -> Vec<[Array2<f64>; 2]> {
+    let pairs = reshf_pairs(ao, dets, cutoff);
+    let expansion = reshf_solve(pairs.h(), pairs.s(), &[1.0], TOL);
+    reshf_fock(ao, &pairs, &expansion)
+}
+
+/// Virtual-occupied block `C_u^\dagger F C_o` of a Fock matrix in a determinant's orbitals.
+/// # Arguments:
+/// - `c`: MO coefficients, occupied orbitals first.
+/// - `f`: AO Fock matrix.
+/// - `nocc`: Number of occupied orbitals.
+/// # Returns
+/// - `Array2<f64>`: The `(nvir, nocc)` block.
+fn vo_block(
+    c: &Array2<f64>,
+    f: &Array2<f64>,
+    nocc: usize,
+) -> Array2<f64> {
+    c.slice(s![.., nocc..])
+        .t()
+        .dot(f)
+        .dot(&c.slice(s![.., ..nocc]))
+}
+
+/// Largest absolute entry of a matrix.
+/// # Arguments:
+/// - `x`: Matrix.
+/// # Returns
+/// - `f64`: `\max_{pq} |x_{pq}|`.
+fn max_abs(x: &Array2<f64>) -> f64 {
+    x.iter().fold(0.0, |m, v| m.max(v.abs()))
+}
+
+/// A single determinant's resonating Fock matrices are its own SCF Fock matrices.
+#[test]
+#[serial]
+fn reshf_fock_of_one_determinant_is_its_scf_fock() {
+    let (_input, ao, states, _want) = reference_states("REF_NOCI_H2_STO-3G_1_5");
+
+    for st in states.iter().map(occ_first) {
+        let got = ground_state_fock(&ao, std::slice::from_ref(&st), NOFLOOR);
+        let (fa, fb) = fock(&ao.h, &ao.eri_coul, &st.da, &st.db);
+        let label = &st.label;
+
+        assert_close(
+            max_diff(&got[0][0], &fa),
+            0.0,
+            1e-10,
+            &format!("F^alpha for {label}"),
+        );
+        assert_close(
+            max_diff(&got[0][1], &fb),
+            0.0,
+            1e-10,
+            &format!("F^beta for {label}"),
+        );
+    }
+}
+
+/// The occupied-virtual blocks of the resonating Fock matrices are the orbital gradient of the
+/// NOCI energy, eq. (40) of Miller and Parker: rotating determinant `A`'s HOMO into virtual `a`
+/// by `\pm h` changes the lowest energy at the rate `2 (C_u^\dagger F^{A,\omega} C_o)_{a, i}`.
+/// Here `a` is the LUMO+1; the RHF gradient vanishes by the mirror symmetry of the two guesses.
+#[test]
+#[serial]
+fn reshf_fock_matches_finite_difference_gradient_h2_3_21g() {
+    let (_input, ao, states, _want) = reference_states("PT2_H2_3-21G_1_5");
+    let dets = rotated_guesses(&ao, &states);
+    let fock = ground_state_fock(&ao, &dets, NOFLOOR);
+    let step = 1e-4_f64;
+
+    for (a, spin) in [(1, Spin::Alpha), (1, Spin::Beta), (0, Spin::Alpha)] {
+        let vir = 1;
+        let ex = SCFExcitation { spin, occ: -1, vir };
+        let w = match ex.spin {
+            Spin::Beta => 1,
+            _ => 0,
+        };
+        let (c, nocc) = match ex.spin {
+            Spin::Beta => (&dets[a].cb, dets[a].ob.count_ones() as usize),
+            _ => (&dets[a].ca, dets[a].oa.count_ones() as usize),
+        };
+
+        // Central difference of the lowest energy under `\phi_i' = \cos h\,\phi_i + \sin h\,\phi_a`.
+        let energy = |theta: f64| {
+            let mut moved = dets.clone();
+            moved[a] = rotate(&ao, &dets[a], &ex, theta.to_degrees(), &dets[a].label);
+            reshf_expansion(&ao, &moved, &[1.0], TOL).energies[0]
+        };
+        let fd = (energy(step) - energy(-step)) / (2.0 * step);
+
+        let analytic = orbital_gradient(&**c, &fock[a][w], nocc, DensityMode::Hermitian)
+            [(vir as usize, nocc - 1)];
+        println!(
+            "det {a}, spin {w}, virtual {vir}: finite difference {fd:.10e}, analytic {analytic:.10e}"
+        );
+        assert_close(
+            analytic,
+            fd,
+            1e-6,
+            &format!("gradient of det {a}, spin {w}, virtual {vir}"),
+        );
+    }
+}
+
+/// In minimal-basis H2, RHF and the two rotated guesses already span the exact ground state,
+/// so every virtual-occupied block of the resonating Fock matrices vanishes.
+#[test]
+#[serial]
+fn reshf_fock_is_stationary_for_minimal_basis_h2() {
+    let (_input, ao, states, _want) = reference_states("REF_NOCI_H2_STO-3G_1_5");
+    let dets = rotated_guesses(&ao, &states);
+    let fock = ground_state_fock(&ao, &dets, NOFLOOR);
+
+    for (det, f) in dets.iter().zip(fock.iter()) {
+        let na = det.oa.count_ones() as usize;
+        let nb = det.ob.count_ones() as usize;
+        let ga = max_abs(&vo_block(&det.ca, &f[0], na));
+        let gb = max_abs(&vo_block(&det.cb, &f[1], nb));
+        println!(
+            "{}: max |C_u^T F C_o| alpha {ga:.3e}, beta {gb:.3e}",
+            det.label
+        );
+        assert_close(ga, 0.0, 1e-8, &format!("alpha gradient of {}", det.label));
+        assert_close(gb, 0.0, 1e-8, &format!("beta gradient of {}", det.label));
     }
 }
