@@ -8,7 +8,8 @@
 //! with respect to the orbitals of every determinant and the expansion coefficients together.
 //! The determinants it returns are ordinary [`crate::SCFState`]s, so the reference NOCI state
 //! and every method subfolder use them unchanged. This approach depends only on the NOCI shared
-//! layer and on [`crate::elements`], [`crate::determinant`], [`crate::maths`] and [`crate::scf`].
+//! layer and on [`crate::determinant`], [`crate::elements`], [`crate::input`], [`crate::maths`]
+//! and [`crate::scf`].
 //!
 //! # References
 //!
@@ -17,13 +18,16 @@
 
 mod ci;
 mod fock;
+mod optimise;
 mod pair;
 
 // Public type re-exports.
 pub use ci::ResHFExpansion;
+pub use optimise::ResHFSolution;
 pub use pair::{ResHFPair, ResHFPairs};
 
 // Public function re-exports.
 pub use ci::{reshf_expansion, reshf_solve};
 pub use fock::reshf_fock;
+pub use optimise::reshf_optimise;
 pub use pair::{reshf_pair, reshf_pairs};

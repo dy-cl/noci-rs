@@ -12,12 +12,12 @@ use std::sync::Arc;
 use ndarray::{Array2, s};
 use noci_rs::basis::generate_reference_noci_basis;
 use noci_rs::determinant::{NOCIIndex, NOCISpace};
-use noci_rs::elements::NOCIData;
+use noci_rs::elements::{NOCIData, build_mo_cache};
 use noci_rs::input::{Input, ResHFOptions, SCFExcitation, Spin, load_input};
-use noci_rs::noci::build_noci_hs;
 use noci_rs::noci::optimised::{
-    ResHFPair, reshf_expansion, reshf_fock, reshf_pair, reshf_pairs, reshf_solve,
+    ResHFPair, reshf_expansion, reshf_fock, reshf_optimise, reshf_pair, reshf_pairs, reshf_solve,
 };
+use noci_rs::noci::{build_noci_hs, calculate_noci_energy};
 use noci_rs::scf::{DensityMode, density, energy, fock, occ_first, orbital_gradient};
 use noci_rs::{AoData, SCFState};
 use serde::Deserialize;
@@ -620,4 +620,148 @@ fn reshf_input_table_is_read() {
 fn reshf_input_table_is_optional() {
     let input = load_input(fixture_dir("REF_NOCI_H2_STO-3G_1_5").join("input.lua")).unwrap();
     assert!(input.reshf.is_none(), "reshf options without a reshf table");
+}
+
+/// A fixture's input with ResHF switched on by its default options.
+/// # Arguments:
+/// - `input`: Parsed fixture input.
+/// # Returns
+/// - `Input`: The same input with `reshf` set to `ResHFOptions::default()`.
+fn with_reshf(mut input: Input) -> Input {
+    input.reshf = Some(ResHFOptions::default());
+    input
+}
+
+/// ResHF of a single determinant is UHF: starting from the converged UHF state with its alpha
+/// HOMO rotated into the LUMO by 5 degrees, it returns to the UHF energy.
+#[test]
+#[serial]
+fn reshf_optimise_of_one_determinant_is_uhf() {
+    let (input, ao, states, _want) = reference_states("REF_NOCI_H2_STO-3G_1_5");
+    let uhf = occ_first(
+        states
+            .iter()
+            .find(|st| st.label.starts_with("UHF"))
+            .expect("fixture has a UHF state"),
+    );
+    let alpha = SCFExcitation {
+        spin: Spin::Alpha,
+        occ: -1,
+        vir: 0,
+    };
+    let start = rotate(&ao, &uhf, &alpha, 5.0, &uhf.label);
+
+    let got = reshf_optimise(&ao, &with_reshf(input), &[start]);
+    println!(
+        "one determinant: E = {:.12}, UHF = {:.12}, {} iterations",
+        got.energy, uhf.e, got.iterations
+    );
+    assert!(got.converged, "single-determinant ResHF did not converge");
+    assert_close(
+        got.energy,
+        uhf.e,
+        1e-8,
+        "single-determinant ResHF against UHF",
+    );
+}
+
+/// The MOM states of minimal-basis H2 already span the exact ground state, so ResHF converges
+/// at once and keeps the reference NOCI energy.
+#[test]
+#[serial]
+fn reshf_optimise_keeps_mom_states_of_minimal_basis_h2() {
+    let (input, ao, states, want) = reference_states("REF_NOCI_H2_STO-3G_1_5");
+
+    let got = reshf_optimise(&ao, &with_reshf(input), &states);
+    println!(
+        "MOM states: E = {:.12}, {} iterations",
+        got.energy, got.iterations
+    );
+    assert!(got.converged, "ResHF of the MOM states did not converge");
+    assert!(
+        got.iterations <= 2,
+        "{} iterations for a stationary start",
+        got.iterations
+    );
+    assert_close(got.energy, want, 1e-8, "ResHF energy of the MOM states");
+    for (st, old) in got.states.iter().zip(states.iter()) {
+        assert_eq!(st.label, old.label, "ResHF changed a state label");
+    }
+}
+
+/// In split-valence H2, ResHF from RHF and the rotated guesses converges, lowers the energy and
+/// leaves every virtual-occupied block `C_u^\dagger F^{A,\omega} C_o` below `fds_sdf_tol`.
+#[test]
+#[serial]
+fn reshf_optimise_lowers_the_energy_of_rotated_guesses_h2_3_21g() {
+    let (input, ao, states, _want) = reference_states("PT2_H2_3-21G_1_5");
+    let input = with_reshf(input);
+    let dets = rotated_guesses(&ao, &states);
+    let start = reshf_expansion(&ao, &dets, &[1.0], TOL).energies[0];
+
+    let got = reshf_optimise(&ao, &input, &dets);
+    println!(
+        "3-21G: start {start:.12}, ResHF {:.12}, lowering {:.3e}, {} iterations",
+        got.energy,
+        got.energy - start,
+        got.iterations
+    );
+    assert!(
+        got.converged,
+        "ResHF of the rotated guesses did not converge"
+    );
+    assert!(
+        got.energy <= start,
+        "ResHF raised the energy from {start} to {}",
+        got.energy
+    );
+
+    let fock = ground_state_fock(&ao, &got.states, FLOOR);
+    for (det, f) in got.states.iter().zip(fock.iter()) {
+        let na = det.oa.count_ones() as usize;
+        let nb = det.ob.count_ones() as usize;
+        let ga = max_abs(&vo_block(&det.ca, &f[0], na));
+        let gb = max_abs(&vo_block(&det.cb, &f[1], nb));
+        println!(
+            "{}: max |C_u^T F C_o| alpha {ga:.3e}, beta {gb:.3e}",
+            det.label
+        );
+        assert!(
+            ga < input.scf.fds_sdf_tol,
+            "alpha gradient {ga} of {}",
+            det.label
+        );
+        assert!(
+            gb < input.scf.fds_sdf_tol,
+            "beta gradient {gb} of {}",
+            det.label
+        );
+    }
+}
+
+/// The reference NOCI energy of the returned determinants, from the existing NOCI code, is the
+/// ResHF energy.
+#[test]
+#[serial]
+fn reshf_energy_is_the_reference_noci_energy_of_its_states() {
+    let (input, ao, states, _want) = reference_states("PT2_H2_3-21G_1_5");
+    let input = with_reshf(input);
+    let got = reshf_optimise(&ao, &input, &rotated_guesses(&ao, &states));
+
+    let basis: Vec<SCFState> = got
+        .states
+        .iter()
+        .filter(|st| st.noci_basis)
+        .map(occ_first)
+        .collect();
+    let space = NOCISpace::from_scf(&basis);
+    let mocache = build_mo_cache(&ao, space.parents(), input.scf.d_tol);
+    let (e_ref, _coeffs, _dt) = calculate_noci_energy(&ao, &input, &space, TOL, &mocache, None);
+    println!("reference NOCI {e_ref:.12}, ResHF {:.12}", got.energy);
+    assert_close(
+        e_ref,
+        got.energy,
+        1e-8,
+        "reference NOCI energy of the ResHF states",
+    );
 }
