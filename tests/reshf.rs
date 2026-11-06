@@ -13,7 +13,7 @@ use ndarray::{Array2, s};
 use noci_rs::basis::generate_reference_noci_basis;
 use noci_rs::determinant::{NOCIIndex, NOCISpace};
 use noci_rs::elements::NOCIData;
-use noci_rs::input::{Input, SCFExcitation, Spin};
+use noci_rs::input::{Input, ResHFOptions, SCFExcitation, Spin, load_input};
 use noci_rs::noci::build_noci_hs;
 use noci_rs::noci::optimised::{
     ResHFPair, reshf_expansion, reshf_fock, reshf_pair, reshf_pairs, reshf_solve,
@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serial_test::serial;
 
 // Parent/sibling imports.
-use self::common::{assert_close, load_test};
+use self::common::{assert_close, fixture_dir, load_test};
 
 /// Tolerance up to which a number is considered zero, as in the reference NOCI tests.
 const TOL: f64 = 1e-12;
@@ -597,4 +597,27 @@ fn reshf_fock_is_stationary_for_minimal_basis_h2() {
         assert_close(ga, 0.0, 1e-8, &format!("alpha gradient of {}", det.label));
         assert_close(gb, 0.0, 1e-8, &format!("beta gradient of {}", det.label));
     }
+}
+
+/// The fixture's `reshf` table is read, with the default cutoff where none is given.
+#[test]
+#[serial]
+fn reshf_input_table_is_read() {
+    let input = load_input(fixture_dir("RESHF_H2_STO-3G_1_5").join("input.lua")).unwrap();
+    let options = input.reshf.expect("fixture has a reshf table");
+
+    assert_eq!(options.weights, vec![1.0], "reshf.weights");
+    assert_eq!(
+        options.cutoff,
+        ResHFOptions::default().cutoff,
+        "default reshf.cutoff"
+    );
+}
+
+/// Inputs without a `reshf` table leave ResHF switched off.
+#[test]
+#[serial]
+fn reshf_input_table_is_optional() {
+    let input = load_input(fixture_dir("REF_NOCI_H2_STO-3G_1_5").join("input.lua")).unwrap();
+    assert!(input.reshf.is_none(), "reshf options without a reshf table");
 }
