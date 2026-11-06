@@ -13,8 +13,8 @@
 //!
 //! # References
 //!
-//! - Miller and Parker, *J. Chem. Phys.* **162** (2025), "Numerically stable resonating
-//!   Hartree-Fock", [arXiv:2411.00712](https://arxiv.org/abs/2411.00712).
+//! - Miller and Parker, *J. Chem. Phys.* **162**, 104115 (2025),
+//!   [doi:10.1063/5.0246790](https://doi.org/10.1063/5.0246790).
 
 mod ci;
 mod fock;

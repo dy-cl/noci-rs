@@ -835,7 +835,7 @@ Markers [1]–[29] refer to method publications; [S1]–[S2] refer to software a
 
 28. Robert S. T. Franklin, James S. Spencer, Alberto Zoccante, and Alex J. W. Thom. Linked coupled cluster Monte Carlo. *The Journal of Chemical Physics* **144**, 044111 (2016). [doi:10.1063/1.4940317](https://doi.org/10.1063/1.4940317).
 
-29. Ericka Roy Miller and Shane M. Parker. Numerically stable resonating Hartree–Fock. arXiv:2411.00712 (2024). [arXiv:2411.00712](https://arxiv.org/abs/2411.00712).
+29. Ericka Roy Miller and Shane M. Parker. Numerically stable resonating Hartree–Fock. *The Journal of Chemical Physics* **162**, 104115 (2025). [doi:10.1063/5.0246790](https://doi.org/10.1063/5.0246790).
 
 ### Software and Data References
 
