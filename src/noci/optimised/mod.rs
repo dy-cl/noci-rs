@@ -14,3 +14,11 @@
 //!
 //! - Miller and Parker, *J. Chem. Phys.* **162** (2025), "Numerically stable resonating
 //!   Hartree-Fock", [arXiv:2411.00712](https://arxiv.org/abs/2411.00712).
+
+mod ci;
+
+// Public type re-exports.
+pub use ci::ResHFExpansion;
+
+// Public function re-exports.
+pub use ci::{reshf_expansion, reshf_solve};
