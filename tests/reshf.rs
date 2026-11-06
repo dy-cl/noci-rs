@@ -15,7 +15,7 @@ use noci_rs::determinant::{NOCIIndex, NOCISpace};
 use noci_rs::elements::NOCIData;
 use noci_rs::input::{Input, SCFExcitation, Spin};
 use noci_rs::noci::build_noci_hs;
-use noci_rs::noci::optimised::reshf_expansion;
+use noci_rs::noci::optimised::{ResHFPair, reshf_expansion, reshf_pair, reshf_pairs};
 use noci_rs::scf::{DensityMode, density, energy, fock, occ_first};
 use noci_rs::{AoData, SCFState};
 use serde::Deserialize;
@@ -26,6 +26,12 @@ use self::common::{assert_close, load_test};
 
 /// Tolerance up to which a number is considered zero, as in the reference NOCI tests.
 const TOL: f64 = 1e-12;
+
+/// Singular value floor far below every overlap in these tests, so the cutoff never acts.
+const NOFLOOR: f64 = 1e-14;
+
+/// Singular value floor of ResHF-cutoff used by yucca's `svd_floor` comparisons.
+const FLOOR: f64 = 1e-8;
 
 /// Overlap `\langle \Phi_{\text{RHF}} | \Phi_{+-} \rangle` printed by yucca for a 40 degree rotation.
 const YUCCARHFROT: f64 = 0.58682409;
@@ -286,6 +292,168 @@ fn rotated_guess_energy_is_independent_of_angle() {
             want,
             1e-8,
             &format!("energy at {theta} degrees"),
+        );
+    }
+}
+
+/// RHF and the two rotated guesses at 40 degrees, the three-determinant start used by yucca.
+/// # Arguments:
+/// - `ao`: Contains AO integrals and other system data.
+/// - `states`: SCF states of the fixture, one of them labelled RHF.
+/// # Returns
+/// - `Vec<SCFState>`: RHF, the `(+\theta, -\theta)` and the `(-\theta, +\theta)` determinants.
+fn rotated_guesses(
+    ao: &AoData,
+    states: &[SCFState],
+) -> Vec<SCFState> {
+    let rhf = occ_first(&rhf_state(states));
+    let (plus, minus) = spin_broken_pair(ao, &rhf, 40.0);
+    vec![rhf, plus, minus]
+}
+
+/// Whether every number held by a pair is finite.
+/// # Arguments:
+/// - `pair`: Pair quantities.
+/// # Returns
+/// - `bool`: True if `s`, `H` and every entry of `Q` and `F` are finite.
+fn pair_is_finite(pair: &ResHFPair) -> bool {
+    let matrices = pair.q.iter().chain(pair.f.iter());
+    pair.s.is_finite() && pair.h.is_finite() && matrices.flatten().all(|x| x.is_finite())
+}
+
+/// A determinant paired with itself gives `s = 1`, `Q^{AA,\omega} = P^{A,\omega}`, the SCF
+/// Fock matrices `F^{AA,\omega}` and `H_{AA}` equal to its SCF energy.
+#[test]
+#[serial]
+fn reshf_pair_with_itself_is_the_scf_determinant() {
+    let (_input, ao, states, _want) = reference_states("REF_NOCI_H2_STO-3G_1_5");
+
+    for st in states.iter().map(occ_first) {
+        let got = reshf_pair(&ao, &st, &st, NOFLOOR);
+        let (fa, fb) = fock(&ao.h, &ao.eri_coul, &st.da, &st.db);
+        let label = &st.label;
+
+        assert_close(got.s, 1.0, 1e-10, &format!("s_AA for {label}"));
+        assert_close(got.h, st.e, 1e-8, &format!("H_AA for {label}"));
+        assert_close(
+            max_diff(&got.q[0], &st.da),
+            0.0,
+            1e-10,
+            &format!("Q^alpha for {label}"),
+        );
+        assert_close(
+            max_diff(&got.q[1], &st.db),
+            0.0,
+            1e-10,
+            &format!("Q^beta for {label}"),
+        );
+        assert_close(
+            max_diff(&got.f[0], &fa),
+            0.0,
+            1e-10,
+            &format!("F^alpha for {label}"),
+        );
+        assert_close(
+            max_diff(&got.f[1], &fb),
+            0.0,
+            1e-10,
+            &format!("F^beta for {label}"),
+        );
+    }
+}
+
+/// Without an active floor the pair couplings and overlaps reproduce the generalised
+/// Slater-Condon `H` and `S`, which checks the sign `\eta`, eq. (B5) and the `J`/`K` index order.
+#[test]
+#[serial]
+fn reshf_pairs_agree_with_reshf_expansion() {
+    let (_input, ao, states, _want) = reference_states("REF_NOCI_H2_STO-3G_1_5");
+    let mom: Vec<SCFState> = states.iter().map(occ_first).collect();
+
+    for (name, dets) in [("MOM", mom), ("rotated", rotated_guesses(&ao, &states))] {
+        let pairs = reshf_pairs(&ao, &dets, NOFLOOR);
+        let want = reshf_expansion(&ao, &dets, &[1.0], TOL);
+        let dh = max_diff(&pairs.h(), &want.h);
+        let ds = max_diff(&pairs.s(), &want.s);
+        println!("{name}: max |H - H_naive| = {dh:.3e}, max |S - S_naive| = {ds:.3e}");
+        assert_close(dh, 0.0, 1e-10, &format!("{name} H against reshf_expansion"));
+        assert_close(ds, 0.0, 1e-10, &format!("{name} S against reshf_expansion"));
+    }
+}
+
+/// The reversed pair computed directly satisfies `Q^{BA} = (Q^{AB})^T`, `F^{BA} = (F^{AB})^T`,
+/// `s_{BA} = s_{AB}` and `H_{BA} = H_{AB}`, the relations `reshf_pairs` uses.
+#[test]
+#[serial]
+fn reshf_pair_reversed_is_the_transpose() {
+    let (_input, ao, states, _want) = reference_states("REF_NOCI_H2_STO-3G_1_5");
+    let mom: Vec<SCFState> = states.iter().map(occ_first).collect();
+    let rotated = rotated_guesses(&ao, &states);
+
+    for (a, b) in [
+        (&mom[0], &mom[1]),
+        (&mom[1], &mom[2]),
+        (&rotated[1], &rotated[0]),
+    ] {
+        let ab = reshf_pair(&ao, a, b, NOFLOOR);
+        let ba = reshf_pair(&ao, b, a, NOFLOOR);
+        let label = format!("({}, {})", a.label, b.label);
+
+        assert_close(ba.s, ab.s, 1e-12, &format!("s for {label}"));
+        assert_close(ba.h, ab.h, 1e-12, &format!("H for {label}"));
+        for w in 0..2 {
+            let dq = max_diff(&ba.q[w], &ab.q[w].t().to_owned());
+            let df = max_diff(&ba.f[w], &ab.f[w].t().to_owned());
+            assert_close(dq, 0.0, 1e-10, &format!("Q^{w} transpose for {label}"));
+            assert_close(df, 0.0, 1e-10, &format!("F^{w} transpose for {label}"));
+        }
+    }
+}
+
+/// The floored pair overlaps of the rotated guesses at 40 degrees are yucca's.
+#[test]
+#[serial]
+fn reshf_pair_overlaps_match_yucca() {
+    let (_input, ao, states, _want) = reference_states("REF_NOCI_H2_STO-3G_1_5");
+    let pairs = reshf_pairs(&ao, &rotated_guesses(&ao, &states), FLOOR);
+
+    assert_close(
+        pairs.pair(0, 1).s,
+        YUCCARHFROT,
+        1e-8,
+        "s(RHF, +-) against yucca",
+    );
+    assert_close(
+        pairs.pair(1, 2).s,
+        YUCCAROTROT,
+        1e-8,
+        "s(+-, -+) against yucca",
+    );
+}
+
+/// Two exactly orthogonal determinants, RHF and RHF with its alpha HOMO rotated into the LUMO
+/// by 90 degrees, give finite floored quantities.
+#[test]
+#[serial]
+fn reshf_pair_of_orthogonal_determinants_is_finite() {
+    let (_input, ao, states, _want) = reference_states("REF_NOCI_H2_STO-3G_1_5");
+    let rhf = occ_first(&rhf_state(&states));
+    let alpha = SCFExcitation {
+        spin: Spin::Alpha,
+        occ: -1,
+        vir: 0,
+    };
+    let orth = rotate(&ao, &rhf, &alpha, 90.0, "rotate (90, 0)");
+
+    for (a, b) in [(&rhf, &orth), (&orth, &rhf)] {
+        let pair = reshf_pair(&ao, a, b, FLOOR);
+        println!(
+            "({}, {}): s = {:.3e}, H = {:.6e}",
+            a.label, b.label, pair.s, pair.h
+        );
+        assert!(
+            pair_is_finite(&pair),
+            "orthogonal pair has a non-finite entry"
         );
     }
 }

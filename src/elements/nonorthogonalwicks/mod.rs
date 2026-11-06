@@ -63,6 +63,8 @@ pub(crate) use view::WicksPairView;
 pub use shared::build_wicks_shared;
 
 // Crate-visible function re-exports.
+#[cfg(feature = "reference-optimisation")]
+pub(crate) use build::build_jk_reshf;
 #[cfg(feature = "gnocc")]
 pub(crate) use eval::xw_rdmk_same_prepared_batched;
 pub(crate) use eval::{
