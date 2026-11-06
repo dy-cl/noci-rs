@@ -823,7 +823,7 @@ Markers [1]–[28] refer to method publications; [S1]–[S2] refer to software a
 
 27. Bogumil Jeziorski and Hendrik J. Monkhorst. Coupled-cluster method for multideterminantal reference states. *Physical Review A* **24**, 1668–1681 (1981). [doi:10.1103/PhysRevA.24.1668](https://doi.org/10.1103/PhysRevA.24.1668).
 
-28. Ericka Roy Miller and Shane M. Parker. Numerically stable resonating Hartree–Fock. arXiv:2411.00712 (2024). [arXiv:2411.00712](https://arxiv.org/abs/2411.00712).
+28. Ericka Roy Miller and Shane M. Parker. Numerically stable resonating Hartree–Fock. *The Journal of Chemical Physics* **162**, 104115 (2025). [doi:10.1063/5.0246790](https://doi.org/10.1063/5.0246790).
 
 ### Software and Data References
 
