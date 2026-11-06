@@ -780,3 +780,41 @@ fn reshf_optimise_reproduces_the_fixture_energy() {
     assert!(got.converged, "ResHF of the fixture did not converge");
     assert_close(got.energy, want, 1e-8, "ResHF energy of the fixture");
 }
+
+/// yucca's unrestricted ResHF energies for a fixture (density fitted, `svd_floor = 1e-8`).
+#[derive(Deserialize)]
+struct ExpectedYucca {
+    /// NOCI energy of RHF and the rotated guesses before optimisation (iteration 0).
+    yucca_start_energy: f64,
+    /// Converged ResHF energy.
+    yucca_reshf_energy: f64,
+}
+
+/// Largest allowed difference between the ResHF energy lowerings of noci-rs and yucca, whose
+/// density fitting errors mostly cancel in the lowering.
+const LOWERINGTOL: f64 = 2e-5;
+
+/// H2 in cc-pVDZ at 1.5 Angstrom from RHF and the rotated guesses at 40 degrees: the ResHF
+/// energy lowering `E_{\text{ResHF}} - E_{\text{start}}` agrees with yucca's.
+#[test]
+#[serial]
+fn reshf_lowering_matches_yucca_h2_cc_pvdz_1_5_ang() {
+    let (mut input, ao, expected): (_, _, ExpectedYucca) = load_test("RESHF_H2_CC-PVDZ_1_5");
+    let states = generate_reference_noci_basis(&ao, &mut input, None, None).states;
+    let dets = rotated_guesses(&ao, &states);
+    let start = reshf_expansion(&ao, &dets, &[1.0], TOL).energies[0];
+
+    let got = reshf_optimise(&ao, &input, &dets);
+    let lowering = got.energy - start;
+    let want = expected.yucca_reshf_energy - expected.yucca_start_energy;
+    println!(
+        "cc-pVDZ: noci-rs start {start:.10}, ResHF {:.10}, lowering {lowering:.10}, {} iterations",
+        got.energy, got.iterations
+    );
+    println!(
+        "cc-pVDZ: yucca start {:.8}, ResHF {:.8}, lowering {want:.8}",
+        expected.yucca_start_energy, expected.yucca_reshf_energy
+    );
+    assert!(got.converged, "ResHF of H2 in cc-pVDZ did not converge");
+    assert_close(lowering, want, LOWERINGTOL, "ResHF lowering against yucca");
+}
