@@ -1126,6 +1126,8 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
     let det_tbl: Option<Table> = globals.get::<_, Option<Table>>("det").unwrap_or(None);
     let qmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("qmc").unwrap_or(None);
     let snoci_tbl: Option<Table> = globals.get::<_, Option<Table>>("snoci").unwrap_or(None);
+    #[cfg(feature = "reference-optimisation")]
+    let reshf_tbl: Option<Table> = globals.get::<_, Option<Table>>("reshf").unwrap_or(None);
     let noccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("noccmc").unwrap_or(None);
     let jmnoccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("jmnoccmc").unwrap_or(None);
 
@@ -1147,5 +1149,7 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
         excit: read_excit(excit_tbl),
         prop,
         wicks: read_wicks(wicks_tbl),
+        #[cfg(feature = "reference-optimisation")]
+        reshf: super::reshf::read_reshf(reshf_tbl),
     })
 }
