@@ -1,0 +1,39 @@
+stages:
+  - scf
+  - ureshf
+
+scf:
+  title: RHF of H2 at 1.5 Angstrom in cc-pVDZ
+  molecule: h2.xyz
+  basis: cc-pvdz
+  df-basis: def2-qzvpp-jkfit
+  method: scf
+  guess: atomic
+  max_iter: 100
+  convergence: tight
+
+ureshf:
+  title: Unrestricted ResHF-cutoff of H2 at 1.5 Angstrom in cc-pVDZ
+  method: ureshf
+  max_iter: 1000
+  convergence:
+    energy: 1.0e-10
+    grad: 1.0e-7
+  initial guess:
+    - type: hf
+    - type: rotate
+      orbitals:
+        - [0, 1]
+        - [0, 1]
+      angles: [40.0, -40.0]
+      spin: [alpha, beta]
+    - type: rotate
+      orbitals:
+        - [0, 1]
+        - [0, 1]
+      angles: [-40.0, 40.0]
+      spin: [alpha, beta]
+  weights: [1.0]
+  matrix adjugate: true
+  svd_floor: 1.0e-8
+  second order: false
