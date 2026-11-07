@@ -1,9 +1,9 @@
 {
-  "commit": "45cd184dc356e377a8b11cf0f2ebc57820429551",
-  "recorded_at": "2026-10-28T17:59:30.801963+00:00",
+  "commit": "0b4ce138901f6237aee311a7b2d0e7810f2e62c3",
+  "recorded_at": "2026-11-07T11:02:42.743633+00:00",
   "system": {
     "os": "Ubuntu 22.04.5 LTS",
-    "cpu": "AMD EPYC 9V74 80-Core Processor",
+    "cpu": "AMD EPYC 9V45 96-Core Processor",
     "vcpus": 4,
     "memory_gib": 15.6
   },
@@ -16,21 +16,21 @@
       "label": "H6 cc-pVDZ · NOCISDT(3) · SApply",
       "input": "inputs/benchmarks/H6_cc-pVDZ_NOCISDT3_1_5_SApply.lua",
       "status": "ok",
-      "time_seconds": 12.579,
+      "time_seconds": 8.706,
       "error": null
     },
     "bapply": {
       "label": "H6 cc-pVDZ · NOCISDT(3) · BApply",
       "input": "inputs/benchmarks/H6_cc-pVDZ_NOCISDT3_1_5_BApply.lua",
       "status": "ok",
-      "time_seconds": 9.557,
+      "time_seconds": 6.445,
       "error": null
     },
     "pt2": {
       "label": "H6 cc-pVDZ · NOCISD(3) · PT2",
       "input": "inputs/benchmarks/H6_cc-pVDZ_NOCISD3_1_5_PT2.lua",
       "status": "ok",
-      "time_seconds": 12.878,
+      "time_seconds": 9.544,
       "error": null
     }
   }
