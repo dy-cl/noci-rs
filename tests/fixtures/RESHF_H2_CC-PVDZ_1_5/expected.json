@@ -1,0 +1,23 @@
+{
+  "yucca_commit": "d46254d38defc88b51d383427b44cb03e1a55d55",
+  "yucca_input": "yucca-ureshf.yml (matrix adjugate: true, svd_floor: 1e-8, second order: false, df-basis def2-qzvpp-jkfit)",
+  "yucca_rhf_energy": -1.00230398,
+  "yucca_start_energy": -1.03577305,
+  "yucca_reshf_energy": -1.05621276,
+  "yucca_lowering": -0.02043971,
+  "yucca_iterations": 18,
+  "yucca_coefficients": [
+    0.503164,
+    0.37813607,
+    0.37813607
+  ],
+  "noci_rs_start_energy": -1.0356886546,
+  "noci_rs_reshf_energy": -1.0561253825,
+  "noci_rs_lowering": -0.0204367279,
+  "noci_rs_iterations": 13,
+  "noci_rs_coefficients": [
+    0.50491459,
+    0.37729068,
+    0.37729068
+  ]
+}

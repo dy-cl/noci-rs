@@ -1156,3 +1156,22 @@ pub(in crate::elements::nonorthogonalwicks) fn contraction_orbitals<T: NOCIScala
 
     (rowc, colc)
 }
+
+/// Coulomb and exchange matrices `J[M]_{st} = \sum_{\mu\nu} (st|\mu\nu) M_{\mu\nu}` and
+/// `K[M]_{st} = \sum_{\mu\nu} (s\mu|\nu t) M_{\mu\nu}` of a general, possibly non-symmetric,
+/// matrix `M`, for resonating Hartree-Fock.
+/// # Arguments:
+/// - `eri`: Non-antisymmetrised AO two-electron integrals.
+/// - `m`: Matrix to contract.
+/// # Returns:
+/// - `(Array2<f64>, Array2<f64>)`: `J[M]` and `K[M]`.
+#[cfg(feature = "reference-optimisation")]
+pub(crate) fn build_jk_reshf(
+    eri: &Array4<f64>,
+    m: &Array2<f64>,
+) -> (Array2<f64>, Array2<f64>) {
+    (
+        SameSpinBuild::<f64>::build_j_coulomb(eri, m),
+        SameSpinBuild::<f64>::build_k_exchange(eri, m),
+    )
+}
