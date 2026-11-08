@@ -1,6 +1,6 @@
 # benchmarks.py
 
-"""Run the short H6 benchmarks and publish SVG badges and a per-CPU table to GitHub Pages."""
+"""Run the short H6 benchmarks and publish a table of their times per runner CPU to GitHub Pages."""
 
 import argparse
 import datetime as dt
@@ -218,50 +218,6 @@ def compareTimes(current, previous):
     return f"→ {currentTime:.2f} s", f"{previousTime:.2f} s", "#6e7781"
 
 
-def formatSpecs(specs):
-    """Format the runner specifications for their shared badge."""
-    parts = [specs.get("os") or "Unknown OS", specs.get("cpu") or "Unknown CPU"]
-    if specs.get("vcpus"):
-        parts.append(f"{specs['vcpus']} vCPU")
-    if specs.get("memory_gib"):
-        parts.append(f"{specs['memory_gib']:g} GiB RAM")
-
-    return " · ".join(parts)
-
-
-def renderPill(label, message, color, labelWidth, width, details):
-    """Render a compact two-part badge with an accessible description."""
-    label = html.escape(label)
-    message = html.escape(message)
-    details = html.escape(details)
-    messageWidth = width - labelWidth
-
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="24" viewBox="0 0 {width} 24" role="img" aria-label="{details}">
-  <title>{details}</title>
-  <rect width="{width}" height="24" rx="4" fill="#555"/>
-  <rect x="{labelWidth}" width="{messageWidth}" height="24" rx="4" fill="{color}"/>
-  <rect x="{labelWidth}" width="4" height="24" fill="{color}"/>
-  <text x="12" y="16" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="12">{label}</text>
-  <text x="{labelWidth + 12}" y="16" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="12">{message}</text>
-</svg>
-"""
-
-
-def renderBadge(label, current, previous, specs):
-    """Render a time badge compared with the previous run on the same machine type."""
-    time, previousTime, color = compareTimes(current, previous)
-    comparison = f"{time} (previous {previousTime})" if previousTime else time
-
-    details = f"{label}: {comparison}; {formatSpecs(specs)}"
-    return renderPill(label, comparison, color, 260, 530, details)
-
-
-def renderRunnerBadge(specs):
-    """Render the common runner specifications once below the timings."""
-    details = formatSpecs(specs)
-    return renderPill("runner", details, "#57606a", 76, 820, f"Runner: {details}")
-
-
 def renderMachineTable(runs):
     """Render one row per machine type with its latest times against its previous run."""
     names = [label.split(" · ")[-1] for label, _ in BENCHMARKS.values()]
@@ -285,7 +241,7 @@ def renderMachineTable(runs):
         cpu, vcpus = machine(run)
         rows.append((f"{cpu} · {vcpus} vCPU" if vcpus else cpu, cells))
 
-    # Column widths from an average glyph width of the 12 px badge font.
+    # Column widths from an average glyph width of the 12 px font.
     glyph = 7
     labelWidth = glyph * max(len("runner CPU"), *(len(label) for label, _ in rows)) + 24
     widths = [
@@ -303,7 +259,7 @@ def renderMachineTable(runs):
         ]
         x = labelWidth
         for k, (message, color) in enumerate(cells):
-            # The last cell rounds the row's right end, as the message of a badge does.
+            # The last cell rounds the row's right end.
             last = k == len(cells) - 1
             corner = ' rx="4"' if last else ""
             parts.append(
@@ -343,20 +299,12 @@ def publish(resultPath, repo, siteDir):
     runs = [run for run in readHistory() if run.get("commit") != sha] + [current]
     runs.sort(key=lambda run: run.get("recorded_at") or "")
 
-    # A superseded workflow must not replace newer badges.
+    # A superseded workflow must not replace a newer table.
     mainTip = git(["ls-remote", "origin", "refs/heads/main"], repo).stdout.split()[0]
     deploy = sha == mainTip
     if deploy:
         badgeDir = siteDir / "badges"
         badgeDir.mkdir(parents=True, exist_ok=True)
-        previous = previousOnMachine(runs, current)
-        for key, (label, _) in BENCHMARKS.items():
-            currentRun = current.get("benchmarks", {}).get(key, {})
-            previousRun = previous.get("benchmarks", {}).get(key, {})
-            badge = renderBadge(label, currentRun, previousRun, current["system"])
-            (badgeDir / f"{key}.svg").write_text(badge)
-
-        (badgeDir / "runner.svg").write_text(renderRunnerBadge(current["system"]))
         (badgeDir / "machines.svg").write_text(renderMachineTable(runs))
         serialized = json.dumps(current, indent=2, ensure_ascii=False) + "\n"
         (siteDir / "latest.json").write_text(serialized)

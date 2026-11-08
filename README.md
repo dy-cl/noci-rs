@@ -31,22 +31,6 @@
 
 <p align="center">
   <a href="https://github.com/dy-cl/noci-rs/actions/workflows/benchmarks.yml">
-    <img src="https://dy-cl.github.io/noci-rs/badges/sapply.svg" alt="H6 NOCISDT(3) SApply benchmark time" width="530">
-  </a>
-  <br>
-  <a href="https://github.com/dy-cl/noci-rs/actions/workflows/benchmarks.yml">
-    <img src="https://dy-cl.github.io/noci-rs/badges/bapply.svg" alt="H6 NOCISDT(3) BApply benchmark time" width="530">
-  </a>
-  <br>
-  <a href="https://github.com/dy-cl/noci-rs/actions/workflows/benchmarks.yml">
-    <img src="https://dy-cl.github.io/noci-rs/badges/pt2.svg" alt="H6 NOCISD(3) PT2 benchmark time" width="530">
-  </a>
-  <br>
-  <a href="https://github.com/dy-cl/noci-rs/actions/workflows/benchmarks.yml">
-    <img src="https://dy-cl.github.io/noci-rs/badges/runner.svg" alt="Benchmark runner specifications" width="820">
-  </a>
-  <br>
-  <a href="https://github.com/dy-cl/noci-rs/actions/workflows/benchmarks.yml">
     <img src="https://dy-cl.github.io/noci-rs/badges/machines.svg" alt="Benchmark times by runner CPU">
   </a>
 </p>
