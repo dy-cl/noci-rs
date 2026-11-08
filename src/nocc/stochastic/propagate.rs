@@ -12,7 +12,7 @@ use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{NOCIData, calculate_hs_excited};
 use crate::input::JMNOCCMCOptions;
 use crate::mpiutils::all_reduce_array1;
-use crate::nocc::jm_energies;
+use crate::nocc::{Effective, jm_energies};
 use crate::qmc::{
     AliasTable, ExchangeScratch, FastMap, QmcRng, coalesce, compress_sparse, exchange_updates,
     gather_updates, owner_words, pack_updates, print_table_header, print_table_row, rank_seed,
@@ -22,7 +22,7 @@ use crate::qmc::{
 // Parent/sibling imports.
 use super::cluster::{collapse, coupling_combinations, select_cluster, select_coupling_cluster};
 use super::coupling::{left_action, project_cluster};
-use super::effective::{Effective, ground_energy, reblocked_energy, scaled};
+use super::effective::{ground_energy, reblocked_energy, scaled};
 use super::linked::linked_attempt;
 use super::population::{Block, Excitor, ExcitorKey, ExcitorUpdate, ReferenceSpaces, rank};
 use super::state::JMTaskPropagation;

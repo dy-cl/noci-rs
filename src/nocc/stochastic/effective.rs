@@ -2,73 +2,9 @@
 
 // External crate imports.
 use ndarray::Array2;
-use ndarray_linalg::Inverse;
 
 // Crate-root imports.
-use crate::nocc::jm_energies;
-
-/// Accumulated intermediate-normalised effective overlap `S^e_{zx}=\langle{}^z\Psi|\Phi_x\rangle`
-/// and Hamiltonian `H^e_{zx}=\langle{}^z\Psi|\hat H|\Phi_x\rangle`. Each step's samples are
-/// divided by that step's reference populations `N_x` before accumulation, so the ratio
-/// estimate `G=(S^e)^{-1}H^e` is independent of the population growth.
-pub(super) struct Effective {
-    /// Accumulated `S^e`.
-    pub(super) se: Array2<f64>,
-    /// Accumulated `H^e`.
-    pub(super) he: Array2<f64>,
-}
-
-impl Effective {
-    /// Construct zero accumulators for `M` references.
-    /// # Arguments:
-    /// - `m`: Number of references.
-    /// # Returns:
-    /// - `Effective`: Zero accumulators.
-    pub(super) fn new(m: usize) -> Self {
-        Self {
-            se: Array2::zeros((m, m)),
-            he: Array2::zeros((m, m)),
-        }
-    }
-
-    /// Add another accumulation.
-    /// # Arguments:
-    /// - `self`: Accumulators.
-    /// - `other`: Accumulation to add.
-    /// # Returns:
-    /// - `()`: Adds `other` in place.
-    pub(super) fn add(
-        &mut self,
-        other: &Effective,
-    ) {
-        self.se += &other.se;
-        self.he += &other.he;
-    }
-
-    /// Scale the accumulation, as when forgetting old report blocks.
-    /// # Arguments:
-    /// - `self`: Accumulators.
-    /// - `factor`: Scale factor.
-    /// # Returns:
-    /// - `()`: Scales both accumulators in place.
-    pub(super) fn scale(
-        &mut self,
-        factor: f64,
-    ) {
-        self.se *= factor;
-        self.he *= factor;
-    }
-
-    /// Effective Hamiltonian `G=(S^e)^{-1}H^e` of the accumulation.
-    /// # Arguments:
-    /// - `self`: Accumulators.
-    /// # Returns:
-    /// - `Option<Array2<f64>>`: `G`, or `None` if `S^e` is singular or `G` is not finite.
-    pub(super) fn g(&self) -> Option<Array2<f64>> {
-        let g = self.se.inv().ok()?.dot(&self.he);
-        g.iter().all(|v| v.is_finite()).then_some(g)
-    }
-}
+use crate::nocc::{Effective, jm_energies};
 
 /// Smallest number of bins accepted when reading the error plateau of a reblocking.
 const MINBINS: usize = 32;
