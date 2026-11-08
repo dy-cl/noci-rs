@@ -565,3 +565,19 @@ fn qmc_h6_sto_3g_1_5_ang_sdt_wicks_trajectory() {
 fn qmc_h6_sto_3g_1_5_ang_overlap_weighted_wicks_trajectory() {
     assert_qmc_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_OVERLAP_WEIGHTED_WICKS");
 }
+
+/// Test that a short H4 STO-3G stochastic JM-NOCCMC trajectory with two UHF references, through
+/// population growth and into population control, reproduces the stored report energies.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: The trajectory matches the stored report energies.
+/// # Panics
+/// - If the binary run fails.
+/// - If the report trajectory length differs from the stored trajectory.
+/// - If any report energy differs from the stored trajectory outside tolerance.
+#[test]
+#[serial]
+fn jmnoccmc_h4_sto_3g_1_5_ang_trajectory() {
+    assert_qmc_trajectory("QMC_H4_STO-3G_1_5_TRAJECTORY_JMNOCCMC");
+}
