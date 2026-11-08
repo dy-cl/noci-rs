@@ -6,7 +6,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: benchmark-results-main
@@ -17,6 +19,9 @@ jobs:
     name: H6 benchmark report
     runs-on: ubuntu-22.04
     continue-on-error: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     env:
       BSE_DATA_DIR: ${{ github.workspace }}/basis_set_exchange/basis_set_exchange/data
@@ -58,9 +63,21 @@ jobs:
         if: always()
         run: python3 .github/benchmarks.py run --binary target/release/noci-rs --result "$RUNNER_TEMP/benchmark-results.json" --logs "$RUNNER_TEMP/benchmark-logs" --timeout 120
 
-      - name: Publish results and badges
+      - name: Build results site
+        id: site
         if: always()
-        run: python3 .github/benchmarks.py publish --result "$RUNNER_TEMP/benchmark-results.json" --worktree "$RUNNER_TEMP/benchmark-results-branch"
+        run: python3 .github/benchmarks.py publish --result "$RUNNER_TEMP/benchmark-results.json" --site "$RUNNER_TEMP/benchmark-site"
+
+      - name: Upload results site
+        if: always() && steps.site.outputs.deploy == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/benchmark-site
+
+      - name: Publish results and badges
+        id: deployment
+        if: always() && steps.site.outputs.deploy == 'true'
+        uses: actions/deploy-pages@v4
 
       - name: Upload benchmark logs
         if: always()

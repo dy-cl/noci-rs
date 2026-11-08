@@ -1,6 +1,6 @@
 # benchmarks.py
 
-"""Run the short H6 benchmarks and publish informational SVG badges."""
+"""Run the short H6 benchmarks and publish SVG badges and a per-CPU table to GitHub Pages."""
 
 import argparse
 import datetime as dt
@@ -12,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -29,8 +31,8 @@ BENCHMARKS = {
         "inputs/benchmarks/H6_cc-pVDZ_NOCISD3_1_5_PT2.lua",
     ),
 }
-RESULTS_BRANCH = "benchmark-results"
-BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
+# Branch that held the results before GitHub Pages, read once to seed the Pages history.
+LEGACYBRANCH = "benchmark-results"
 
 
 def git(args, cwd, check=True):
@@ -166,6 +168,66 @@ def readPrevious(path):
         return {}
 
 
+def machine(run):
+    """Identify the machine type of a run by its CPU model and available CPUs."""
+    system = run.get("system", {})
+    return (system.get("cpu") or "Unknown CPU", system.get("vcpus"))
+
+
+def readHistory(repo):
+    """Read the published runs from Pages, or the legacy results branch before the first deploy."""
+    owner, name = os.environ["GITHUB_REPOSITORY"].split("/")
+    url = f"https://{owner}.github.io/{name}/runs.json"
+
+    # A custom domain behind Cloudflare refuses Python's default user agent.
+    request = urllib.request.Request(url, headers={"User-Agent": "noci-rs-benchmarks"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise
+
+    query = ["ls-remote", "--exit-code", "--heads", "origin", LEGACYBRANCH]
+    if git(query, repo, check=False).returncode != 0:
+        return []
+    git(["fetch", "origin", LEGACYBRANCH], repo)
+    paths = git(["ls-tree", "--name-only", "FETCH_HEAD", "runs/"], repo).stdout.split()
+    return [
+        json.loads(git(["show", f"FETCH_HEAD:{path}"], repo).stdout) for path in paths
+    ]
+
+
+def previousOnMachine(runs, current):
+    """Find the latest run before `current` on the same machine type."""
+    earlier = [
+        run
+        for run in runs
+        if machine(run) == machine(current)
+        and run.get("commit") != current.get("commit")
+        and (run.get("recorded_at") or "") <= (current.get("recorded_at") or "")
+    ]
+    return earlier[-1] if earlier else {}
+
+
+def compareTimes(current, previous):
+    """Compare a time with the previous one on the same machine type, with its colour."""
+    currentTime = current.get("time_seconds") if current.get("status") == "ok" else None
+    previousTime = (
+        previous.get("time_seconds") if previous.get("status") == "ok" else None
+    )
+
+    if currentTime is None:
+        return "unavailable", None, "#6e7781"
+    if previousTime is None:
+        return f"{currentTime:.2f} s", None, "#6e7781"
+    if round(currentTime, 2) < round(previousTime, 2):
+        return f"↑ {currentTime:.2f} s", f"{previousTime:.2f} s", "#1a7f37"
+    if round(currentTime, 2) > round(previousTime, 2):
+        return f"↓ {currentTime:.2f} s", f"{previousTime:.2f} s", "#cf222e"
+    return f"→ {currentTime:.2f} s", f"{previousTime:.2f} s", "#6e7781"
+
+
 def formatSpecs(specs):
     """Format the runner specifications for their shared badge."""
     parts = [specs.get("os") or "Unknown OS", specs.get("cpu") or "Unknown CPU"]
@@ -196,31 +258,9 @@ def renderPill(label, message, color, labelWidth, width, details):
 
 
 def renderBadge(label, current, previous, specs):
-    """Render a time badge with the preceding commit's comparison."""
-    currentTime = current.get("time_seconds") if current.get("status") == "ok" else None
-    previousTime = (
-        previous.get("time_seconds") if previous.get("status") == "ok" else None
-    )
-
-    if currentTime is None:
-        comparison, color = "unavailable", "#6e7781"
-    elif previousTime is None:
-        comparison, color = f"{currentTime:.2f} s", "#6e7781"
-    elif round(currentTime, 2) < round(previousTime, 2):
-        comparison, color = (
-            f"↑ {currentTime:.2f} s (previous {previousTime:.2f} s)",
-            "#1a7f37",
-        )
-    elif round(currentTime, 2) > round(previousTime, 2):
-        comparison, color = (
-            f"↓ {currentTime:.2f} s (previous {previousTime:.2f} s)",
-            "#cf222e",
-        )
-    else:
-        comparison, color = (
-            f"→ {currentTime:.2f} s (previous {previousTime:.2f} s)",
-            "#6e7781",
-        )
+    """Render a time badge compared with the previous run on the same machine type."""
+    time, previousTime, color = compareTimes(current, previous)
+    comparison = f"{time} (previous {previousTime})" if previousTime else time
 
     details = f"{label}: {comparison}; {formatSpecs(specs)}"
     return renderPill(label, comparison, color, 260, 530, details)
@@ -232,50 +272,94 @@ def renderRunnerBadge(specs):
     return renderPill("runner", details, "#57606a", 76, 820, f"Runner: {details}")
 
 
-def publish(resultPath, repo, branchDir):
-    """Store this commit's run and refresh badges when it is the main tip."""
+def renderMachineTable(runs):
+    """Render one row per machine type with its latest times against its previous run."""
+    names = [label.split(" · ")[-1] for label, _ in BENCHMARKS.values()]
+
+    # Machine types with the most recently measured first.
+    latest = {}
+    for run in runs:
+        latest[machine(run)] = run
+    rows = []
+    for run in sorted(
+        latest.values(), key=lambda run: run.get("recorded_at") or "", reverse=True
+    ):
+        previous = previousOnMachine(runs, run)
+        cells = []
+        for key in BENCHMARKS:
+            time, previousTime, color = compareTimes(
+                run.get("benchmarks", {}).get(key, {}),
+                previous.get("benchmarks", {}).get(key, {}),
+            )
+            cells.append((f"{time} ({previousTime})" if previousTime else time, color))
+        cpu, vcpus = machine(run)
+        rows.append((f"{cpu} · {vcpus} vCPU" if vcpus else cpu, cells))
+
+    # Column widths from an average glyph width of the 12 px badge font.
+    glyph = 7
+    labelWidth = glyph * max(len("runner CPU"), *(len(label) for label, _ in rows)) + 24
+    widths = [
+        glyph * max(len(name), *(len(cells[k][0]) for _, cells in rows)) + 24
+        for k, name in enumerate(names)
+    ]
+    width = labelWidth + sum(widths)
+    height = 28 * len(rows) + 24
+
+    def row(y, label, cells):
+        """Render one row as a pill with a label and one coloured cell per benchmark."""
+        parts = [
+            f'  <rect y="{y}" width="{width}" height="24" rx="4" fill="#555"/>',
+            f'  <text x="12" y="{y + 16}" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="12">{html.escape(label)}</text>',
+        ]
+        x = labelWidth
+        for k, (message, color) in enumerate(cells):
+            # The last cell rounds the row's right end, as the message of a badge does.
+            last = k == len(cells) - 1
+            corner = ' rx="4"' if last else ""
+            parts.append(
+                f'  <rect x="{x + 1}" y="{y}" width="{widths[k] - 1}" height="24"{corner} fill="{color}"/>'
+            )
+            if last:
+                parts.append(
+                    f'  <rect x="{x + 1}" y="{y}" width="4" height="24" fill="{color}"/>'
+                )
+            parts.append(
+                f'  <text x="{x + 12}" y="{y + 16}" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="12">{html.escape(message)}</text>'
+            )
+            x += widths[k]
+        return parts
+
+    details = "Benchmark times by runner CPU"
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{details}">',
+        f"  <title>{details}</title>",
+        *row(0, "runner CPU", [(name, "#57606a") for name in names]),
+    ]
+    for r, (label, cells) in enumerate(rows):
+        lines.extend(row(28 * (r + 1), label, cells))
+    lines.append("</svg>")
+    return "\n".join(lines) + "\n"
+
+
+def publish(resultPath, repo, siteDir):
+    """Add this commit's run to the history and build the Pages site when it is the main tip."""
     sha = os.environ["GITHUB_SHA"]
-    previousCommit = git(["rev-parse", "HEAD^"], repo, check=False)
-    previousSha = (
-        previousCommit.stdout.strip() if previousCommit.returncode == 0 else None
-    )
-
-    # Fetch the report branch, or create an orphan branch for its first run.
-    query = ["ls-remote", "--exit-code", "--heads", "origin", RESULTS_BRANCH]
-    remoteBranch = git(query, repo, check=False)
-    if remoteBranch.returncode == 0:
-        sourceRef = f"refs/heads/{RESULTS_BRANCH}"
-        remoteRef = f"refs/remotes/origin/{RESULTS_BRANCH}"
-        git(["fetch", "origin", f"{sourceRef}:{remoteRef}"], repo)
-        git(["worktree", "add", "--detach", str(branchDir), remoteRef], repo)
-    elif remoteBranch.returncode == 2:
-        git(["worktree", "add", "--detach", str(branchDir), "HEAD"], repo)
-        git(["switch", "--orphan", RESULTS_BRANCH], branchDir)
-    else:
-        raise RuntimeError(
-            remoteBranch.stderr.strip() or "Could not query results branch"
-        )
-
-    # Keep every commit's JSON so an exact parent result can be compared.
     current = readPrevious(resultPath)
     if not current:
         current = {"commit": sha, "system": systemSpecs(), "benchmarks": {}}
     current["commit"] = sha
 
-    previous = (
-        readPrevious(branchDir / "runs" / f"{previousSha}.json") if previousSha else {}
-    )
+    # One run per commit, a rerun replacing the earlier one, in recording order.
+    runs = [run for run in readHistory(repo) if run.get("commit") != sha] + [current]
+    runs.sort(key=lambda run: run.get("recorded_at") or "")
 
-    runDir = branchDir / "runs"
-    runDir.mkdir(exist_ok=True)
-    serialized = json.dumps(current, indent=2, ensure_ascii=False) + "\n"
-    (runDir / f"{sha}.json").write_text(serialized)
-
-    # A superseded workflow may save its run, but must not replace newer badges.
+    # A superseded workflow must not replace newer badges.
     mainTip = git(["ls-remote", "origin", "refs/heads/main"], repo).stdout.split()[0]
-    if sha == mainTip:
-        badgeDir = branchDir / "badges"
-        badgeDir.mkdir(exist_ok=True)
+    deploy = sha == mainTip
+    if deploy:
+        badgeDir = siteDir / "badges"
+        badgeDir.mkdir(parents=True, exist_ok=True)
+        previous = previousOnMachine(runs, current)
         for key, (label, _) in BENCHMARKS.items():
             currentRun = current.get("benchmarks", {}).get(key, {})
             previousRun = previous.get("benchmarks", {}).get(key, {})
@@ -283,16 +367,15 @@ def publish(resultPath, repo, branchDir):
             (badgeDir / f"{key}.svg").write_text(badge)
 
         (badgeDir / "runner.svg").write_text(renderRunnerBadge(current["system"]))
-        (branchDir / "latest.json").write_text(serialized)
+        (badgeDir / "machines.svg").write_text(renderMachineTable(runs))
+        serialized = json.dumps(current, indent=2, ensure_ascii=False) + "\n"
+        (siteDir / "latest.json").write_text(serialized)
+        history = json.dumps(runs, indent=2, ensure_ascii=False) + "\n"
+        (siteDir / "runs.json").write_text(history)
 
-    # Publish the informational results independently of the source branch.
-    git(["config", "user.name", "github-actions[bot]"], branchDir)
-    git(["config", "user.email", BOT_EMAIL], branchDir)
-    git(["add", "."], branchDir)
-    changes = git(["diff", "--cached", "--quiet"], branchDir, check=False)
-    if changes.returncode == 1:
-        git(["commit", "-m", f"Record H6 benchmarks for {sha[:12]}"], branchDir)
-        git(["push", "origin", f"HEAD:refs/heads/{RESULTS_BRANCH}"], branchDir)
+    # Tell the workflow whether to deploy the site.
+    with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+        output.write(f"deploy={str(deploy).lower()}\n")
 
 
 def main():
@@ -307,13 +390,13 @@ def main():
     post = subcommands.add_parser("publish")
     post.add_argument("--result", type=Path, required=True)
     post.add_argument("--repo", type=Path, default=Path.cwd())
-    post.add_argument("--worktree", type=Path, required=True)
+    post.add_argument("--site", type=Path, required=True)
 
     args = parser.parse_args()
     if args.command == "run":
         runBenchmarks(args.binary.resolve(), args.result, args.logs, args.timeout)
     else:
-        publish(args.result, args.repo.resolve(), args.worktree.resolve())
+        publish(args.result, args.repo.resolve(), args.site.resolve())
 
 
 if __name__ == "__main__":
