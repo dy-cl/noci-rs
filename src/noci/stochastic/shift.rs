@@ -34,7 +34,7 @@ pub(in crate::noci::stochastic) fn update_shift(
         shift,
         &mut state.reached,
         (stats.nw, state.prev_pop.nw),
-        (qmc.target_population, qmc.shift_damping, dteff),
+        (qmc.target_population, qmc.shift_damping, 0.0, dteff),
     );
 
     state.prev_pop = *stats;

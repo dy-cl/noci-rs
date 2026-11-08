@@ -931,6 +931,13 @@ fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
             std::process::exit(1);
         }
 
+        // Only reference-determinant trials give the JM-NOCCMC energy, since `H^e = S^eG` holds on
+        // the reference rows but the invariance residuals do not vanish on excited determinants.
+        if qmc.as_ref().is_some_and(|qmc| qmc.n_projected.is_some()) {
+            eprintln!("jmnoccmc.qmc projects onto the reference NOCI trial only; omit n_projected");
+            std::process::exit(1);
+        }
+
         let memory_effective = t
             .get("memory_effective")
             .unwrap_or(defaults.memory_effective);
