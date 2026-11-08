@@ -31,8 +31,6 @@ BENCHMARKS = {
         "inputs/benchmarks/H6_cc-pVDZ_NOCISD3_1_5_PT2.lua",
     ),
 }
-# Branch that held the results before GitHub Pages, read once to seed the Pages history.
-LEGACYBRANCH = "benchmark-results"
 
 
 def git(args, cwd, check=True):
@@ -174,8 +172,8 @@ def machine(run):
     return (system.get("cpu") or "Unknown CPU", system.get("vcpus"))
 
 
-def readHistory(repo):
-    """Read the published runs from Pages, or the legacy results branch before the first deploy."""
+def readHistory():
+    """Read the runs published on GitHub Pages, or none before the first deployment."""
     owner, name = os.environ["GITHUB_REPOSITORY"].split("/")
     url = f"https://{owner}.github.io/{name}/runs.json"
 
@@ -187,15 +185,7 @@ def readHistory(repo):
     except urllib.error.HTTPError as error:
         if error.code != 404:
             raise
-
-    query = ["ls-remote", "--exit-code", "--heads", "origin", LEGACYBRANCH]
-    if git(query, repo, check=False).returncode != 0:
-        return []
-    git(["fetch", "origin", LEGACYBRANCH], repo)
-    paths = git(["ls-tree", "--name-only", "FETCH_HEAD", "runs/"], repo).stdout.split()
-    return [
-        json.loads(git(["show", f"FETCH_HEAD:{path}"], repo).stdout) for path in paths
-    ]
+    return []
 
 
 def previousOnMachine(runs, current):
@@ -350,7 +340,7 @@ def publish(resultPath, repo, siteDir):
     current["commit"] = sha
 
     # One run per commit, a rerun replacing the earlier one, in recording order.
-    runs = [run for run in readHistory(repo) if run.get("commit") != sha] + [current]
+    runs = [run for run in readHistory() if run.get("commit") != sha] + [current]
     runs.sort(key=lambda run: run.get("recorded_at") or "")
 
     # A superseded workflow must not replace newer badges.
