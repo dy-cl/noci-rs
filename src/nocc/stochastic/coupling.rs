@@ -158,30 +158,6 @@ pub(super) fn left_action(
         .collect::<Vec<(Excitor, f64)>>();
     amplitudes.sort_by_key(|(excitor, _)| rank(reference, &excitor.det));
 
-    // Depth-first enumeration of sets of distinct excitors in increasing order; each excitor
-    // carries `P t`, and the leading `1/P` gives the weight `P^{|K|-1}`.
-    fn visit(
-        det: ExcitedDeterminant,
-        coefficient: f64,
-        start: usize,
-        context: (&ExcitedDeterminant, &[(Excitor, f64)], usize, usize),
-        out: &mut Vec<(ExcitorKey, f64)>,
-    ) {
-        let (reference, amplitudes, cluster_rank, index) = context;
-        let r = rank(reference, &det);
-        if start > 0 {
-            out.push(((index, det.alpha, det.beta), coefficient));
-        }
-        for (k, &(excitor, t)) in amplitudes.iter().enumerate().skip(start) {
-            if r + rank(reference, &excitor.det) > cluster_rank {
-                break;
-            }
-            if let Some((next, sign)) = excitor.apply(&det) {
-                visit(next, -coefficient * t * sign, k + 1, context, out);
-            }
-        }
-    }
-
     q.par_iter()
         .filter(|(_, value)| *value != 0.0)
         .fold(Vec::new, |mut out, &((alpha, beta), value)| {
@@ -194,13 +170,29 @@ pub(super) fn left_action(
             if empty && rank(reference, &nu) > 0 {
                 out.push(((index, alpha, beta), value));
             }
-            visit(
-                nu,
-                value / ranks,
-                0,
-                (reference, &amplitudes, cluster_rank, index),
-                &mut out,
-            );
+
+            // Depth-first enumeration of sets of distinct excitors in increasing order, as a stack
+            // of determinant, coefficient and next excitor. Each excitor carries `P t` and the
+            // leading `1/P` gives the weight `P^{|K|-1}`; the excitors are in increasing rank, so
+            // the children of a set stop at the first one over the cluster rank, and they are
+            // pushed in reverse to be visited in increasing order.
+            let mut stack = vec![(nu, value / ranks, 0)];
+            while let Some((det, coefficient, start)) = stack.pop() {
+                if start > 0 {
+                    out.push(((index, det.alpha, det.beta), coefficient));
+                }
+                let r = rank(reference, &det);
+                let end = amplitudes[start..]
+                    .iter()
+                    .position(|(excitor, _)| r + rank(reference, &excitor.det) > cluster_rank)
+                    .map_or(amplitudes.len(), |k| start + k);
+                for k in (start..end).rev() {
+                    let (excitor, t) = amplitudes[k];
+                    if let Some((next, sign)) = excitor.apply(&det) {
+                        stack.push((next, -coefficient * t * sign, k + 1));
+                    }
+                }
+            }
             out
         })
         .flatten()
