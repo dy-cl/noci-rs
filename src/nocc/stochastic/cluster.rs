@@ -14,11 +14,8 @@ use super::population::{Block, Excitor};
 /// `\sum_s \frac{1}{s!}\sum_{\mu_1\ldots\mu_s} N_z \prod_k t_{z\mu_k}\,f(\mu_1,\ldots,\mu_s)`.
 /// The size `s` is drawn with `p(s)=2^{-(s+1)}` for `s<s_{\max}` and `p(s_{\max})=2^{-s_{\max}}`,
 /// and each of the `s` ordered excitors independently with probability `|n_\mu|/N_{\text{ex}}`
-/// from the block's alias table,
-/// so that the returned weight
-///
+/// from the block's alias table, so that the returned weight
 /// `w = \frac{N_z}{s!\,p(s)\,A}\prod_k\frac{\operatorname{sign}(n_{\mu_k})N_{\text{ex}}}{N_z}`
-///
 /// makes the sum of `w f` over `A` attempts an unbiased estimate of the expansion, with
 /// `t_{z\mu}=n_{z\mu}/N_z`. Repeated excitors are allowed. With the excitors distributed over
 /// `P` ranks by a random assignment, each rank forms clusters from its own excitors only and its
@@ -91,10 +88,7 @@ pub(super) fn select_cluster(
 /// kept only when its excitation level `\sum_j j\eta_j` is within the expansion rank (truncated
 /// selection). Drawing its excitors of level `j` with probability `|n_\mu|/L_j`, where `L_j` is
 /// the population magnitude of that level on this rank, the combination contributes the weight
-///
-/// `a_\eta = |N_x|^{1-s}P^{s-1}\prod_j\frac{L_j^{\eta_j}}{\eta_j!},`
-///
-/// in which `P^{s-1}` is the inverse probability that its `s` excitors share a rank; a repeated
+/// `a_\eta = |N_x|^{1-s}P^{s-1}\prod_j L_j^{\eta_j}/\eta_j!`, in which `P^{s-1}` is the inverse probability that its `s` excitors share a rank; a repeated
 /// excitor collapses to zero, so contributing excitors are always distinct. The reference term is
 /// `a_0=|N_x|/P`. Combinations of zero weight are omitted.
 /// # Arguments:
@@ -150,9 +144,7 @@ pub(super) fn coupling_combinations(
 /// combination `\eta` with probability `a_\eta/A`, `A=\sum_\eta a_\eta`, then `\eta_j` ordered
 /// excitors of each level `j` with probability `|n_\mu|/L_j`. Every cluster then carries the same
 /// weight magnitude,
-///
-/// `w = \frac{A}{n_{\text{attempts}}}\operatorname{sign}(N_x)^{1-s}\prod_k\operatorname{sign}(n_{\mu_k}),`
-///
+/// `w = \frac{A}{n_{\text{attempts}}}\operatorname{sign}(N_x)^{1-s}\prod_k\operatorname{sign}(n_{\mu_k})`,
 /// so that no single sample of the coupling can outweigh another, however large the particle
 /// ratio `N_{\text{ex}}/N_x`. The sum of `w f` over the attempts is an unbiased estimate of
 /// `\sum_\eta a_\eta\langle\operatorname{sign}f\rangle_\eta`, the expansion of `N_xe^{\hat T_x/N_x}`.

@@ -33,7 +33,9 @@
 //! equations, through the splitting of a variation into internal mixing and an external part.
 //! The internal (type I) nulls are the `M(M-1)` mixings of `M` correlated references; they are
 //! exact at the complete cluster limit and generically removed by truncation, where they become
-//! slow modes with a restoring force. The external (type II) nulls occur where an external level
+//! slow modes with a restoring force. At the complete cluster rank nothing restores them, so
+//! sampling noise random-walks the amplitudes along them; stochastic propagation is meant for
+//! truncated cluster ranks. The external (type II) nulls occur where an external level
 //! meets a target root, the intruder problem, which the choice of references must avoid. The
 //! deterministic propagation diagnoses both from the analytic Jacobian.
 //!
