@@ -300,8 +300,7 @@ Both updates keep $N_w$ in $\text{range}(S_{wx})$, avoiding population in the ov
 
 - Generalised-normal-ordered, spin-free coupled cluster with singles and doubles over a NOCI reference, truncated at second order in the cluster operator and fourth order in the cumulants [19, 21].
 - The reference enters only through its spin-free RDMs and cumulants, evaluated with the extended nonorthogonal Wick's theorem; redundant excitations are removed by projecting onto the first-order interacting space.
-- Deterministic Jeziorski-Monkhorst NOCC (JM-NOCCMC): one cluster operator of arbitrary rank per nonorthogonal reference, propagated in imaginary time with the state energies from the effective Hamiltonian [27].
-- Stochastic NOCCMC propagation under active development [20].
+- Jeziorski-Monkhorst NOCC (JM-NOCCMC) with one cluster operator per nonorthogonal reference [27]: stochastic by linked CCMC [20, 28], deterministic as its noise-free counterpart, with Jacobian null-space diagnostics.
 
 ## Features
 
@@ -714,25 +713,48 @@ Natural orbitals within `active_space_tol` of two or zero electrons are treated 
 
 ### JM-NOCCMC
 
-The `jmnoccmc` table enables deterministic Jeziorski-Monkhorst NOCC on the reference determinants [27]. Each reference `x` carries its own cluster operator `T_x` in its own orbital frame, `|Phi_x> = exp(T_x)|x>`, and the state energies are the eigenvalues of the effective Hamiltonian `G = (S^e)^-1 H^e`, where `S^e_zx = <z|Phi_x>` and `H^e_zx = <z|H|Phi_x>`. The amplitudes are propagated from zero until the largest residual falls below `residual_tol`.
+The `jmnoccmc` table enables Jeziorski-Monkhorst NOCC [27]. Each reference $|{}^x\Psi\rangle$ has its own cluster operator $\hat T_x$ of rank `cluster_rank`, giving correlated references $|\Phi_x\rangle=e^{\hat T_x}|{}^x\Psi\rangle$. The state energies are the eigenvalues of $G=(S^e)^{-1}H^e$, with $S^e_{zx}=\langle{}^z\Psi|\Phi_x\rangle$ and $H^e_{zx}=\langle{}^z\Psi|\hat H|\Phi_x\rangle$. The residuals are $R_{x\mu}=\langle{}^x\Psi|\hat\tau_{x\mu}^\dagger e^{-\hat T_x}|W_x\rangle$, with $|W_x\rangle=(\hat I-\hat P)\hat H|\Phi_x\rangle$ and $\hat P=\sum_{xz}|\Phi_x\rangle[(S^e)^{-1}]_{xz}\langle{}^z\Psi|$.
+
+The amplitudes $t_{x\mu}=n_{x\mu}/N_x$ are carried by excitor and reference populations. With one shift $E_s$ and $g_x=\sum_yG_{xy}N_y/N_x$, each step applies:
+
+$$
+n_{x\mu}\leftarrow n_{x\mu}-\Delta\tau N_xR_{x\mu}-\Delta\tau(g_x-E_s)n_{x\mu},
+\qquad
+N_x\leftarrow N_x-\Delta\tau(g_x-E_s)N_x.
+$$
+
+- **Stochastic propagation:** a nested `qmc` table selects it. The excitor terms are sampled by linked CCMC [20, 28], and $G$ comes from report-block sums forgotten over `memory_effective` blocks.
+- **Deterministic propagation:** without `qmc`, the same update runs as the noise-free counterpart, with exact $G$. Populations are renormalised every step and the dynamic shift is optional, as in deterministic NOCIQMC.
 
 ```lua
 jmnoccmc = {
     cluster_rank = 2,
     expansion_rank = nil,
-
-    propagator = "plain",
     dt = 0.1,
-    damping = 0.5,
+    memory_effective = 100,
 
     max_steps = 10000,
     residual_tol = 1e-9,
+    e_tol = 1e-10,
+    dynamic_shift = true,
+    dynamic_shift_alpha = 0.1,
 
     diagnostics = false,
+    null_eps = 1e-8,
+    null_n = 10,
 }
 ```
 
-`cluster_rank` is the highest excitation rank of each cluster operator, `2` for CCSD. Each `|Phi_x>` is expanded over the determinants of `x` up to rank `expansion_rank`, or every rank when it is omitted, so the Hamiltonian and overlap are built once as rectangular matrices between each reference's excitations up to `cluster_rank` and these expansion spaces. Values below `cluster_rank + 2` are rejected, since the single-reference terms need that rank. The references have different orbitals, so every determinant of one reference overlaps the excitations of another, and a finite `expansion_rank` truncates these inter-reference overlaps: only the complete expansion is exact. It corresponds to the largest cluster size sampled by stochastic propagation. `propagator = "plain"` applies `t <- t - dt R`, the update sampled by stochastic propagation, and `"diagonal"` the damped Jacobi step `t <- t - damping R / D` with `D_mu = H_mumu - H_xx`. `diagnostics = true` reports, at convergence, the lowest eigenvalues of the linearised update `J` or `D^-1 J` from a finite-difference Jacobian, the largest stable `dt`, the smallest singular value of `J` and the condition number of `S^e`. References whose correlated states are nearly linearly dependent produce intruder roots of `G` and an unstable update; for stretched hydrogen chains, use the spin-reversed UHF pair without the RHF determinant.
+**Options:**
+- `expansion_rank` truncates the expansion of each $|\Phi_x\rangle$, which is exact only when complete. It must be at least `cluster_rank + 2`.
+- Deterministic runs stop once $\max|R_{x\mu}|<$ `residual_tol` and the projected energy changes by less than `e_tol`.
+- `diagnostics = true` diagnoses the Jacobian $J=\partial R/\partial t$ at the initial and final amplitudes. It reports:
+  - the lowest eigenvalues, where $\mathrm{Re}\,\lambda\le0$ marks a growing mode such as an intruder;
+  - the singular values below `null_eps` relative to the largest;
+  - the lowest `null_n` singular values, each with the external fraction of its vector: 0 for internal mixing of the $|\Phi_x\rangle$ (type I), 1 for an external response (type II).
+
+  It also writes `jacobian_history` to `write.write_dir`, giving $\mathbf t_k-\mathbf t_\star$ along the final singular vectors. It builds the overlap of all expansion determinants, so use it for small systems only.
+- With more references than target states (e.g. RHF plus the spin-reversed UHF pair in stretched hydrogen chains), intruders appear.
 
 ### Defaults
 
@@ -743,7 +765,7 @@ Defaults are defined by the input structures under
 
 `noci-rs` is not yet associated with a dedicated software publication. Until one is available, cite the repository and the relevant method publications listed below.
 
-Markers [1]–[27] refer to method publications; [S1]–[S2] refer to software and data publications.
+Markers [1]–[28] refer to method publications; [S1]–[S2] refer to software and data publications.
 
 ### Method References
 
@@ -800,6 +822,8 @@ Markers [1]–[27] refer to method publications; [S1]–[S2] refer to software a
 26. Nicholas Lee, David P. Tew, and Bang C. Huynh. Symmetry-adapted generalised normal-ordered coupled-cluster theory for excited states. arXiv:2607.10007 (2026). [arXiv:2607.10007](https://arxiv.org/abs/2607.10007).
 
 27. Bogumil Jeziorski and Hendrik J. Monkhorst. Coupled-cluster method for multideterminantal reference states. *Physical Review A* **24**, 1668–1681 (1981). [doi:10.1103/PhysRevA.24.1668](https://doi.org/10.1103/PhysRevA.24.1668).
+
+28. Robert S. T. Franklin, James S. Spencer, Alberto Zoccante, and Alex J. W. Thom. Linked coupled cluster Monte Carlo. *The Journal of Chemical Physics* **144**, 044111 (2016). [doi:10.1063/1.4940317](https://doi.org/10.1063/1.4940317).
 
 ### Software and Data References
 

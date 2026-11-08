@@ -223,20 +223,19 @@ fn run_task(
 
 /// Stochastically propagate the JM-NOCCMC amplitudes by linked coupled cluster Monte Carlo
 /// with the plain update `t \leftarrow t - \Delta\tau R` and one population-control shift.
-///
 /// Populations `n_{x\mu}` live on the excitors of each reference block and the reference
 /// populations `N_x` carry the normalisation, `t_{x\mu}=n_{x\mu}/N_x`. With
 /// `\tilde G_{xy}=G_{xy}N_y/N_x` and `g_x=\sum_y\tilde G_{xy}`, every population is updated as
-///
-/// `n_{x\mu} \leftarrow n_{x\mu} - \Delta\tau N_xR_{x\mu} - \Delta\tau(g_x-S)n_{x\mu},`
-///
-/// with `R_{x0}=0` for the reference. The reference populations then follow the power iteration
-/// `\Delta N=-\Delta\tau(G-S)N` of the effective Hamiltonian, converging to its ground-state
-/// coefficients, while the amplitudes follow `t \leftarrow t - \Delta\tau R` exactly. The
-/// same-reference part of `N_xR_{x\mu}` is sampled by linked CCMC, the coupling between
-/// references through sampled projections. `G=\bar S^{-1}\bar H` is taken from running sums
-/// `\bar S \leftarrow \lambda\bar S+S^e` and `\bar H \leftarrow \lambda\bar H+H^e` of the
-/// report blocks so far, with `\lambda = 1 - 1/\text{memory\_effective}`, so that one noisy
+/// `n_{x\mu} \leftarrow n_{x\mu} - \Delta\tau N_xR_{x\mu} - \Delta\tau(g_x-E_s)n_{x\mu}`, with
+/// `R_{x0}=0` for the reference and `E_s` the shift. The reference populations then follow the
+/// power iteration `\Delta N=-\Delta\tau(G-E_s)N` of the effective Hamiltonian, converging to its
+/// ground-state coefficients `c_x^{(0)}`, while the amplitudes follow
+/// `t_{x\mu} \leftarrow t_{x\mu} - \Delta\tau R_{x\mu}/[1-\Delta\tau(g_x-E_s)]`, the plain update
+/// once the shift balances the growth. The same-reference part of `N_xR_{x\mu}` is sampled by
+/// linked CCMC, the coupling between references through sampled projections.
+/// `G=\bar S^{-1}\bar H` is taken from running sums `\bar S \leftarrow \lambda\bar S+S^e` and
+/// `\bar H \leftarrow \lambda\bar H+H^e` of the report blocks so far, with
+/// `\lambda = 1 - 1/\text{memory\_effective}`, so that one noisy
 /// block with a nearly singular `S^e` cannot make `G` diverge.
 /// The populations are distributed over the MPI ranks by a hash of the excitor redrawn every
 /// iteration: each rank forms clusters from its own excitors with the weight `P^{s-1}`, its
@@ -510,7 +509,7 @@ pub(crate) fn jm_qmc_step(
                 }
             }
 
-            // Fixed-point-preserving death `-\Delta\tau(g_x-S)n` on every owned population.
+            // Fixed-point-preserving death `-\Delta\tau(g_x-E_s)n` on every owned population.
             let growth = (0..m).map(|x| gt.row(x).sum()).collect::<Vec<_>>();
             for (key, n) in populations.iter_mut() {
                 *n *= 1.0 - dt * (growth[key.0] - shift);

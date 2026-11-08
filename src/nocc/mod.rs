@@ -2,9 +2,10 @@
 //! Highly experimental nonorthogonal coupled cluster.
 //!
 //! Two formulations are developed. Jeziorski-Monkhorst NOCC (JM-NOCCMC) gives every
-//! nonorthogonal reference its own cluster operator, `|\Psi\rangle = \sum_x c_x e^{\hat T_x}|{}^x\Psi\rangle`,
-//! and is propagated deterministically in `deterministic` and by linked coupled cluster Monte
-//! Carlo in `stochastic`. Generalised-normal-ordered NOCC (GNOCC), behind the `gnocc` feature,
+//! nonorthogonal reference its own cluster operator,
+//! `|\Psi_k\rangle = \sum_x c_x^{(k)}|\Phi_x\rangle` with `|\Phi_x\rangle = e^{\hat T_x}|{}^x\Psi\rangle`,
+//! and is propagated by linked coupled cluster Monte Carlo in `stochastic` and as its
+//! noise-free counterpart in `deterministic`. Generalised-normal-ordered NOCC (GNOCC), behind the `gnocc` feature,
 //! develops coupled-cluster theory using a correlated NOCI
 //! reference state
 //!
@@ -65,10 +66,15 @@ mod stochastic;
 #[cfg(feature = "gnocc")]
 mod terms;
 
+// Public type re-exports.
+pub use deterministic::{JMEquations, JMPopulations, JMSpace};
+
+// Public function re-exports.
+pub use deterministic::{jm_space, propagate_populations, report_converged};
+
 // Restricted type re-exports.
 #[cfg(feature = "gnocc")]
 pub(crate) use deterministic::AmplitudeSolution;
-pub(crate) use deterministic::JMEquations;
 #[cfg(feature = "gnocc")]
 pub(crate) use setup::ReferenceState;
 #[cfg(feature = "gnocc")]
@@ -81,7 +87,6 @@ pub(crate) use terms::TermEvaluator;
 pub(crate) use cumulants::cumulants;
 #[cfg(feature = "gnocc")]
 pub(crate) use deterministic::solve_amplitudes;
-pub(crate) use deterministic::{jm_space, propagate_amplitudes, report_converged};
 pub(in crate::nocc) use jm::{jm_energies, reference_determinants};
 #[cfg(feature = "gnocc")]
 pub(crate) use setup::{

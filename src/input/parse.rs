@@ -13,10 +13,10 @@ use crate::{Error, Result};
 // Parent/sibling imports.
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
-    InitialShift, Input, JMNOCCMCOptions, JMPropagator, Metadynamics, MolOptions, NOCCMCOptions,
-    NOCCNewton, NOCCPreconditioner, PropagationOptions, Propagator, QMCOptions, SCFExcitation,
-    SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin, SpinBias,
-    StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
+    InitialShift, Input, JMNOCCMCOptions, Metadynamics, MolOptions, NOCCMCOptions, NOCCNewton,
+    NOCCPreconditioner, PropagationOptions, Propagator, QMCOptions, SCFExcitation, SCFInfo,
+    SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin, SpinBias, StateRecipe,
+    StateType, WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -909,15 +909,6 @@ fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
     jmnoccmc_tbl.map(|t| {
         let defaults = JMNOCCMCOptions::default();
 
-        // Validate the propagator name before assembling the options.
-        let propagator_str: String = t
-            .get("propagator")
-            .unwrap_or_else(|_| defaults.propagator.as_str().to_string());
-        let propagator: JMPropagator = propagator_str.parse().unwrap_or_else(|msg| {
-            eprintln!("{msg}");
-            std::process::exit(1);
-        });
-
         // The single-reference terms need the expansion up to two ranks above the clusters.
         let cluster_rank: usize = t.get("cluster_rank").unwrap_or(defaults.cluster_rank);
         let expansion_rank = t.get::<_, Option<usize>>("expansion_rank").ok().flatten();
@@ -953,16 +944,25 @@ fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
         JMNOCCMCOptions {
             cluster_rank,
             expansion_rank,
-            propagator,
             dt: t.get("dt").unwrap_or(defaults.dt),
-            damping: t.get("damping").unwrap_or(defaults.damping),
             max_steps: t.get("max_steps").unwrap_or(defaults.max_steps),
             residual_tol: t.get("residual_tol").unwrap_or(defaults.residual_tol),
+            e_tol: t.get("e_tol").unwrap_or(defaults.e_tol),
+            dynamic_shift: t
+                .get::<_, Option<bool>>("dynamic_shift")
+                .ok()
+                .flatten()
+                .unwrap_or(defaults.dynamic_shift),
+            dynamic_shift_alpha: t
+                .get("dynamic_shift_alpha")
+                .unwrap_or(defaults.dynamic_shift_alpha),
             diagnostics: t
                 .get::<_, Option<bool>>("diagnostics")
                 .ok()
                 .flatten()
                 .unwrap_or(defaults.diagnostics),
+            null_eps: t.get("null_eps").unwrap_or(defaults.null_eps),
+            null_n: t.get("null_n").unwrap_or(defaults.null_n),
             qmc,
             memory_effective,
         }
