@@ -66,10 +66,15 @@ mod stochastic;
 #[cfg(feature = "gnocc")]
 mod terms;
 
+// Public type re-exports.
+pub use deterministic::{JMEquations, JMPopulations, JMSpace};
+
+// Public function re-exports.
+pub use deterministic::{jm_space, propagate_populations, report_converged};
+
 // Restricted type re-exports.
 #[cfg(feature = "gnocc")]
 pub(crate) use deterministic::AmplitudeSolution;
-pub(crate) use deterministic::JMEquations;
 #[cfg(feature = "gnocc")]
 pub(crate) use setup::ReferenceState;
 #[cfg(feature = "gnocc")]
@@ -82,7 +87,6 @@ pub(crate) use terms::TermEvaluator;
 pub(crate) use cumulants::cumulants;
 #[cfg(feature = "gnocc")]
 pub(crate) use deterministic::solve_amplitudes;
-pub(crate) use deterministic::{jm_space, propagate_populations, report_converged};
 pub(in crate::nocc) use jm::{jm_energies, reference_determinants};
 #[cfg(feature = "gnocc")]
 pub(crate) use setup::{

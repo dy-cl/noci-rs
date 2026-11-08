@@ -8,12 +8,16 @@ mod jmnoccmc;
 mod solver;
 mod write;
 
+// Public type re-exports.
+pub use jmnoccmc::{JMEquations, JMPopulations, JMSpace};
+
+// Public function re-exports.
+pub use jmnoccmc::{jm_space, propagate_populations, report_converged};
+
 // Restricted type re-exports.
-pub(crate) use jmnoccmc::JMEquations;
 #[cfg(feature = "gnocc")]
 pub(crate) use solver::AmplitudeSolution;
 
 // Restricted function re-exports.
-pub(crate) use jmnoccmc::{jm_space, propagate_populations, report_converged};
 #[cfg(feature = "gnocc")]
 pub(crate) use solver::solve_amplitudes;
