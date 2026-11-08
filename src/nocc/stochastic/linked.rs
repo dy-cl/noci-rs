@@ -32,6 +32,37 @@ use super::cluster::collapse;
 use super::population::{Excitor, ReferenceSpaces, rank};
 use super::state::{LinkedBatchedRequest, Target};
 
+/// Split a cluster at a partition `L`, collapsing the right part onto the reference and
+/// inverting the left part on the projectee, `|\hat\tau_{C\setminus L}{}^z\Psi\rangle` and
+/// `|\hat\tau_L^\dagger D_\mu\rangle`. Bit `k` of `left` places excitor `k` in `L`.
+/// # Arguments:
+/// - `reference`: Block reference `{}^z\Psi`.
+/// - `excitors`: Cluster excitors.
+/// - `projectee`: Projection determinant `|D_\mu\rangle`.
+/// - `left`: Partition mask of `L`.
+/// # Returns:
+/// - `Option<((ExcitedDeterminant, f64), (ExcitedDeterminant, f64))>`: Ket and bra with the signs
+///   of the excitor actions, or `None` if either part vanishes.
+fn partition(
+    reference: &ExcitedDeterminant,
+    excitors: &[Excitor],
+    projectee: &ExcitedDeterminant,
+    left: usize,
+) -> Option<((ExcitedDeterminant, f64), (ExcitedDeterminant, f64))> {
+    let (mut ket, mut sr) = (*reference, 1.0);
+    let (mut bra, mut sl) = (*projectee, 1.0);
+    for (k, excitor) in excitors.iter().enumerate() {
+        if left >> k & 1 == 0 {
+            let (next, sk) = excitor.apply(&ket)?;
+            (ket, sr) = (next, sr * sk);
+        } else {
+            let (prev, sk) = excitor.invert(&bra)?;
+            (bra, sl) = (prev, sl * sk);
+        }
+    }
+    Some(((ket, sr), (bra, sl)))
+}
+
 /// Queue the terms of
 /// `V_\mu = \langle D_\mu|[\ldots[\hat H,\hat\tau_1],\ldots,\hat\tau_s]|{}^z\Psi\rangle`
 /// `= \sum_{L}(-1)^{|L|}\langle\hat\tau_L^\dagger D_\mu|\hat H|\hat\tau_{C\setminus L}{}^z\Psi\rangle`
@@ -56,23 +87,7 @@ fn commutator(
     let (target, coefficient) = term;
     let s = excitors.len();
     for left in 0..1usize << s {
-        // Right part acting on the reference.
-        let right =
-            (0..s)
-                .filter(|k| left >> k & 1 == 0)
-                .try_fold((*reference, 1.0), |(det, sign), k| {
-                    let (next, sk) = excitors[k].apply(&det)?;
-                    Some((next, sign * sk))
-                });
-        // Left part inverted on the projectee.
-        let bra =
-            (0..s)
-                .filter(|k| left >> k & 1 == 1)
-                .try_fold((*projectee, 1.0), |(det, sign), k| {
-                    let (prev, sk) = excitors[k].invert(&det)?;
-                    Some((prev, sign * sk))
-                });
-        if let (Some((ket, sr)), Some((bra, sl))) = (right, bra) {
+        if let Some(((ket, sr), (bra, sl))) = partition(reference, excitors, projectee, left) {
             if (bra.alpha ^ ket.alpha).count_ones() + (bra.beta ^ ket.beta).count_ones() > 4 {
                 continue;
             }
@@ -111,13 +126,7 @@ fn proposal(
     let s = excitors.len();
     let mut p = 0.0;
     for left in 0..1usize << s {
-        let right = (0..s)
-            .filter(|k| left >> k & 1 == 0)
-            .try_fold(*reference, |det, k| Some(excitors[k].apply(&det)?.0));
-        let bra = (0..s)
-            .filter(|k| left >> k & 1 == 1)
-            .try_fold(*projectee, |det, k| Some(excitors[k].invert(&det)?.0));
-        if let (Some(n), Some(m)) = (right, bra) {
+        if let Some(((n, _), (m, _))) = partition(reference, excitors, projectee, left) {
             let distance = (n.alpha ^ m.alpha).count_ones() + (n.beta ^ m.beta).count_ones();
             if distance != 0 && distance <= 4 {
                 p += pgen;
