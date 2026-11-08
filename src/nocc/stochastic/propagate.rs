@@ -12,7 +12,7 @@ use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{NOCIData, calculate_hs_excited};
 use crate::input::JMNOCCMCOptions;
 use crate::mpiutils::all_reduce_array1;
-use crate::nocc::{Effective, jm_energies};
+use crate::nocc::Effective;
 use crate::qmc::{
     AliasTable, ExchangeScratch, FastMap, QmcRng, coalesce, compress_sparse, exchange_updates,
     gather_updates, owner_words, pack_updates, print_table_header, print_table_row, rank_seed,
@@ -22,7 +22,6 @@ use crate::qmc::{
 // Parent/sibling imports.
 use super::cluster::{collapse, coupling_combinations, select_cluster, select_coupling_cluster};
 use super::coupling::{left_action, project_cluster};
-use super::effective::{ground_energy, reblocked_energy, scaled};
 use super::linked::linked_attempt;
 use super::population::{Block, Excitor, ExcitorKey, ExcitorUpdate, ReferenceSpaces, rank};
 use super::state::JMTaskPropagation;
@@ -591,8 +590,8 @@ fn population_stats(
 /// - `shift`: Initial population-control shift.
 /// - `world`: MPI communicator.
 /// # Returns:
-/// - `f64`: Average ground-state energy after the population target is reached, or the last
-///   report-block energy if it is never reached.
+/// - `f64`: Projected energy of the last report, as stochastic NOCIQMC returns; error analysis
+///   of the printed table is left to `scripts/blocking.py`.
 /// # Panics
 /// - Panics if the stochastic options or MO caches are absent.
 /// # References
@@ -651,8 +650,7 @@ pub(crate) fn jm_qmc_step(
     let mut merged = FastMap::<ExcitorKey, f64>::default();
     let mut coupled = FastMap::<ExcitorKey, f64>::default();
     let mut running = Effective::new(m);
-    let mut history = Vec::new();
-    let mut energy = f64::NAN;
+    let mut eproj = f64::NAN;
 
     for report in 0..qmc.nreports {
         let mut block = Effective::new(m);
@@ -674,7 +672,11 @@ pub(crate) fn jm_qmc_step(
             let totals = all_reduce_array1(world, Array1::from_vec(totals)).to_vec();
             let nref = totals[..m].to_vec();
             let current = blocks(&spaces, &populations, &nref, ranks);
-            let gt = scaled(&lagged, &nref);
+            // Effective Hamiltonian of the unnormalised correlated references
+            // `|\tilde\Phi_x\rangle = N_x|\Phi_x\rangle`, `\tilde G_{xy} = G_{xy}N_y/N_x`, whose row sums
+            // `g_x = (GN)_x/N_x` are the growth rates of the reference populations.
+            let gt =
+                Array2::from_shape_fn(lagged.dim(), |(x, y)| lagged[(x, y)] * nref[y] / nref[x]);
 
             // Every block's attempts, shared evenly between ranks, and the coupling.
             let attempts = (0..m)
@@ -755,18 +757,11 @@ pub(crate) fn jm_qmc_step(
             );
         }
 
-        // Report-block energy and the lagged effective Hamiltonian from the running sums with
-        // forgetting.
-        if let Some(g) = block.g() {
-            energy = jm_energies(&g)[0].re;
-        }
+        // Lagged effective Hamiltonian from the running sums with forgetting.
         running.scale(1.0 - 1.0 / options.memory_effective);
         running.add(&block);
         if let Some(g) = running.g() {
             lagged = g;
-        }
-        if reached {
-            history.push(block);
         }
 
         // Population statistics over every rank and the shift update.
@@ -782,6 +777,7 @@ pub(crate) fn jm_qmc_step(
             ),
         );
         previous = total;
+        eproj = projected.0 / projected.1;
         let cycles = qmc.ncycles as f64;
         print_table_row(
             irank,
@@ -796,22 +792,5 @@ pub(crate) fn jm_qmc_step(
         }
     }
 
-    // Ratio estimate over every report block after the shift starts, with its reblocked error,
-    // or without an error if there are too few blocks.
-    if let Some((e, error)) = reblocked_energy(&history) {
-        if irank == 0 {
-            println!(
-                "Stochastic JM-NOCCMC energy over {} report blocks: {:.10} +/- {:.10}",
-                history.len(),
-                e,
-                error
-            );
-        }
-        return e;
-    }
-    let mut total = Effective::new(m);
-    for block in &history {
-        total.add(block);
-    }
-    ground_energy(&total).unwrap_or(energy)
+    eproj
 }

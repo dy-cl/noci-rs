@@ -93,7 +93,7 @@ pub(crate) fn run_jmnoccmc(
 /// - `wicks`: Optional precomputed Wick's intermediates of the reference parents.
 /// - `world`: MPI communicator.
 /// # Returns:
-/// - `f64`: Averaged ground-state JM-NOCCMC energy.
+/// - `f64`: Projected energy of the last report.
 /// # Panics
 /// - Panics if the JM-NOCCMC options are absent.
 pub(crate) fn run_jmnoccmc_stochastic(

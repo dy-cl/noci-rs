@@ -61,7 +61,6 @@
 
 mod cluster;
 mod coupling;
-mod effective;
 mod linked;
 mod population;
 mod propagate;
