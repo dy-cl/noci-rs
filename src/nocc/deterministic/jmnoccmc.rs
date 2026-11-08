@@ -137,7 +137,8 @@ pub struct JMEquations {
     denominators: Vec<Array1<f64>>,
 }
 
-/// Residuals, effective Hamiltonian and effective overlap at one set of amplitudes.
+/// Residuals, effective Hamiltonian and effective overlap at one set of amplitudes, with the
+/// intermediates from which the Jacobian is formed.
 pub struct JMEvaluation {
     /// Residuals `R_{y\mu}` of every reference.
     pub residual: Vec<Array1<f64>>,
@@ -145,6 +146,12 @@ pub struct JMEvaluation {
     pub g: Array2<f64>,
     /// Effective overlap `S^e_{zx} = \langle{}^z\Psi|\Phi_x\rangle`.
     pub se: Array2<f64>,
+    /// Projections `\langle k|\Phi_x\rangle` of every `|\Phi_x\rangle` onto every projection row.
+    sphi: Vec<Array1<f64>>,
+    /// `e^{-\hat T_y}(\hat H|\Phi_y\rangle - \sum_{x \neq y}G_{xy}|\Phi_x\rangle)` of every
+    /// reference on its projection rows, equal to `e^{-\hat T_y}|W_y\rangle` except on the
+    /// reference row.
+    contracted: Vec<Array1<f64>>,
 }
 
 /// Tabulate the action of a cluster operator on a block by target determinant. Each target
@@ -281,6 +288,55 @@ pub fn jm_space(
     JMSpace { space, blocks }
 }
 
+impl ReferenceBlock {
+    /// Project a block vector onto the cluster excitations,
+    /// `\langle{}^x\Psi|\hat\tau_{x\mu}^\dagger|v\rangle = \pm v_{D_\mu}` with the sign of
+    /// `\hat\tau_{x\mu}|{}^x\Psi\rangle = \pm|D_\mu\rangle`.
+    /// # Arguments:
+    /// - `self`: Reference block.
+    /// - `v`: Block vector covering at least the projection rows.
+    /// # Returns:
+    /// - `Array1<f64>`: One element per cluster excitation.
+    fn project(
+        &self,
+        v: &Array1<f64>,
+    ) -> Array1<f64> {
+        Array1::from_iter(self.excitations.iter().map(|e| e.sign * v[e.target]))
+    }
+
+    /// Expand an amplitude vector into the block, `\sum_\mu a_\mu\hat\tau_{x\mu}|{}^x\Psi\rangle`.
+    /// # Arguments:
+    /// - `self`: Reference block.
+    /// - `a`: One element per cluster excitation.
+    /// # Returns:
+    /// - `Array1<f64>`: Block vector over the projection rows.
+    fn excite(
+        &self,
+        a: &Array1<f64>,
+    ) -> Array1<f64> {
+        let mut v = Array1::<f64>::zeros(self.projected);
+        for (e, &ai) in self.excitations.iter().zip(a) {
+            v[e.target] = e.sign * ai;
+        }
+        v
+    }
+
+    /// Extend a block vector over the projection rows by zeros to the whole block.
+    /// # Arguments:
+    /// - `self`: Reference block.
+    /// - `v`: Block vector over the projection rows.
+    /// # Returns:
+    /// - `Array1<f64>`: Block vector over every determinant of the block.
+    fn extend(
+        &self,
+        v: &Array1<f64>,
+    ) -> Array1<f64> {
+        let mut out = Array1::<f64>::zeros(self.size);
+        out.slice_mut(s![..v.len()]).assign(v);
+        out
+    }
+}
+
 /// Apply `scale\,\hat T` to a block vector, `[scale\,\hat T v]_j = scale \sum \pm t_\mu v_k`
 /// over the tabulated connections of each target `j`, in parallel over targets. The vector may
 /// cover only a rank-ordered prefix of the block, since every source precedes its target.
@@ -392,19 +448,27 @@ impl JMEquations {
     ) -> JMEvaluation {
         let m = self.blocks.len();
 
-        // Projections of H|\Phi_x> and |\Phi_x> onto every projection row.
-        let (hphi, sphi): (Vec<_>, Vec<_>) = self
+        // Expansions of |\Phi_x> and their projections, with those of H|\Phi_x>, onto every
+        // projection row.
+        let phi = self
             .blocks
             .iter()
             .zip(t)
             .map(|(block, tx)| {
                 let mut reference = Array1::<f64>::zeros(block.size);
                 reference[0] = 1.0;
-                let phi = apply_exponential(block, tx, &reference, 1.0);
+                apply_exponential(block, tx, &reference, 1.0)
+            })
+            .collect::<Vec<_>>();
+        let (hphi, sphi): (Vec<_>, Vec<_>) = self
+            .blocks
+            .iter()
+            .zip(&phi)
+            .map(|(block, phix)| {
                 let cols = s![.., block.columns.clone()];
                 (
-                    parallel_matvec(&self.h.slice(cols), &phi),
-                    parallel_matvec(&self.s.slice(cols), &phi),
+                    parallel_matvec(&self.h.slice(cols), phix),
+                    parallel_matvec(&self.s.slice(cols), phix),
                 )
             })
             .unzip();
@@ -413,7 +477,10 @@ impl JMEquations {
         let he = Array2::from_shape_fn((m, m), |(z, x)| hphi[x][self.blocks[z].row]);
         let g = se.inv().unwrap().dot(&he);
 
-        let residual = self
+        // `e^{-\hat T_y}|W_y\rangle` on the rows of `y`, with
+        // `|W_y\rangle = \hat H|\Phi_y\rangle - \sum_x G_{xy}|\Phi_x\rangle`; the `x = y` term
+        // contributes `G_{yy}|{}^y\Psi\rangle`, on the reference row that no residual reads.
+        let contracted = self
             .blocks
             .iter()
             .enumerate()
@@ -423,17 +490,23 @@ impl JMEquations {
                 for x in (0..m).filter(|&x| x != y) {
                     a.scaled_add(-g[(x, y)], &sphi[x].slice(s![rows.clone()]));
                 }
-                let projected = apply_exponential(block, &t[y], &a, -1.0);
-                Array1::from_iter(
-                    block
-                        .excitations
-                        .iter()
-                        .map(|e| e.sign * projected[e.target]),
-                )
+                apply_exponential(block, &t[y], &a, -1.0)
             })
+            .collect::<Vec<_>>();
+        let residual = self
+            .blocks
+            .iter()
+            .zip(&contracted)
+            .map(|(block, z)| block.project(z))
             .collect();
 
-        JMEvaluation { residual, g, se }
+        JMEvaluation {
+            residual,
+            g,
+            se,
+            sphi,
+            contracted,
+        }
     }
 
     /// Apply one amplitude update, `t_{y\mu} \leftarrow t_{y\mu} - \Delta\tau R_{y\mu}` or
@@ -459,70 +532,94 @@ impl JMEquations {
         }
     }
 
-    /// Finite-difference Jacobian `J_{y\mu,x\nu} = \partial R_{y\mu} / \partial t_{x\nu}` by
-    /// central differences over the flattened amplitudes, with the columns in parallel.
+    /// Analytic Jacobian `J_{y\mu,x\nu} = \partial R_{y\mu} / \partial t_{x\nu}` over the
+    /// flattened amplitudes, with the columns in parallel. Differentiating
+    /// `R_{y\mu} = \langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}|W_y\rangle` with
+    /// `\partial|\Phi_y\rangle/\partial t_{x\nu} = \delta_{yx}e^{\hat T_x}\hat\tau_{x\nu}|{}^x\Psi\rangle`
+    /// gives
+    ///
+    /// `J_{y\mu,x\nu} = \langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}(\hat I-\hat P)(\delta_{yx}\hat H-G_{xy})e^{\hat T_x}\hat\tau_{x\nu}|{}^x\Psi\rangle - \delta_{yx}\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger\hat\tau_{y\nu}e^{-\hat T_y}|W_y\rangle,`
+    ///
+    /// whose second term vanishes at a solution. It is formed by differentiating
+    /// `e^{-\hat T_y}(\hat H|\Phi_y\rangle - \sum_{x \neq y}G_{xy}|\Phi_x\rangle)`, which differs
+    /// from `e^{-\hat T_y}|W_y\rangle` only on the reference row, through
+    /// `\partial e^{-\hat T_y}/\partial t_{y\nu} = -\hat\tau_{y\nu}e^{-\hat T_y}` and
+    /// `\delta G_{yx} = \sum_z[(S^e)^{-1}]_{yz}[\langle{}^z\Psi|\hat H|\delta\Phi_x\rangle - \sum_u G_{ux}\langle{}^z\Psi|\delta\Phi_u\rangle]`.
     /// # Arguments:
     /// - `self`: Propagation data.
     /// - `t`: Amplitudes of every reference.
-    /// - `step`: Finite-difference step.
+    /// - `ev`: Evaluation at `t`.
     /// # Returns:
     /// - `Array2<f64>`: Jacobian over the flattened amplitudes.
     fn jacobian(
         &self,
         t: &[Array1<f64>],
-        step: f64,
+        ev: &JMEvaluation,
     ) -> Array2<f64> {
-        let flat = t.iter().flatten().copied().collect::<Array1<f64>>();
-        let columns = (0..flat.len())
+        let m = self.blocks.len();
+        let sinv = ev.se.inv().unwrap();
+        let columns = self
+            .blocks
+            .iter()
+            .enumerate()
+            .flat_map(|(x, b)| (0..b.excitations.len()).map(move |nu| (x, nu)))
+            .collect::<Vec<_>>();
+
+        let columns = columns
             .into_par_iter()
-            .map(|j| {
-                let mut plus = flat.clone();
-                plus[j] += step;
-                let mut minus = flat.clone();
-                minus[j] -= step;
-                let rp = self
-                    .evaluate(&self.split(&plus))
-                    .residual
-                    .iter()
-                    .flatten()
-                    .copied()
-                    .collect::<Array1<f64>>();
-                let rm = self
-                    .evaluate(&self.split(&minus))
-                    .residual
-                    .iter()
-                    .flatten()
-                    .copied()
-                    .collect::<Array1<f64>>();
-                (rp - rm) / (2.0 * step)
+            .map(|(x, nu)| {
+                let block = &self.blocks[x];
+                let mut unit = Array1::<f64>::zeros(block.excitations.len());
+                unit[nu] = 1.0;
+
+                // `|\delta\Phi_x\rangle = e^{\hat T_x}\hat\tau_{x\nu}|{}^x\Psi\rangle` and its
+                // projections, with those of `\hat H|\delta\Phi_x\rangle`, onto every row.
+                let dphi =
+                    apply_exponential(block, &t[x], &block.extend(&block.excite(&unit)), 1.0);
+                let cols = s![.., block.columns.clone()];
+                let dh = self.h.slice(cols).dot(&dphi);
+                let ds = self.s.slice(cols).dot(&dphi);
+
+                // `\delta G = (S^e)^{-1}(\delta H^e - \delta S^e G)`, where only column `x` of
+                // `\delta H^e` and `\delta S^e` is nonzero.
+                let delta = Array2::from_shape_fn((m, m), |(z, u)| {
+                    let row = self.blocks[z].row;
+                    let dhe = if u == x { dh[row] } else { 0.0 };
+                    dhe - ds[row] * ev.g[(x, u)]
+                });
+                let dg = sinv.dot(&delta);
+
+                // `\delta(e^{-\hat T_y}|W_y\rangle)` on the rows of every `y`.
+                let mut column = Vec::with_capacity(t.iter().map(|ty| ty.len()).sum());
+                for (y, by) in self.blocks.iter().enumerate() {
+                    let rows = by.row..by.row + by.projected;
+                    let mut da = if y == x {
+                        dh.slice(s![rows.clone()]).to_owned()
+                    } else {
+                        Array1::zeros(by.projected)
+                    };
+                    for u in (0..m).filter(|&u| u != y) {
+                        da.scaled_add(-dg[(u, y)], &ev.sphi[u].slice(s![rows.clone()]));
+                        if u == x {
+                            da.scaled_add(-ev.g[(x, y)], &ds.slice(s![rows.clone()]));
+                        }
+                    }
+                    let mut dz = apply_exponential(by, &t[y], &da, -1.0);
+                    if y == x {
+                        dz -= &apply_cluster(by, &unit, &ev.contracted[y], 1.0);
+                    }
+                    column.extend(by.project(&dz));
+                }
+                Array1::from_vec(column)
             })
             .collect::<Vec<_>>();
-        let mut jac = Array2::<f64>::zeros((flat.len(), flat.len()));
+
+        let n = columns.len();
+        let mut jac = Array2::<f64>::zeros((n, n));
         for (j, column) in columns.iter().enumerate() {
             jac.column_mut(j).assign(column);
         }
         jac
-    }
-
-    /// Split flattened amplitudes into those of every reference.
-    /// # Arguments:
-    /// - `self`: Propagation data.
-    /// - `flat`: Flattened amplitudes.
-    /// # Returns:
-    /// - `Vec<Array1<f64>>`: Amplitudes of every reference.
-    fn split(
-        &self,
-        flat: &Array1<f64>,
-    ) -> Vec<Array1<f64>> {
-        let mut start = 0;
-        self.blocks
-            .iter()
-            .map(|b| {
-                let len = b.excitations.len();
-                start += len;
-                flat.slice(s![start - len..start]).to_owned()
-            })
-            .collect()
     }
 }
 
@@ -602,7 +699,7 @@ pub fn report_converged(
     print_jm_energies(&energies, &ev.se, &norms);
 
     if options.diagnostics {
-        let jac = jm.jacobian(t, 1e-5);
+        let jac = jm.jacobian(t, ev);
         let propagator = match options.propagator {
             JMPropagator::Plain => jac.clone(),
             JMPropagator::Diagonal => {
