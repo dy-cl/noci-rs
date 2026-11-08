@@ -10,7 +10,7 @@ use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WicksView;
 use crate::input::Input;
 use crate::nocc::{JMEquations, jm_qmc_step, jm_space, propagate_populations, report_converged};
-use crate::noci::build_noci_hs;
+use crate::noci::{build_noci_hs, build_noci_s};
 
 /// Perform the deterministic JM-NOCCMC propagation on the reference determinants, the
 /// noise-free counterpart of the stochastic propagation. Builds the projection and expansion
@@ -60,10 +60,27 @@ pub(crate) fn run_jmnoccmc(
     let (h, s, _) = build_noci_hs(&data, &rows, &columns, false);
     println!("Finished calculating JM-NOCCMC matrix elements.");
 
+    // The external fractions of the Jacobian diagnostics need the overlap between every pair of
+    // expansion determinants.
+    let metric = options.diagnostics.then(|| {
+        println!(
+            "Calculating JM-NOCCMC expansion overlap for diagnostics ({} elements)...",
+            columns.len() * columns.len()
+        );
+        build_noci_s(&data, &columns, &columns, true).0
+    });
+
     println!("Running deterministic JM-NOCCMC propagation....");
-    let jm = JMEquations::new(space, h, s);
-    let populations = propagate_populations(&jm, options, reference)?;
-    Some(report_converged(&jm, &populations, options))
+    let jm = JMEquations::new(space, h, s, metric);
+    let mut history = Vec::new();
+    let populations = propagate_populations(&jm, options, reference, &mut history)?;
+    Some(report_converged(
+        &jm,
+        &populations,
+        &history,
+        options,
+        &input.write.write_dir,
+    ))
 }
 
 /// Perform the stochastic JM-NOCCMC propagation on the reference determinants with every MPI

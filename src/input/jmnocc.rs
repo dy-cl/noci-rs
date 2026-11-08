@@ -25,8 +25,15 @@ pub struct JMNOCCMCOptions {
     pub dynamic_shift: bool,
     /// Damping `\alpha` of the deterministic dynamic shift.
     pub dynamic_shift_alpha: f64,
-    /// Whether to report the stability of the linearised update at convergence.
+    /// Whether to diagnose the Jacobian at the initial and final amplitudes and write the history
+    /// of the amplitude error along its right singular vectors. Builds the overlap between every
+    /// pair of expansion determinants, so it is meant for small systems.
     pub diagnostics: bool,
+    /// Relative cutoff `\epsilon` below which a singular value `\sigma_i < \epsilon\sigma_{\max}`
+    /// of the Jacobian is counted as near-null.
+    pub null_eps: f64,
+    /// Number of lowest Jacobian singular values printed with their external fractions.
+    pub null_n: usize,
     /// Stochastic propagation options. When present the populations are sampled by coupled
     /// cluster Monte Carlo with time step `dt` instead of being propagated deterministically.
     pub qmc: Option<QMCOptions>,
@@ -50,6 +57,8 @@ impl Default for JMNOCCMCOptions {
             dynamic_shift: true,
             dynamic_shift_alpha: 0.1,
             diagnostics: false,
+            null_eps: 1e-8,
+            null_n: 10,
             qmc: None,
             memory_effective: 100.0,
         }

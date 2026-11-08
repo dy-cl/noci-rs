@@ -308,6 +308,8 @@ pub fn print_input(input: &Input) {
             println!("DYNAMIC_SHIFT: {}", j.dynamic_shift);
             println!("DYNAMIC_SHIFT_ALPHA: {}", j.dynamic_shift_alpha);
             println!("DIAGNOSTICS: {}", j.diagnostics);
+            println!("NULL_EPS: {:e}", j.null_eps);
+            println!("NULL_N: {}", j.null_n);
             println!("MEMORY_EFFECTIVE: {}", j.memory_effective);
         }
         None => {

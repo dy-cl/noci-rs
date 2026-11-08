@@ -961,6 +961,8 @@ fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
                 .ok()
                 .flatten()
                 .unwrap_or(defaults.diagnostics),
+            null_eps: t.get("null_eps").unwrap_or(defaults.null_eps),
+            null_n: t.get("null_n").unwrap_or(defaults.null_n),
             qmc,
             memory_effective,
         }

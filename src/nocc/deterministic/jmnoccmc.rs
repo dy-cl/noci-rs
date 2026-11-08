@@ -37,10 +37,11 @@
 
 // Standard library imports.
 use std::collections::HashMap;
+use std::fs::create_dir_all;
 use std::ops::Range;
 
 // External crate imports.
-use ndarray::{Array1, Array2, s};
+use ndarray::{Array1, Array2, ArrayView1, s};
 use ndarray_linalg::{Eig, Inverse, SVD};
 use rayon::prelude::*;
 
@@ -53,8 +54,8 @@ use crate::nocc::{jm_energies, reference_determinants};
 
 // Parent/sibling imports.
 use super::write::{
-    print_jm_block, print_jm_energies, print_jm_stability, print_jm_table_header,
-    print_jm_table_row,
+    print_jm_block, print_jm_energies, print_jm_null_space, print_jm_stability,
+    print_jm_table_header, print_jm_table_row, write_jm_null_history,
 };
 
 /// Sign bit packed into the excitation index of a cluster connection.
@@ -134,6 +135,9 @@ pub struct JMEquations {
     h: Array2<f64>,
     /// Overlap `\langle i|j\rangle`, projection rows by expansion columns.
     s: Array2<f64>,
+    /// Overlap between every pair of expansion columns, built only for the null-space
+    /// diagnostics.
+    metric: Option<Array2<f64>>,
 }
 
 /// Residuals, effective Hamiltonian and effective overlap at one set of amplitudes, with the
@@ -147,6 +151,8 @@ pub struct JMEvaluation {
     pub se: Array2<f64>,
     /// Reference projections `H^e_{zx} = \langle{}^z\Psi|\hat H|\Phi_x\rangle`.
     pub he: Array2<f64>,
+    /// Expansion of every `|\Phi_x\rangle` over the determinants of its block.
+    phi: Vec<Array1<f64>>,
     /// Projections `\langle k|\Phi_x\rangle` of every `|\Phi_x\rangle` onto every projection row.
     sphi: Vec<Array1<f64>>,
     /// `e^{-\hat T_y}(\hat H|\Phi_y\rangle - \sum_{x \neq y}G_{xy}|\Phi_x\rangle)` of every
@@ -404,17 +410,21 @@ impl JMEquations {
     /// - `space`: Projection and expansion spaces.
     /// - `h`: Hamiltonian, projection rows by expansion columns.
     /// - `s`: Overlap, projection rows by expansion columns.
+    /// - `metric`: Optional overlap between every pair of expansion columns, needed for the
+    ///   external fractions of the null-space diagnostics.
     /// # Returns:
     /// - `Self`: Propagation data.
     pub fn new(
         space: JMSpace,
         h: Array2<f64>,
         s: Array2<f64>,
+        metric: Option<Array2<f64>>,
     ) -> Self {
         Self {
             blocks: space.blocks,
             h,
             s,
+            metric,
         }
     }
 
@@ -491,6 +501,7 @@ impl JMEquations {
             g,
             se,
             he,
+            phi,
             sphi,
             contracted,
         }
@@ -585,6 +596,108 @@ impl JMEquations {
         }
         jac
     }
+
+    /// External fraction of an amplitude variation `\delta t`. The variation of every
+    /// correlated reference, `|\delta\Phi_x\rangle = e^{\hat T_x}\delta\hat T_x|{}^x\Psi\rangle`, is
+    /// split into its oblique projection onto the span `\mathcal M` of the correlated references
+    /// and the complement,
+    ///
+    /// `|\delta\Phi_x\rangle = \sum_z C_{zx}|\Phi_z\rangle + |X_x\rangle, C_{zx} = \sum_y[(S^e)^{-1}]_{zy}\langle{}^y\Psi|\delta\Phi_x\rangle,`
+    ///
+    /// and the fraction is
+    /// `\sum_x\||X_x\rangle\|^2 / \sum_x(\|\hat P|\delta\Phi_x\rangle\|^2 + \||X_x\rangle\|^2)`, zero
+    /// for internal mixing only (type I) and one for an external response only (type II).
+    /// # Arguments:
+    /// - `self`: Propagation data.
+    /// - `t`: Amplitudes of every reference.
+    /// - `ev`: Evaluation at `t`.
+    /// - `dt`: Flattened amplitude variation `\delta t`.
+    /// # Returns:
+    /// - `Option<f64>`: External fraction, or `None` without the expansion-column overlap.
+    fn external_fraction(
+        &self,
+        t: &[Array1<f64>],
+        ev: &JMEvaluation,
+        dt: ArrayView1<f64>,
+    ) -> Option<f64> {
+        let metric = self.metric.as_ref()?;
+        let sinv = ev.se.inv().unwrap();
+        let norm = |v: &Array1<f64>| v.dot(&metric.dot(v));
+
+        let (mut internal, mut external) = (0.0, 0.0);
+        let mut start = 0;
+        for (x, block) in self.blocks.iter().enumerate() {
+            let len = block.excitations.len();
+            let dtx = dt.slice(s![start..start + len]).to_owned();
+            start += len;
+
+            // `|\delta\Phi_x\rangle` over the expansion columns and `C_{zx}`.
+            let dphix = apply_exponential(block, &t[x], &block.extend(&block.excite(&dtx)), 1.0);
+            let mut dphi = Array1::<f64>::zeros(metric.nrows());
+            dphi.slice_mut(s![block.columns.clone()]).assign(&dphix);
+            let projections = Array1::from_iter(
+                self.blocks
+                    .iter()
+                    .map(|by| self.s.slice(s![by.row, block.columns.clone()]).dot(&dphix)),
+            );
+            let c = sinv.dot(&projections);
+
+            // `\hat P|\delta\Phi_x\rangle = \sum_z C_{zx}|\Phi_z\rangle` and `|X_x\rangle`.
+            let mut inside = Array1::<f64>::zeros(metric.nrows());
+            for (z, bz) in self.blocks.iter().enumerate() {
+                inside
+                    .slice_mut(s![bz.columns.clone()])
+                    .scaled_add(c[z], &ev.phi[z]);
+            }
+            let outside = &dphi - &inside;
+            internal += norm(&inside);
+            external += norm(&outside);
+        }
+        Some(external / (internal + external))
+    }
+
+    /// Diagnose the Jacobian at one set of amplitudes, as deterministic NOCIQMC diagnoses its
+    /// overlap null space: the stability of the linearised update from the eigenvalues of `J`,
+    /// the partition of the singular values `\sigma_i` of `J` into a near-null part
+    /// `\sigma_i < \epsilon\sigma_{\max}` and its complement, and the lowest singular values with
+    /// the external fraction of their right singular vectors.
+    /// # Arguments:
+    /// - `self`: Propagation data.
+    /// - `t`: Amplitudes of every reference.
+    /// - `ev`: Evaluation at `t`.
+    /// - `options`: JM-NOCCMC options.
+    /// - `label`: Where in the propagation the diagnostics are taken.
+    /// # Returns:
+    /// - `(Array1<f64>, Array2<f64>)`: Singular values in descending order and the right
+    ///   singular vectors as rows.
+    fn null_diagnostics(
+        &self,
+        t: &[Array1<f64>],
+        ev: &JMEvaluation,
+        options: &JMNOCCMCOptions,
+        label: &str,
+    ) -> (Array1<f64>, Array2<f64>) {
+        let jac = self.jacobian(t, ev);
+        let (w, _) = jac.eig().unwrap();
+        let mut w = w.to_vec();
+        w.sort_by(|a, b| a.re.total_cmp(&b.re));
+        let (_, sigma, vt) = jac.svd(false, true).unwrap();
+        let vt = vt.unwrap();
+        let (_, sse, _) = ev.se.svd(false, false).unwrap();
+
+        // Lowest singular values with the external fractions of their right singular vectors.
+        let n = sigma.len();
+        let lowest = (0..options.null_n.min(n))
+            .map(|k| {
+                let i = n - 1 - k;
+                (sigma[i], self.external_fraction(t, ev, vt.row(i)))
+            })
+            .collect::<Vec<_>>();
+
+        print_jm_stability(label, &w, sse[0] / sse[sse.len() - 1]);
+        print_jm_null_space(options.null_eps, &sigma, &lowest);
+        (sigma, vt)
+    }
 }
 
 /// Reference and excitor populations at the end of a deterministic JM-NOCCMC propagation.
@@ -619,12 +732,14 @@ pub struct JMPopulations {
 /// `\langle\Psi_T| = \sum_z c_z\langle{}^z\Psi|` is
 /// `E = \sum_{zx}c_zH^e_{zx}N_x / \sum_{zx}c_zS^e_{zx}N_x`, as reported by the stochastic
 /// propagation. Propagation stops when the largest residual falls below `residual_tol` and the
-/// projected energy changes by less than `e_tol`.
+/// projected energy changes by less than `e_tol`. With `diagnostics`, the Jacobian at the
+/// initial amplitudes is diagnosed and the amplitudes of every step are kept.
 /// # Arguments:
 /// - `jm`: Propagation data.
 /// - `options`: JM-NOCCMC options.
 /// - `reference`: Reference NOCI coefficients and energy, giving the initial reference
 ///   populations, the trial and the initial shift.
+/// - `history`: Storage for the flattened amplitudes of every step when `diagnostics` is set.
 /// # Returns:
 /// - `Option<JMPopulations>`: Final populations and their evaluation, or `None` if the
 ///   propagation diverged or did not converge.
@@ -632,6 +747,7 @@ pub fn propagate_populations(
     jm: &JMEquations,
     options: &JMNOCCMCOptions,
     reference: (&[f64], f64),
+    history: &mut Vec<Array1<f64>>,
 ) -> Option<JMPopulations> {
     let (c0, mut shift) = reference;
     let m = jm.blocks.len();
@@ -655,7 +771,6 @@ pub fn propagate_populations(
     let mut logpop = 0.0_f64;
     let mut previous = f64::NAN;
 
-    print_jm_table_header();
     for iter in 0..options.max_steps {
         let t = n
             .iter()
@@ -673,6 +788,15 @@ pub fn propagate_populations(
         if !rmax.is_finite() || !ev.g.iter().all(|g| g.is_finite()) {
             println!("JM-NOCCMC propagation diverged at step {}.", iter);
             return None;
+        }
+        if options.diagnostics {
+            if iter == 0 {
+                jm.null_diagnostics(&t, &ev, options, "initial");
+            }
+            history.push(t.iter().flatten().copied().collect());
+        }
+        if iter == 0 {
+            print_jm_table_header();
         }
 
         // Projected energy on the NOCI trial and the lowest state energy of `G`.
@@ -737,20 +861,24 @@ pub fn propagate_populations(
 }
 
 /// Report the state energies and reference populations at the end of the propagation and, when
-/// requested, the stability of the linearised update. Near convergence the update of the
-/// amplitudes linearises to `I - \Delta\tau J`, which contracts only if every eigenvalue
-/// `\lambda` of `J` has `\mathrm{Re}\,\lambda > 0` and
-/// `\Delta\tau < 2\,\mathrm{Re}\,\lambda / |\lambda|^2`.
+/// requested, diagnose the Jacobian there and write the history of the amplitude error
+/// `\mathbf t_k - \mathbf t_\star` resolved along the right singular vectors of `J` at the final
+/// amplitudes `\mathbf t_\star`, as deterministic NOCIQMC writes its coefficients resolved into
+/// the relevant and null subspaces of the overlap.
 /// # Arguments:
 /// - `jm`: Propagation data.
 /// - `populations`: Final populations and their evaluation.
+/// - `history`: Flattened amplitudes of every step.
 /// - `options`: JM-NOCCMC options.
+/// - `dir`: Directory receiving the `jacobian_history` file.
 /// # Returns:
 /// - `f64`: Ground-state energy, the lowest real part of the eigenvalues of `G`.
 pub fn report_converged(
     jm: &JMEquations,
     populations: &JMPopulations,
+    history: &[Array1<f64>],
     options: &JMNOCCMCOptions,
+    dir: &str,
 ) -> f64 {
     let JMPopulations { t, nref, ev } = populations;
     let energies = jm_energies(&ev.g);
@@ -758,17 +886,12 @@ pub fn report_converged(
     print_jm_energies(&energies, &ev.se, nref, &norms);
 
     if options.diagnostics {
-        let jac = jm.jacobian(t, ev);
-        let (w, _) = jac.eig().unwrap();
-        let mut w = w.to_vec();
-        w.sort_by(|a, b| a.re.total_cmp(&b.re));
-        let (_, sv, _) = jac.svd(false, false).unwrap();
-        let (_, sse, _) = ev.se.svd(false, false).unwrap();
-        print_jm_stability(
-            &w,
-            sv.iter().copied().fold(f64::INFINITY, f64::min),
-            sse[0] / sse[sse.len() - 1],
-        );
+        let (sigma, vt) = jm.null_diagnostics(t, ev, options, "final");
+        let tfinal = t.iter().flatten().copied().collect::<Array1<f64>>();
+        create_dir_all(dir).unwrap();
+        let path = format!("{}/{}", dir, "jacobian_history");
+        println!("Writing Jacobian history to {}...", path);
+        write_jm_null_history(&path, history, &tfinal, (&sigma, &vt), options.null_eps);
     }
 
     energies[0].re
