@@ -2,9 +2,10 @@
 //! Highly experimental nonorthogonal coupled cluster.
 //!
 //! Two formulations are developed. Jeziorski-Monkhorst NOCC (JM-NOCCMC) gives every
-//! nonorthogonal reference its own cluster operator, `|\Psi\rangle = \sum_x c_x e^{\hat T_x}|{}^x\Psi\rangle`,
-//! and is propagated deterministically in `deterministic` and by linked coupled cluster Monte
-//! Carlo in `stochastic`. Generalised-normal-ordered NOCC (GNOCC), behind the `gnocc` feature,
+//! nonorthogonal reference its own cluster operator,
+//! `|\Psi_k\rangle = \sum_x c_x^{(k)}|\Phi_x\rangle` with `|\Phi_x\rangle = e^{\hat T_x}|{}^x\Psi\rangle`,
+//! and is propagated by linked coupled cluster Monte Carlo in `stochastic` and as its
+//! noise-free counterpart in `deterministic`. Generalised-normal-ordered NOCC (GNOCC), behind the `gnocc` feature,
 //! develops coupled-cluster theory using a correlated NOCI
 //! reference state
 //!

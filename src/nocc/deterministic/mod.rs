@@ -1,6 +1,7 @@
 // nocc/deterministic/mod.rs
-//! Deterministic NOCC: imaginary-time propagation of the Jeziorski-Monkhorst NOCC amplitudes
-//! and, behind the `gnocc` feature, solution of the GNOCC amplitude equations.
+//! Deterministic NOCC: imaginary-time propagation of the Jeziorski-Monkhorst NOCC populations,
+//! the noise-free counterpart of the stochastic propagation, with analytic Jacobian
+//! diagnostics, and, behind the `gnocc` feature, solution of the GNOCC amplitude equations.
 
 mod jmnoccmc;
 #[cfg(feature = "gnocc")]

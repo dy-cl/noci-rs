@@ -1,36 +1,61 @@
 // nocc/deterministic/jmnoccmc.rs
-//! Deterministic imaginary-time propagation of Jeziorski-Monkhorst NOCC (JM-NOCCMC).
+//! Deterministic imaginary-time propagation of Jeziorski-Monkhorst NOCC (JM-NOCCMC), the
+//! noise-free counterpart of the stochastic propagation.
 //!
-//! Every nonorthogonal reference `x` carries its own cluster operator
-//! `\hat T_x = \sum_\mu t_{x\mu}\hat\tau_{x\mu}`, with excitations up to the cluster rank in the
-//! orbital frame of `x`, and the state-universal ansatz is
+//! Every nonorthogonal reference `|{}^x\Psi\rangle` carries its own cluster operator
+//! `\hat T_x = \sum_\mu t_{x\mu}\hat\tau_{x\mu}`, with excitations up to the cluster rank in its
+//! orbital frame, and the state-universal ansatz is
 //!
 //! `|\Psi_k\rangle = \sum_x c_x^{(k)}|\Phi_x\rangle, |\Phi_x\rangle = e^{\hat T_x}|{}^x\Psi\rangle.`
 //!
-//! Projecting `\hat H|\Phi_x\rangle = \sum_y G_{yx}|\Phi_y\rangle` onto the references gives the
-//! effective overlap and Hamiltonian `S^e_{zx} = \langle{}^z\Psi|\Phi_x\rangle` and
-//! `H^e_{zx} = \langle{}^z\Psi|\hat H|\Phi_x\rangle`, the effective Hamiltonian
-//! `G = (S^e)^{-1}H^e` whose eigenvalues are the state energies, and the residuals
+//! The span `\mathcal M` of the correlated references is invariant under the Hamiltonian when
+//! `\hat H|\Phi_y\rangle = \sum_x G_{xy}|\Phi_x\rangle`, with
+//! `G_{xy} = \sum_z[(S^e)^{-1}]_{xz}\langle{}^z\Psi|\hat H|\Phi_y\rangle` and
+//! `S^e_{zy} = \langle{}^z\Psi|\Phi_y\rangle`; the eigenvalues `E_k` of `G` are the state
+//! energies. With the oblique projector
+//! `\hat P = \sum_{xz}|\Phi_x\rangle[(S^e)^{-1}]_{xz}\langle{}^z\Psi|` onto `\mathcal M`, the
+//! invariance residual and the amplitude residuals are
 //!
-//! `R_{y\mu} = \langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}\hat H|\Phi_y\rangle - \sum_{x \neq y} G_{xy}\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}|\Phi_x\rangle.`
+//! `|W_x\rangle = (\hat I - \hat P)\hat H|\Phi_x\rangle, R_{x\mu} = \langle{}^x\Psi|\hat\tau_{x\mu}^\dagger e^{-\hat T_x}|W_x\rangle.`
 //!
-//! The reference and excitor populations are propagated exactly as the stochastic propagation
-//! samples them, with `G` evaluated exactly at every step.
+//! The excitor populations `n_{x\mu}` and reference populations `N_x`, with
+//! `t_{x\mu} = n_{x\mu}/N_x`, are propagated exactly as the stochastic propagation samples them,
+//! with `G` evaluated exactly at every step.
 //!
 //! # Projection and expansion spaces
 //!
-//! `\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}` contains only determinants of `y`
-//! whose rank does not exceed that of `\mu`, so every residual needs the projections of
-//! `\hat H|\Phi_x\rangle` and `|\Phi_x\rangle` onto the reference and its excitations up to the
-//! cluster rank alone. Each `|\Phi_x\rangle` is expanded over the determinants of `x` up to an
-//! expansion rank, every rank by default. Since `\hat H` changes the rank by at most two, any
-//! expansion rank of at least the cluster rank plus two keeps every single-reference term
-//! exact. The references have different orbitals, so every determinant of `x` overlaps the
-//! projection rows of `y`, and a lower expansion truncates the overlaps
-//! `\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}|\Phi_x\rangle` between different
-//! references; it is exact only for the complete expansion. The Hamiltonian and overlap are therefore built once as rectangular matrices
-//! between the projection space (rows) and the expansion space (columns), whose rows and
-//! columns are ordered by reference and then by excitation rank.
+//! `\langle{}^x\Psi|\hat\tau_{x\mu}^\dagger e^{-\hat T_x}` contains only determinants of
+//! `|{}^x\Psi\rangle` whose rank does not exceed that of `\mu`, so every residual needs the
+//! projections of `\hat H|\Phi_y\rangle` and `|\Phi_y\rangle` onto the reference and its
+//! excitations up to the cluster rank alone. Each `|\Phi_x\rangle` is expanded over the
+//! determinants of `|{}^x\Psi\rangle` up to an expansion rank, every rank by default. Since
+//! `\hat H` changes the rank by at most two, any expansion rank of at least the cluster rank plus
+//! two keeps every single-reference term exact. The references have different orbitals, so every
+//! determinant of one reference overlaps the projection rows of another, and a lower expansion
+//! truncates the overlaps `\langle{}^x\Psi|\hat\tau_{x\mu}^\dagger e^{-\hat T_x}|\Phi_y\rangle`
+//! between different references; it is exact only for the complete expansion. The Hamiltonian
+//! and overlap are therefore built once as rectangular matrices between the projection space
+//! (rows) and the expansion space (columns), whose rows and columns are ordered by reference and
+//! then by excitation rank.
+//!
+//! # Null space
+//!
+//! A null of the Jacobian `J_{y\mu,x\nu} = \partial R_{y\mu}/\partial t_{x\nu}` is a variation
+//! with `\delta R_{y\mu} = 0` for every `y, \mu`. Splitting each variation of the correlated
+//! references as `|\delta\Phi_x\rangle = \sum_z C_{zx}|\Phi_z\rangle + |X_x\rangle`, with
+//! `C_{zx} = \sum_y[(S^e)^{-1}]_{zy}\langle{}^y\Psi|\delta\Phi_x\rangle` and
+//! `|X_x\rangle = (\hat I - \hat P)|\delta\Phi_x\rangle`, gives
+//!
+//! `|\delta W_x\rangle = \sum_z C_{zx}|W_z\rangle + \hat H_\perp|X_x\rangle - \sum_y G_{yx}|X_y\rangle, \hat H_\perp = (\hat I - \hat P)\hat H(\hat I - \hat P).`
+//!
+//! A type I null is internal mixing only. It needs the mixing to be representable at the
+//! cluster rank (condition A) and its residual projection to vanish (condition B), and gives
+//! the `M(M-1)` exact nulls of `M` references at the complete cluster limit, which truncation
+//! generically removes. A type II null is an external response only:
+//! `\sum_x c_x^{(k)}|\delta W_x\rangle = (\hat H_\perp - E_k)|X^{(k)}\rangle` vanishes when an
+//! external level meets a target root, the intruder problem. A type III null mixes the two.
+//! The diagnostics measure the character of each low singular vector of `J` by the external
+//! fraction `\sum_x\||X_x\rangle\|^2 / \sum_x(\|\hat P|\delta\Phi_x\rangle\|^2 + \||X_x\rangle\|^2)`.
 //!
 //! # References
 //! - B. Jeziorski and H. J. Monkhorst, *Phys. Rev. A* **24**, 1668 (1981).

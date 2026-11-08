@@ -228,11 +228,13 @@ fn run_task(
 /// populations `N_x` carry the normalisation, `t_{x\mu}=n_{x\mu}/N_x`. With
 /// `\tilde G_{xy}=G_{xy}N_y/N_x` and `g_x=\sum_y\tilde G_{xy}`, every population is updated as
 ///
-/// `n_{x\mu} \leftarrow n_{x\mu} - \Delta\tau N_xR_{x\mu} - \Delta\tau(g_x-S)n_{x\mu},`
+/// `n_{x\mu} \leftarrow n_{x\mu} - \Delta\tau N_xR_{x\mu} - \Delta\tau(g_x-E_s)n_{x\mu},`
 ///
-/// with `R_{x0}=0` for the reference. The reference populations then follow the power iteration
-/// `\Delta N=-\Delta\tau(G-S)N` of the effective Hamiltonian, converging to its ground-state
-/// coefficients, while the amplitudes follow `t \leftarrow t - \Delta\tau R` exactly. The
+/// with `R_{x0}=0` for the reference and `E_s` the shift. The reference populations then follow
+/// the power iteration `\Delta N=-\Delta\tau(G-E_s)N` of the effective Hamiltonian, converging to
+/// its ground-state coefficients `c_x^{(0)}`, while the amplitudes follow
+/// `t_{x\mu} \leftarrow t_{x\mu} - \Delta\tau R_{x\mu}/[1-\Delta\tau(g_x-E_s)]`, the plain update
+/// once the shift balances the growth. The
 /// same-reference part of `N_xR_{x\mu}` is sampled by linked CCMC, the coupling between
 /// references through sampled projections. `G=\bar S^{-1}\bar H` is taken from running sums
 /// `\bar S \leftarrow \lambda\bar S+S^e` and `\bar H \leftarrow \lambda\bar H+H^e` of the
@@ -510,7 +512,7 @@ pub(crate) fn jm_qmc_step(
                 }
             }
 
-            // Fixed-point-preserving death `-\Delta\tau(g_x-S)n` on every owned population.
+            // Fixed-point-preserving death `-\Delta\tau(g_x-E_s)n` on every owned population.
             let growth = (0..m).map(|x| gt.row(x).sum()).collect::<Vec<_>>();
             for (key, n) in populations.iter_mut() {
                 *n *= 1.0 - dt * (growth[key.0] - shift);

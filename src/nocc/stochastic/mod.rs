@@ -1,12 +1,14 @@
 // nocc/stochastic/mod.rs
 //! Stochastic Jeziorski-Monkhorst NOCC: coupled cluster Monte Carlo of the state-universal
-//! residuals
+//! residuals `R_{y\mu} = \langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}|W_y\rangle`,
+//! with `|W_y\rangle = \hat H|\Phi_y\rangle - \sum_x G_{xy}|\Phi_x\rangle`, which reads
 //!
 //! `R_{y\mu} = \langle{}^y\Psi|\hat\tau_{y\mu}^\dagger\bar H_y|{}^y\Psi\rangle - \sum_{x\neq y}G_{xy}\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}|\Phi_x\rangle`
 //!
-//! with the plain update `t \leftarrow t - \Delta\tau R`. Populations live on the excitors of
-//! each reference block in a sparse store, rather than on a dense determinant vector, because
-//! the JM equations have no overlap null space in which stochastic noise could accumulate.
+//! since `e^{-\hat T_y}|\Phi_y\rangle = |{}^y\Psi\rangle`, with the plain update
+//! `t \leftarrow t - \Delta\tau R`. Populations live on the excitors of each reference block in
+//! a sparse store, rather than on a dense determinant vector, for the reasons in
+//! [Sparsity](#sparsity).
 //!
 //! The same-reference term is sampled by linked CCMC: within one reference the determinants
 //! are orthonormal and `\bar H_y=e^{-\hat T_y}\hat He^{\hat T_y}` terminates after four nested
@@ -23,17 +25,25 @@
 //! # Sparsity
 //!
 //! NOCIQMC keeps dense determinant-indexed storage, such as its walker vector and cached
-//! diagonal elements, because its populations must cover the overlap null space to stop noise
-//! accumulating there. JM-NOCCMC instead assumes that the references are chosen so that the
-//! excited determinants of all references together span no null space. In general this is not
-//! true, since excitations of nonorthogonal references can be linearly dependent, so it is a bad
-//! assumption that must be revisited. Under it the method is genuinely sparse: no storage or
-//! table may scale with the size of the excitor space. Populations, the alias tables that
-//! select clusters and the coupling projections are built from the occupied excitors only, and
-//! every matrix element, diagonal ones included, is evaluated on the fly from occupations and
-//! never cached per determinant. The one current exception is `ReferenceSpaces::rows`, every
-//! excitation of each reference up to the cluster rank, from which the coupling draws projection
-//! rows uniformly; it is to be replaced by drawing the rows on the fly.
+//! diagonal elements, because it propagates one linear vector in an overcomplete basis: the
+//! overlap null space is exact at every truncation, receives no restoring force, and must be
+//! kept empty by applying the overlap exactly. JM-NOCCMC has no such space. Each
+//! `e^{\hat T_x}|{}^x\Psi\rangle` is parametrised without redundancy in the orthonormal frame of
+//! its own reference, so a null of the Jacobian of the residuals can come only from the
+//! equations, through the splitting of a variation into internal mixing and an external part.
+//! The internal (type I) nulls are the `M(M-1)` mixings of `M` correlated references; they are
+//! exact at the complete cluster limit and generically removed by truncation, where they become
+//! slow modes with a restoring force. The external (type II) nulls occur where an external level
+//! meets a target root, the intruder problem, which the choice of references must avoid. The
+//! deterministic propagation diagnoses both from the analytic Jacobian.
+//!
+//! Away from these, the method is genuinely sparse: no storage or table may scale with the
+//! size of the excitor space. Populations, the alias tables that select clusters and the
+//! coupling projections are built from the occupied excitors only, and every matrix element,
+//! diagonal ones included, is evaluated on the fly from occupations and never cached per
+//! determinant. The one current exception is `ReferenceSpaces::rows`, every excitation of each
+//! reference up to the cluster rank, from which the coupling draws projection rows uniformly; it
+//! is to be replaced by drawing the rows on the fly.
 //!
 //! Wherever the two methods do the same thing, the structure mirrors NOCIQMC: each parallel
 //! task queues its matrix-element requests in reusable storage and resolves them in one call to
