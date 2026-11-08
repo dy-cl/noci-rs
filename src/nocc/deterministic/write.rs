@@ -1,7 +1,7 @@
 // nocc/deterministic/write.rs
 
 // External crate imports.
-use ndarray::Array2;
+use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 
 /// Print the size of one reference's projection and expansion spaces.
@@ -39,45 +39,50 @@ pub(super) fn print_jm_block(
 pub(super) fn print_jm_table_header() {
     println!("{}", "=".repeat(100));
     println!(
-        "{:<6} {:>20} {:>16} {:>16} {:>16} {:>16}",
-        "iter", "E", "|dE|", "max|R|", "||R||", "||t||"
+        "{:<6} {:>20} {:>14} {:>20} {:>20} {:>14} {:>14} {:>14}",
+        "iter", "EProj", "|dE|", "E(G)", "Shift", "NWalk", "NRef", "max|R|"
     );
 }
 
 /// Print one row of the JM-NOCCMC propagation table.
 /// # Arguments:
 /// - `iter`: Step number.
-/// - `e`: Ground-state energy, the lowest real eigenvalue of `G`.
-/// - `de`: Absolute energy change from the previous step.
+/// - `energies`: Projected energy, its absolute change from the previous step and the lowest
+///   state energy of `G`.
+/// - `shift`: Population-control shift `E_s`.
+/// - `populations`: Total population `\sum_x|N_x| + \sum_{x\mu}|n_{x\mu}|` and reference
+///   population `\sum_x|N_x|`.
 /// - `rmax`: Largest residual magnitude.
-/// - `rnorm`: Residual norm.
-/// - `tnorm`: Amplitude norm.
 /// # Returns:
 /// - `()`: Prints one propagation row.
 pub(super) fn print_jm_table_row(
     iter: usize,
-    e: f64,
-    de: f64,
+    energies: (f64, f64, f64),
+    shift: f64,
+    populations: (f64, f64),
     rmax: f64,
-    rnorm: f64,
-    tnorm: f64,
 ) {
+    let (e, de, eg) = energies;
+    let (total, nref) = populations;
     println!(
-        "{:<6} {:>20.12} {:>16.6e} {:>16.6e} {:>16.6e} {:>16.6e}",
-        iter, e, de, rmax, rnorm, tnorm
+        "{:<6} {:>20.12} {:>14.6e} {:>20.12} {:>20.12} {:>14.6e} {:>14.6e} {:>14.6e}",
+        iter, e, de, eg, shift, total, nref, rmax
     );
 }
 
-/// Print the state energies, the effective overlap and the amplitude norms at convergence.
+/// Print the state energies, the effective overlap, the reference populations and the amplitude
+/// norms at the end of the propagation.
 /// # Arguments:
 /// - `energies`: Eigenvalues of `G`, sorted by real part.
 /// - `se`: Effective overlap `S^e`.
+/// - `nref`: Reference populations `N_x`, normalised to `\sum_x|N_x| = 1`.
 /// - `norms`: Amplitude norm of every reference.
 /// # Returns:
 /// - `()`: Prints the converged JM-NOCCMC summary.
 pub(super) fn print_jm_energies(
     energies: &[Complex64],
     se: &Array2<f64>,
+    nref: &Array1<f64>,
     norms: &[f64],
 ) {
     println!("{}", "=".repeat(100));
@@ -85,8 +90,11 @@ pub(super) fn print_jm_energies(
         println!("JM-NOCCMC state {}: E = {:.12} {:+.3e}i", k, e.re, e.im);
     }
     println!("Effective overlap S^e:\n{:.8}", se);
-    for (x, norm) in norms.iter().enumerate() {
-        println!("Reference {} amplitude norm: {:.8e}", x, norm);
+    for (x, (n, norm)) in nref.iter().zip(norms).enumerate() {
+        println!(
+            "Reference {}: population {:+.8e}, amplitude norm {:.8e}",
+            x, n, norm
+        );
     }
 }
 

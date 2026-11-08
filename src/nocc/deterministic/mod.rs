@@ -13,6 +13,6 @@ pub(crate) use jmnoccmc::JMEquations;
 pub(crate) use solver::AmplitudeSolution;
 
 // Restricted function re-exports.
-pub(crate) use jmnoccmc::{jm_space, propagate_amplitudes, report_converged};
+pub(crate) use jmnoccmc::{jm_space, propagate_populations, report_converged};
 #[cfg(feature = "gnocc")]
 pub(crate) use solver::solve_amplitudes;

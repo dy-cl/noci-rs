@@ -291,7 +291,7 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
-    // Print the deterministic JM-NOCCMC enablement state.
+    // Print the JM-NOCCMC enablement state.
     println!("JMNOCCMC");
     match &input.jmnoccmc {
         Some(j) => {
@@ -301,11 +301,12 @@ pub fn print_input(input: &Input) {
                 Some(rank) => println!("EXPANSION_RANK: {}", rank),
                 None => println!("EXPANSION_RANK: all"),
             }
-            println!("PROPAGATOR: {}", j.propagator.as_str());
             println!("DT: {}", j.dt);
-            println!("DAMPING: {}", j.damping);
             println!("MAX_STEPS: {}", j.max_steps);
             println!("RESIDUAL_TOL: {:e}", j.residual_tol);
+            println!("E_TOL: {:e}", j.e_tol);
+            println!("DYNAMIC_SHIFT: {}", j.dynamic_shift);
+            println!("DYNAMIC_SHIFT_ALPHA: {}", j.dynamic_shift_alpha);
             println!("DIAGNOSTICS: {}", j.diagnostics);
             println!("MEMORY_EFFECTIVE: {}", j.memory_effective);
         }

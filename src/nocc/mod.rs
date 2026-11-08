@@ -81,7 +81,7 @@ pub(crate) use terms::TermEvaluator;
 pub(crate) use cumulants::cumulants;
 #[cfg(feature = "gnocc")]
 pub(crate) use deterministic::solve_amplitudes;
-pub(crate) use deterministic::{jm_space, propagate_amplitudes, report_converged};
+pub(crate) use deterministic::{jm_space, propagate_populations, report_converged};
 pub(in crate::nocc) use jm::{jm_energies, reference_determinants};
 #[cfg(feature = "gnocc")]
 pub(crate) use setup::{

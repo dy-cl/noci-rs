@@ -115,7 +115,8 @@ pub fn run_real_post_reference(
                 out.e_jmnoccmc_stoch = Some(e);
             }
         } else if world.rank() == 0 {
-            out.e_jmnoccmc_det = run_jmnoccmc(&post, input, wicks);
+            out.e_jmnoccmc_det =
+                run_jmnoccmc(&post, input, (&reference.c0, reference.e_noci), wicks);
         }
     }
 

@@ -9,16 +9,18 @@ use crate::determinant::NOCIIndex;
 use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WicksView;
 use crate::input::Input;
-use crate::nocc::{JMEquations, jm_qmc_step, jm_space, propagate_amplitudes, report_converged};
+use crate::nocc::{JMEquations, jm_qmc_step, jm_space, propagate_populations, report_converged};
 use crate::noci::build_noci_hs;
 
-/// Perform the deterministic JM-NOCCMC propagation on the reference determinants.
-/// Builds the projection and expansion spaces of every reference, the rectangular Hamiltonian
-/// and overlap between them, propagates the amplitudes from zero and reports the state
-/// energies.
+/// Perform the deterministic JM-NOCCMC propagation on the reference determinants, the
+/// noise-free counterpart of the stochastic propagation. Builds the projection and expansion
+/// spaces of every reference, the rectangular Hamiltonian and overlap between them, propagates
+/// the populations from the reference NOCI state and reports the state energies.
 /// # Arguments:
 /// - `post`: Data shared by post-SCF methods.
 /// - `input`: User input specifications.
+/// - `reference`: Reference NOCI coefficients and energy, giving the initial reference
+///   populations, the trial and the initial shift.
 /// - `wicks`: Optional precomputed Wick's intermediates of the reference parents.
 /// # Returns:
 /// - `Option<f64>`: Ground-state JM-NOCCMC energy, or `None` if the propagation failed.
@@ -27,6 +29,7 @@ use crate::noci::build_noci_hs;
 pub(crate) fn run_jmnoccmc(
     post: &PostSCFData<'_, f64>,
     input: &Input,
+    reference: (&[f64], f64),
     wicks: Option<&WicksView<f64>>,
 ) -> Option<f64> {
     let options = input
@@ -59,8 +62,8 @@ pub(crate) fn run_jmnoccmc(
 
     println!("Running deterministic JM-NOCCMC propagation....");
     let jm = JMEquations::new(space, h, s);
-    let (t, ev) = propagate_amplitudes(&jm, options)?;
-    Some(report_converged(&jm, &t, &ev, options))
+    let populations = propagate_populations(&jm, options, reference)?;
+    Some(report_converged(&jm, &populations, options))
 }
 
 /// Perform the stochastic JM-NOCCMC propagation on the reference determinants with every MPI

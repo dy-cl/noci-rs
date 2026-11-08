@@ -14,7 +14,8 @@
 //!
 //! `R_{y\mu} = \langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}\hat H|\Phi_y\rangle - \sum_{x \neq y} G_{xy}\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}|\Phi_x\rangle.`
 //!
-//! The amplitudes are propagated by `t \leftarrow t - \Delta\tau R` or by a damped Jacobi step.
+//! The reference and excitor populations are propagated exactly as the stochastic propagation
+//! samples them, with `G` evaluated exactly at every step.
 //!
 //! # Projection and expansion spaces
 //!
@@ -46,7 +47,7 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::basis::apply_excitation;
 use crate::determinant::{NOCIIndex, NOCISpace};
-use crate::input::{JMNOCCMCOptions, JMPropagator};
+use crate::input::JMNOCCMCOptions;
 use crate::maths::parallel_matvec;
 use crate::nocc::{jm_energies, reference_determinants};
 
@@ -133,8 +134,6 @@ pub struct JMEquations {
     h: Array2<f64>,
     /// Overlap `\langle i|j\rangle`, projection rows by expansion columns.
     s: Array2<f64>,
-    /// Diagonal denominators `D_{y\mu} = H_{\mu\mu} - H_{yy}` of each reference.
-    denominators: Vec<Array1<f64>>,
 }
 
 /// Residuals, effective Hamiltonian and effective overlap at one set of amplitudes, with the
@@ -146,6 +145,8 @@ pub struct JMEvaluation {
     pub g: Array2<f64>,
     /// Effective overlap `S^e_{zx} = \langle{}^z\Psi|\Phi_x\rangle`.
     pub se: Array2<f64>,
+    /// Reference projections `H^e_{zx} = \langle{}^z\Psi|\hat H|\Phi_x\rangle`.
+    pub he: Array2<f64>,
     /// Projections `\langle k|\Phi_x\rangle` of every `|\Phi_x\rangle` onto every projection row.
     sphi: Vec<Array1<f64>>,
     /// `e^{-\hat T_y}(\hat H|\Phi_y\rangle - \sum_{x \neq y}G_{xy}|\Phi_x\rangle)` of every
@@ -404,31 +405,16 @@ impl JMEquations {
     /// - `h`: Hamiltonian, projection rows by expansion columns.
     /// - `s`: Overlap, projection rows by expansion columns.
     /// # Returns:
-    /// - `Self`: Propagation data with the diagonal denominators of every reference.
+    /// - `Self`: Propagation data.
     pub fn new(
         space: JMSpace,
         h: Array2<f64>,
         s: Array2<f64>,
     ) -> Self {
-        let denominators = space
-            .blocks
-            .iter()
-            .map(|b| {
-                let col = b.columns.start;
-                let h00 = h[(b.row, col)];
-                Array1::from_iter(
-                    b.excitations
-                        .iter()
-                        .map(|e| h[(b.row + e.target, col + e.target)] - h00),
-                )
-            })
-            .collect();
-
         Self {
             blocks: space.blocks,
             h,
             s,
-            denominators,
         }
     }
 
@@ -504,31 +490,9 @@ impl JMEquations {
             residual,
             g,
             se,
+            he,
             sphi,
             contracted,
-        }
-    }
-
-    /// Apply one amplitude update, `t_{y\mu} \leftarrow t_{y\mu} - \Delta\tau R_{y\mu}` or
-    /// `t_{y\mu} \leftarrow t_{y\mu} - \alpha R_{y\mu} / D_{y\mu}`.
-    /// # Arguments:
-    /// - `self`: Propagation data.
-    /// - `t`: Amplitudes of every reference, updated in place.
-    /// - `residual`: Residuals at `t`.
-    /// - `options`: JM-NOCCMC options.
-    /// # Returns:
-    /// - None.
-    fn propagate_step(
-        &self,
-        t: &mut [Array1<f64>],
-        residual: &[Array1<f64>],
-        options: &JMNOCCMCOptions,
-    ) {
-        for ((ty, ry), dy) in t.iter_mut().zip(residual).zip(&self.denominators) {
-            match options.propagator {
-                JMPropagator::Plain => ty.scaled_add(-options.dt, ry),
-                JMPropagator::Diagonal => *ty -= &(options.damping * ry / dy),
-            }
         }
     }
 
@@ -623,50 +587,146 @@ impl JMEquations {
     }
 }
 
-/// Propagate the JM-NOCCMC amplitudes from zero until the largest residual falls below the
-/// tolerance or the step limit is reached, printing one table row per step.
+/// Reference and excitor populations at the end of a deterministic JM-NOCCMC propagation.
+pub struct JMPopulations {
+    /// Amplitudes `t_{x\mu} = n_{x\mu}/N_x` of every reference.
+    pub t: Vec<Array1<f64>>,
+    /// Reference populations `N_x`, normalised to `\sum_x|N_x| = 1`.
+    pub nref: Array1<f64>,
+    /// Evaluation at `t`.
+    pub ev: JMEvaluation,
+}
+
+/// Deterministically propagate the JM-NOCCMC populations, the noise-free counterpart of the
+/// stochastic propagation: the same populations, update and shift, with `G` evaluated exactly
+/// at every step instead of being estimated from sampled report blocks.
+///
+/// Excitor populations `n_{x\mu}` and reference populations `N_x` carry the amplitudes
+/// `t_{x\mu} = n_{x\mu}/N_x`. With `g_x = \sum_y G_{xy}N_y/N_x`, every step applies
+///
+/// `n_{x\mu} \leftarrow n_{x\mu} - \Delta\tau N_xR_{x\mu} - \Delta\tau(g_x - E_s)n_{x\mu},`
+///
+/// `N_x \leftarrow N_x - \Delta\tau(g_x - E_s)N_x,`
+///
+/// so that the reference populations follow the power iteration of `G` towards its ground-state
+/// coefficients `c_x^{(0)}` and the amplitudes follow
+/// `t_{x\mu} \leftarrow t_{x\mu} - \Delta\tau R_{x\mu}/[1 - \Delta\tau(g_x - E_s)]`, the plain
+/// update once the shift balances the growth. The populations start from the reference NOCI
+/// coefficients with no excitors, and are renormalised to `\sum_x|N_x| + \sum_{x\mu}|n_{x\mu}| = 1`
+/// after every step with the removed amplitude kept, from which the optional dynamic shift
+/// `E_s \leftarrow E_s - (\alpha/\Delta\tau)\Delta\ln N_w` holds the population steady, as in
+/// deterministic NOCIQMC. The projected energy onto the NOCI trial
+/// `\langle\Psi_T| = \sum_z c_z\langle{}^z\Psi|` is
+/// `E = \sum_{zx}c_zH^e_{zx}N_x / \sum_{zx}c_zS^e_{zx}N_x`, as reported by the stochastic
+/// propagation. Propagation stops when the largest residual falls below `residual_tol` and the
+/// projected energy changes by less than `e_tol`.
 /// # Arguments:
 /// - `jm`: Propagation data.
 /// - `options`: JM-NOCCMC options.
+/// - `reference`: Reference NOCI coefficients and energy, giving the initial reference
+///   populations, the trial and the initial shift.
 /// # Returns:
-/// - `Option<(Vec<Array1<f64>>, JMEvaluation)>`: Converged amplitudes and their evaluation, or
-///   `None` if the propagation diverged or did not converge.
-pub fn propagate_amplitudes(
+/// - `Option<JMPopulations>`: Final populations and their evaluation, or `None` if the
+///   propagation diverged or did not converge.
+pub fn propagate_populations(
     jm: &JMEquations,
     options: &JMNOCCMCOptions,
-) -> Option<(Vec<Array1<f64>>, JMEvaluation)> {
-    let mut t = jm
+    reference: (&[f64], f64),
+) -> Option<JMPopulations> {
+    let (c0, mut shift) = reference;
+    let m = jm.blocks.len();
+    let dt = options.dt;
+
+    // Trial and initial reference populations from the normalised NOCI coefficients.
+    let norm = c0.iter().map(|c| c.abs()).sum::<f64>();
+    let trial = Array1::from_shape_fn(m, |z| {
+        if c0.len() == m && norm > 0.0 {
+            c0[z] / norm
+        } else {
+            1.0 / m as f64
+        }
+    });
+    let mut nref = trial.clone();
+    let mut n = jm
         .blocks
         .iter()
-        .map(|b| Array1::zeros(b.excitations.len()))
+        .map(|b| Array1::<f64>::zeros(b.excitations.len()))
         .collect::<Vec<_>>();
+    let mut logpop = 0.0_f64;
     let mut previous = f64::NAN;
 
     print_jm_table_header();
     for iter in 0..options.max_steps {
+        let t = n
+            .iter()
+            .zip(&nref)
+            .map(|(nx, &nx0)| nx / nx0)
+            .collect::<Vec<_>>();
         let ev = jm.evaluate(&t);
         let rmax = ev
             .residual
             .iter()
             .flatten()
             .fold(0.0_f64, |m, r| m.max(r.abs()));
-        let rnorm = ev.residual.iter().map(|r| r.dot(r)).sum::<f64>().sqrt();
 
         // A diverged step leaves G non-finite, which the eigensolver rejects.
-        if !rnorm.is_finite() || !ev.g.iter().all(|g| g.is_finite()) {
+        if !rmax.is_finite() || !ev.g.iter().all(|g| g.is_finite()) {
             println!("JM-NOCCMC propagation diverged at step {}.", iter);
             return None;
         }
 
-        let e = jm_energies(&ev.g)[0].re;
-        let tnorm = t.iter().map(|x| x.dot(x)).sum::<f64>().sqrt();
-        print_jm_table_row(iter, e, (e - previous).abs(), rmax, rnorm, tnorm);
+        // Projected energy on the NOCI trial and the lowest state energy of `G`.
+        let e = trial.dot(&ev.he.dot(&nref)) / trial.dot(&ev.se.dot(&nref));
+        let eg = jm_energies(&ev.g)[0].re;
+        let de = (e - previous).abs();
+        let total = nref
+            .iter()
+            .chain(n.iter().flatten())
+            .map(|v| v.abs())
+            .sum::<f64>();
+        let nrefabs = nref.iter().map(|v| v.abs()).sum::<f64>();
+        print_jm_table_row(
+            iter,
+            (e, de, eg),
+            shift,
+            (logpop.exp() * total, logpop.exp() * nrefabs),
+            rmax,
+        );
         previous = e;
-        if rmax < options.residual_tol {
+        if rmax < options.residual_tol && de < options.e_tol {
             println!("JM-NOCCMC converged after {} steps.", iter);
-            return Some((t, ev));
+            let nref = nref / nrefabs;
+            return Some(JMPopulations { t, nref, ev });
         }
-        jm.propagate_step(&mut t, &ev.residual, options);
+
+        // `-\Delta\tau N_xR_{x\mu} - \Delta\tau(g_x - E_s)n_{x\mu}` on the excitors and
+        // `-\Delta\tau(g_x - E_s)N_x` on the references, with `g_xN_x = (GN)_x`.
+        let gn = ev.g.dot(&nref);
+        for (x, (nx, rx)) in n.iter_mut().zip(&ev.residual).enumerate() {
+            let growth = gn[x] / nref[x] - shift;
+            *nx *= 1.0 - dt * growth;
+            nx.scaled_add(-dt * nref[x], rx);
+        }
+        nref.zip_mut_with(&gn, |nx, &gx| *nx -= dt * (gx - shift * *nx));
+
+        // Renormalise, keeping the removed amplitude, and steady the population by the shift.
+        let total = nref
+            .iter()
+            .chain(n.iter().flatten())
+            .map(|v| v.abs())
+            .sum::<f64>();
+        if !total.is_finite() || total <= 0.0 {
+            println!("JM-NOCCMC populations became invalid at step {}.", iter + 1);
+            return None;
+        }
+        nref /= total;
+        for nx in n.iter_mut() {
+            *nx /= total;
+        }
+        if options.dynamic_shift {
+            shift -= options.dynamic_shift_alpha / dt * total.ln();
+        }
+        logpop += total.ln();
     }
 
     println!(
@@ -676,38 +736,30 @@ pub fn propagate_amplitudes(
     None
 }
 
-/// Report the state energies at converged amplitudes and, when requested, the stability of the
-/// linearised update. The plain step `t \leftarrow t - \Delta\tau R` linearises to
-/// `I - \Delta\tau J`, which contracts only if every eigenvalue `\lambda` of `J` has
-/// `\mathrm{Re}\,\lambda > 0` and `\Delta\tau < 2\,\mathrm{Re}\,\lambda / |\lambda|^2`; the
-/// diagonal step linearises to `I - \alpha D^{-1}J` with the same conditions on `D^{-1}J`.
+/// Report the state energies and reference populations at the end of the propagation and, when
+/// requested, the stability of the linearised update. Near convergence the update of the
+/// amplitudes linearises to `I - \Delta\tau J`, which contracts only if every eigenvalue
+/// `\lambda` of `J` has `\mathrm{Re}\,\lambda > 0` and
+/// `\Delta\tau < 2\,\mathrm{Re}\,\lambda / |\lambda|^2`.
 /// # Arguments:
 /// - `jm`: Propagation data.
-/// - `t`: Converged amplitudes.
-/// - `ev`: Evaluation at `t`.
+/// - `populations`: Final populations and their evaluation.
 /// - `options`: JM-NOCCMC options.
 /// # Returns:
 /// - `f64`: Ground-state energy, the lowest real part of the eigenvalues of `G`.
 pub fn report_converged(
     jm: &JMEquations,
-    t: &[Array1<f64>],
-    ev: &JMEvaluation,
+    populations: &JMPopulations,
     options: &JMNOCCMCOptions,
 ) -> f64 {
+    let JMPopulations { t, nref, ev } = populations;
     let energies = jm_energies(&ev.g);
     let norms = t.iter().map(|tx| tx.dot(tx).sqrt()).collect::<Vec<_>>();
-    print_jm_energies(&energies, &ev.se, &norms);
+    print_jm_energies(&energies, &ev.se, nref, &norms);
 
     if options.diagnostics {
         let jac = jm.jacobian(t, ev);
-        let propagator = match options.propagator {
-            JMPropagator::Plain => jac.clone(),
-            JMPropagator::Diagonal => {
-                let d = jm.denominators.iter().flatten().collect::<Vec<_>>();
-                Array2::from_shape_fn(jac.dim(), |(i, j)| jac[(i, j)] / d[i])
-            }
-        };
-        let (w, _) = propagator.eig().unwrap();
+        let (w, _) = jac.eig().unwrap();
         let mut w = w.to_vec();
         w.sort_by(|a, b| a.re.total_cmp(&b.re));
         let (_, sv, _) = jac.svd(false, false).unwrap();
