@@ -165,25 +165,26 @@ pub struct JMEquations {
     metric: Option<Array2<f64>>,
 }
 
-/// Residuals, effective Hamiltonian and effective overlap at one set of amplitudes, with the
-/// intermediates from which the Jacobian is formed.
-pub struct JMEvaluation {
-    /// Residuals `R_{y\mu}` of every reference.
-    pub residual: Vec<Array1<f64>>,
-    /// Effective Hamiltonian `G = (S^e)^{-1}H^e`.
-    pub g: Array2<f64>,
+/// Correlated references `|\Phi_x\rangle = e^{\hat T_x}|{}^x\Psi\rangle` at one set of
+/// amplitudes, expanded over their blocks and projected, with `\hat H|\Phi_x\rangle`, onto every
+/// projection row.
+pub struct CorrelatedReferences {
+    /// Expansion of every `|\Phi_x\rangle` over the determinants of its block.
+    phi: Vec<Array1<f64>>,
+    /// Projections `\langle k|\hat H|\Phi_x\rangle` onto every projection row.
+    hphi: Vec<Array1<f64>>,
+    /// Projections `\langle k|\Phi_x\rangle` onto every projection row.
+    sphi: Vec<Array1<f64>>,
+}
+
+/// Effective overlap and Hamiltonian of the correlated references.
+pub struct Effective {
     /// Effective overlap `S^e_{zx} = \langle{}^z\Psi|\Phi_x\rangle`.
     pub se: Array2<f64>,
     /// Reference projections `H^e_{zx} = \langle{}^z\Psi|\hat H|\Phi_x\rangle`.
     pub he: Array2<f64>,
-    /// Expansion of every `|\Phi_x\rangle` over the determinants of its block.
-    phi: Vec<Array1<f64>>,
-    /// Projections `\langle k|\Phi_x\rangle` of every `|\Phi_x\rangle` onto every projection row.
-    sphi: Vec<Array1<f64>>,
-    /// `e^{-\hat T_y}(\hat H|\Phi_y\rangle - \sum_{x \neq y}G_{xy}|\Phi_x\rangle)` of every
-    /// reference on its projection rows, equal to `e^{-\hat T_y}|W_y\rangle` except on the
-    /// reference row.
-    contracted: Vec<Array1<f64>>,
+    /// Effective Hamiltonian `G = (S^e)^{-1}H^e`.
+    pub g: Array2<f64>,
 }
 
 /// Tabulate the action of a cluster operator on a block by target determinant. Each target
@@ -453,24 +454,17 @@ impl JMEquations {
         }
     }
 
-    /// Evaluate the effective matrices and the residuals of every reference.
-    /// `H|\Phi_x\rangle` and `|\Phi_x\rangle` are projected onto the projection rows, giving
-    /// `S^e` and `H^e` from the reference rows and, for each reference `y`, the projections
-    /// `a_k = \langle k|\hat H|\Phi_y\rangle - \sum_{x \neq y} G_{xy}\langle k|\Phi_x\rangle` of its
-    /// rows, from which `R_{y\mu} = [e^{-\hat T_y}a]_\mu` since each block is orthonormal.
+    /// Expand every correlated reference `|\Phi_x\rangle = e^{\hat T_x}|{}^x\Psi\rangle` over its
+    /// block and project it, with `\hat H|\Phi_x\rangle`, onto every projection row.
     /// # Arguments:
     /// - `self`: Propagation data.
     /// - `t`: Amplitudes of every reference.
     /// # Returns:
-    /// - `JMEvaluation`: Residuals, effective Hamiltonian and effective overlap.
-    pub fn evaluate(
+    /// - `CorrelatedReferences`: Expansions and projections of the correlated references.
+    pub fn correlate(
         &self,
         t: &[Array1<f64>],
-    ) -> JMEvaluation {
-        let m = self.blocks.len();
-
-        // Expansions of |\Phi_x> and their projections, with those of H|\Phi_x>, onto every
-        // projection row.
+    ) -> CorrelatedReferences {
         let phi = self
             .blocks
             .iter()
@@ -481,7 +475,7 @@ impl JMEquations {
                 apply_exponential(block, tx, &reference, 1.0)
             })
             .collect::<Vec<_>>();
-        let (hphi, sphi): (Vec<_>, Vec<_>) = self
+        let (hphi, sphi) = self
             .blocks
             .iter()
             .zip(&phi)
@@ -493,43 +487,75 @@ impl JMEquations {
                 )
             })
             .unzip();
+        CorrelatedReferences { phi, hphi, sphi }
+    }
 
-        let se = Array2::from_shape_fn((m, m), |(z, x)| sphi[x][self.blocks[z].row]);
-        let he = Array2::from_shape_fn((m, m), |(z, x)| hphi[x][self.blocks[z].row]);
+    /// Effective overlap and Hamiltonian from the reference rows of the projections,
+    /// `S^e_{zx} = \langle{}^z\Psi|\Phi_x\rangle`, `H^e_{zx} = \langle{}^z\Psi|\hat H|\Phi_x\rangle`
+    /// and `G = (S^e)^{-1}H^e`.
+    /// # Arguments:
+    /// - `self`: Propagation data.
+    /// - `phi`: Correlated references.
+    /// # Returns:
+    /// - `Effective`: Effective overlap and Hamiltonian.
+    pub fn effective(
+        &self,
+        phi: &CorrelatedReferences,
+    ) -> Effective {
+        let m = self.blocks.len();
+        let se = Array2::from_shape_fn((m, m), |(z, x)| phi.sphi[x][self.blocks[z].row]);
+        let he = Array2::from_shape_fn((m, m), |(z, x)| phi.hphi[x][self.blocks[z].row]);
         let g = se.inv().unwrap().dot(&he);
+        Effective { se, he, g }
+    }
 
-        // `e^{-\hat T_y}|W_y\rangle` on the rows of `y`, with
-        // `|W_y\rangle = \hat H|\Phi_y\rangle - \sum_x G_{xy}|\Phi_x\rangle`; the `x = y` term
-        // contributes `G_{yy}|{}^y\Psi\rangle`, on the reference row that no residual reads.
-        let contracted = self
-            .blocks
+    /// Transformed invariance residuals `|Z_y\rangle = e^{-\hat T_y}|W_y\rangle` on the projection
+    /// rows of every reference, with `|W_y\rangle = \hat H|\Phi_y\rangle - \sum_x G_{xy}|\Phi_x\rangle`.
+    /// The `x = y` term is left out: it contributes `G_{yy}|{}^y\Psi\rangle`, on the reference row
+    /// that no residual reads.
+    /// # Arguments:
+    /// - `self`: Propagation data.
+    /// - `t`: Amplitudes of every reference.
+    /// - `phi`: Correlated references at `t`.
+    /// - `effective`: Effective overlap and Hamiltonian at `t`.
+    /// # Returns:
+    /// - `Vec<Array1<f64>>`: `|Z_y\rangle` of every reference, except on its reference row.
+    pub fn transformed(
+        &self,
+        t: &[Array1<f64>],
+        phi: &CorrelatedReferences,
+        effective: &Effective,
+    ) -> Vec<Array1<f64>> {
+        let m = self.blocks.len();
+        self.blocks
             .iter()
             .enumerate()
             .map(|(y, block)| {
                 let rows = block.row..block.row + block.projected;
-                let mut a = hphi[y].slice(s![rows.clone()]).to_owned();
+                let mut a = phi.hphi[y].slice(s![rows.clone()]).to_owned();
                 for x in (0..m).filter(|&x| x != y) {
-                    a.scaled_add(-g[(x, y)], &sphi[x].slice(s![rows.clone()]));
+                    a.scaled_add(-effective.g[(x, y)], &phi.sphi[x].slice(s![rows.clone()]));
                 }
                 apply_exponential(block, &t[y], &a, -1.0)
             })
-            .collect::<Vec<_>>();
-        let residual = self
-            .blocks
-            .iter()
-            .zip(&contracted)
-            .map(|(block, z)| block.project(z))
-            .collect();
+            .collect()
+    }
 
-        JMEvaluation {
-            residual,
-            g,
-            se,
-            he,
-            phi,
-            sphi,
-            contracted,
-        }
+    /// Amplitude residuals `R_{y\mu} = \langle{}^y\Psi|\hat\tau_{y\mu}^\dagger|Z_y\rangle`.
+    /// # Arguments:
+    /// - `self`: Propagation data.
+    /// - `z`: Transformed invariance residuals of every reference.
+    /// # Returns:
+    /// - `Vec<Array1<f64>>`: Residuals of every reference.
+    pub fn residuals(
+        &self,
+        z: &[Array1<f64>],
+    ) -> Vec<Array1<f64>> {
+        self.blocks
+            .iter()
+            .zip(z)
+            .map(|(block, zy)| block.project(zy))
+            .collect()
     }
 
     /// Analytic Jacobian `J_{y\mu,x\nu} = \partial R_{y\mu} / \partial t_{x\nu}` over the
@@ -537,27 +563,29 @@ impl JMEquations {
     /// `R_{y\mu} = \langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}|W_y\rangle` with
     /// `\partial|\Phi_y\rangle/\partial t_{x\nu} = \delta_{yx}e^{\hat T_x}\hat\tau_{x\nu}|{}^x\Psi\rangle`
     /// gives
-    ///
-    /// `J_{y\mu,x\nu} = \langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}(\hat I-\hat P)(\delta_{yx}\hat H-G_{xy})e^{\hat T_x}\hat\tau_{x\nu}|{}^x\Psi\rangle - \delta_{yx}\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger\hat\tau_{y\nu}e^{-\hat T_y}|W_y\rangle,`
-    ///
-    /// whose second term vanishes at a solution. It is formed by differentiating
-    /// `e^{-\hat T_y}(\hat H|\Phi_y\rangle - \sum_{x \neq y}G_{xy}|\Phi_x\rangle)`, which differs
-    /// from `e^{-\hat T_y}|W_y\rangle` only on the reference row, through
+    /// `J_{y\mu,x\nu} = \langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}(\hat I-\hat P)(\delta_{yx}\hat H-G_{xy})e^{\hat T_x}\hat\tau_{x\nu}|{}^x\Psi\rangle - \delta_{yx}\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger\hat\tau_{y\nu}e^{-\hat T_y}|W_y\rangle`,
+    /// whose second term vanishes at a solution. It is formed by differentiating `|Z_y\rangle`
+    /// without its reference row through
     /// `\partial e^{-\hat T_y}/\partial t_{y\nu} = -\hat\tau_{y\nu}e^{-\hat T_y}` and
     /// `\delta G_{yx} = \sum_z[(S^e)^{-1}]_{yz}[\langle{}^z\Psi|\hat H|\delta\Phi_x\rangle - \sum_u G_{ux}\langle{}^z\Psi|\delta\Phi_u\rangle]`.
     /// # Arguments:
     /// - `self`: Propagation data.
     /// - `t`: Amplitudes of every reference.
-    /// - `ev`: Evaluation at `t`.
+    /// - `phi`: Correlated references at `t`.
+    /// - `effective`: Effective overlap and Hamiltonian at `t`.
+    /// - `z`: Transformed invariance residuals at `t`.
     /// # Returns:
     /// - `Array2<f64>`: Jacobian over the flattened amplitudes.
     fn jacobian(
         &self,
         t: &[Array1<f64>],
-        ev: &JMEvaluation,
+        phi: &CorrelatedReferences,
+        effective: &Effective,
+        z: &[Array1<f64>],
     ) -> Array2<f64> {
         let m = self.blocks.len();
-        let sinv = ev.se.inv().unwrap();
+        let g = &effective.g;
+        let sinv = effective.se.inv().unwrap();
         let columns = self
             .blocks
             .iter()
@@ -585,11 +613,11 @@ impl JMEquations {
                 let delta = Array2::from_shape_fn((m, m), |(z, u)| {
                     let row = self.blocks[z].row;
                     let dhe = if u == x { dh[row] } else { 0.0 };
-                    dhe - ds[row] * ev.g[(x, u)]
+                    dhe - ds[row] * g[(x, u)]
                 });
                 let dg = sinv.dot(&delta);
 
-                // `\delta(e^{-\hat T_y}|W_y\rangle)` on the rows of every `y`.
+                // `\delta|Z_y\rangle` on the rows of every `y`.
                 let mut column = Vec::with_capacity(t.iter().map(|ty| ty.len()).sum());
                 for (y, by) in self.blocks.iter().enumerate() {
                     let rows = by.row..by.row + by.projected;
@@ -599,14 +627,14 @@ impl JMEquations {
                         Array1::zeros(by.projected)
                     };
                     for u in (0..m).filter(|&u| u != y) {
-                        da.scaled_add(-dg[(u, y)], &ev.sphi[u].slice(s![rows.clone()]));
+                        da.scaled_add(-dg[(u, y)], &phi.sphi[u].slice(s![rows.clone()]));
                         if u == x {
-                            da.scaled_add(-ev.g[(x, y)], &ds.slice(s![rows.clone()]));
+                            da.scaled_add(-g[(x, y)], &ds.slice(s![rows.clone()]));
                         }
                     }
                     let mut dz = apply_exponential(by, &t[y], &da, -1.0);
                     if y == x {
-                        dz -= &apply_cluster(by, &unit, &ev.contracted[y], 1.0);
+                        dz -= &apply_cluster(by, &unit, &z[y], 1.0);
                     }
                     column.extend(by.project(&dz));
                 }
@@ -626,27 +654,27 @@ impl JMEquations {
     /// correlated reference, `|\delta\Phi_x\rangle = e^{\hat T_x}\delta\hat T_x|{}^x\Psi\rangle`, is
     /// split into its oblique projection onto the span `\mathcal M` of the correlated references
     /// and the complement,
-    ///
-    /// `|\delta\Phi_x\rangle = \sum_z C_{zx}|\Phi_z\rangle + |X_x\rangle, C_{zx} = \sum_y[(S^e)^{-1}]_{zy}\langle{}^y\Psi|\delta\Phi_x\rangle,`
-    ///
-    /// and the fraction is
+    /// `|\delta\Phi_x\rangle = \sum_z C_{zx}|\Phi_z\rangle + |X_x\rangle` with
+    /// `C_{zx} = \sum_y[(S^e)^{-1}]_{zy}\langle{}^y\Psi|\delta\Phi_x\rangle`, and the fraction is
     /// `\sum_x\||X_x\rangle\|^2 / \sum_x(\|\hat P|\delta\Phi_x\rangle\|^2 + \||X_x\rangle\|^2)`, zero
     /// for internal mixing only (type I) and one for an external response only (type II).
     /// # Arguments:
     /// - `self`: Propagation data.
     /// - `t`: Amplitudes of every reference.
-    /// - `ev`: Evaluation at `t`.
+    /// - `phi`: Correlated references at `t`.
+    /// - `effective`: Effective overlap and Hamiltonian at `t`.
     /// - `dt`: Flattened amplitude variation `\delta t`.
     /// # Returns:
     /// - `Option<f64>`: External fraction, or `None` without the expansion-column overlap.
     fn external_fraction(
         &self,
         t: &[Array1<f64>],
-        ev: &JMEvaluation,
+        phi: &CorrelatedReferences,
+        effective: &Effective,
         dt: ArrayView1<f64>,
     ) -> Option<f64> {
         let metric = self.metric.as_ref()?;
-        let sinv = ev.se.inv().unwrap();
+        let sinv = effective.se.inv().unwrap();
         let norm = |v: &Array1<f64>| v.dot(&metric.dot(v));
 
         let (mut internal, mut external) = (0.0, 0.0);
@@ -672,7 +700,7 @@ impl JMEquations {
             for (z, bz) in self.blocks.iter().enumerate() {
                 inside
                     .slice_mut(s![bz.columns.clone()])
-                    .scaled_add(c[z], &ev.phi[z]);
+                    .scaled_add(c[z], &phi.phi[z]);
             }
             let outside = &dphi - &inside;
             internal += norm(&inside);
@@ -689,7 +717,6 @@ impl JMEquations {
     /// # Arguments:
     /// - `self`: Propagation data.
     /// - `t`: Amplitudes of every reference.
-    /// - `ev`: Evaluation at `t`.
     /// - `options`: JM-NOCCMC options.
     /// - `label`: Where in the propagation the diagnostics are taken.
     /// # Returns:
@@ -698,24 +725,29 @@ impl JMEquations {
     fn null_diagnostics(
         &self,
         t: &[Array1<f64>],
-        ev: &JMEvaluation,
         options: &JMNOCCMCOptions,
         label: &str,
     ) -> (Array1<f64>, Array2<f64>) {
-        let jac = self.jacobian(t, ev);
+        let phi = self.correlate(t);
+        let effective = self.effective(&phi);
+        let z = self.transformed(t, &phi, &effective);
+        let jac = self.jacobian(t, &phi, &effective, &z);
         let (w, _) = jac.eig().unwrap();
         let mut w = w.to_vec();
         w.sort_by(|a, b| a.re.total_cmp(&b.re));
         let (_, sigma, vt) = jac.svd(false, true).unwrap();
         let vt = vt.unwrap();
-        let (_, sse, _) = ev.se.svd(false, false).unwrap();
+        let (_, sse, _) = effective.se.svd(false, false).unwrap();
 
         // Lowest singular values with the external fractions of their right singular vectors.
         let n = sigma.len();
         let lowest = (0..options.null_n.min(n))
             .map(|k| {
                 let i = n - 1 - k;
-                (sigma[i], self.external_fraction(t, ev, vt.row(i)))
+                (
+                    sigma[i],
+                    self.external_fraction(t, &phi, &effective, vt.row(i)),
+                )
             })
             .collect::<Vec<_>>();
 
@@ -731,30 +763,23 @@ pub struct JMPopulations {
     pub t: Vec<Array1<f64>>,
     /// Reference populations `N_x`, normalised to `\sum_x|N_x| = 1`.
     pub nref: Array1<f64>,
-    /// Evaluation at `t`.
-    pub ev: JMEvaluation,
 }
 
 /// Deterministically propagate the JM-NOCCMC populations, the noise-free counterpart of the
 /// stochastic propagation: the same populations, update and shift, with `G` evaluated exactly
-/// at every step instead of being estimated from sampled report blocks.
-///
-/// Excitor populations `n_{x\mu}` and reference populations `N_x` carry the amplitudes
-/// `t_{x\mu} = n_{x\mu}/N_x`. With `g_x = \sum_y G_{xy}N_y/N_x`, every step applies
-///
-/// `n_{x\mu} \leftarrow n_{x\mu} - \Delta\tau N_xR_{x\mu} - \Delta\tau(g_x - E_s)n_{x\mu},`
-///
-/// `N_x \leftarrow N_x - \Delta\tau(g_x - E_s)N_x,`
-///
-/// so that the reference populations follow the power iteration of `G` towards its ground-state
-/// coefficients `c_x^{(0)}` and the amplitudes follow
-/// `t_{x\mu} \leftarrow t_{x\mu} - \Delta\tau R_{x\mu}/[1 - \Delta\tau(g_x - E_s)]`, the plain
+/// at every step instead of being estimated from sampled report blocks. Excitor populations
+/// `n_{x\mu}` and reference populations `N_x` carry the amplitudes `t_{x\mu} = n_{x\mu}/N_x`, and
+/// with `g_x = \sum_y G_{xy}N_y/N_x` every step applies
+/// `n_{x\mu} \leftarrow n_{x\mu} - \Delta\tau N_xR_{x\mu} - \Delta\tau(g_x - E_s)n_{x\mu}` and
+/// `N_x \leftarrow N_x - \Delta\tau(g_x - E_s)N_x`, so that the reference populations follow the
+/// power iteration of `G` towards its ground-state coefficients `c_x^{(0)}` and the amplitudes
+/// follow `t_{x\mu} \leftarrow t_{x\mu} - \Delta\tau R_{x\mu}/[1 - \Delta\tau(g_x - E_s)]`, the plain
 /// update once the shift balances the growth. The populations start from the reference NOCI
-/// coefficients with no excitors, and are renormalised to `\sum_x|N_x| + \sum_{x\mu}|n_{x\mu}| = 1`
-/// after every step with the removed amplitude kept, from which the optional dynamic shift
-/// `E_s \leftarrow E_s - (\alpha/\Delta\tau)\Delta\ln N_w` holds the population steady, as in
-/// deterministic NOCIQMC. The projected energy onto the NOCI trial
-/// `\langle\Psi_T| = \sum_z c_z\langle{}^z\Psi|` is
+/// coefficients with no excitors, and are renormalised to
+/// `\sum_x|N_x| + \sum_{x\mu}|n_{x\mu}| = 1` after every step with the removed amplitude kept,
+/// from which the optional dynamic shift `E_s \leftarrow E_s - (\alpha/\Delta\tau)\Delta\ln N_w`
+/// holds the population steady, as in deterministic NOCIQMC. The projected energy onto the NOCI
+/// trial `\langle\Psi_T| = \sum_z c_z\langle{}^z\Psi|` is
 /// `E = \sum_{zx}c_zH^e_{zx}N_x / \sum_{zx}c_zS^e_{zx}N_x`, as reported by the stochastic
 /// propagation. Propagation stops when the largest residual falls below `residual_tol` and the
 /// projected energy changes by less than `e_tol`. With `diagnostics`, the Jacobian at the
@@ -766,8 +791,8 @@ pub struct JMPopulations {
 ///   populations, the trial and the initial shift.
 /// - `history`: Storage for the flattened amplitudes of every step when `diagnostics` is set.
 /// # Returns:
-/// - `Option<JMPopulations>`: Final populations and their evaluation, or `None` if the
-///   propagation diverged or did not converge.
+/// - `Option<JMPopulations>`: Final populations, or `None` if the propagation diverged or did
+///   not converge.
 pub fn propagate_populations(
     jm: &JMEquations,
     options: &JMNOCCMCOptions,
@@ -802,21 +827,22 @@ pub fn propagate_populations(
             .zip(&nref)
             .map(|(nx, &nx0)| nx / nx0)
             .collect::<Vec<_>>();
-        let ev = jm.evaluate(&t);
-        let rmax = ev
-            .residual
+        let phi = jm.correlate(&t);
+        let effective = jm.effective(&phi);
+        let residual = jm.residuals(&jm.transformed(&t, &phi, &effective));
+        let rmax = residual
             .iter()
             .flatten()
             .fold(0.0_f64, |m, r| m.max(r.abs()));
 
         // A diverged step leaves G non-finite, which the eigensolver rejects.
-        if !rmax.is_finite() || !ev.g.iter().all(|g| g.is_finite()) {
+        if !rmax.is_finite() || !effective.g.iter().all(|g| g.is_finite()) {
             println!("JM-NOCCMC propagation diverged at step {}.", iter);
             return None;
         }
         if options.diagnostics {
             if iter == 0 {
-                jm.null_diagnostics(&t, &ev, options, "initial");
+                jm.null_diagnostics(&t, options, "initial");
             }
             history.push(t.iter().flatten().copied().collect());
         }
@@ -825,8 +851,8 @@ pub fn propagate_populations(
         }
 
         // Projected energy on the NOCI trial and the lowest state energy of `G`.
-        let e = trial.dot(&ev.he.dot(&nref)) / trial.dot(&ev.se.dot(&nref));
-        let eg = jm_energies(&ev.g)[0].re;
+        let e = trial.dot(&effective.he.dot(&nref)) / trial.dot(&effective.se.dot(&nref));
+        let eg = jm_energies(&effective.g)[0].re;
         let de = (e - previous).abs();
         let total = nref
             .iter()
@@ -845,13 +871,13 @@ pub fn propagate_populations(
         if rmax < options.residual_tol && de < options.e_tol {
             println!("JM-NOCCMC converged after {} steps.", iter);
             let nref = nref / nrefabs;
-            return Some(JMPopulations { t, nref, ev });
+            return Some(JMPopulations { t, nref });
         }
 
         // `-\Delta\tau N_xR_{x\mu} - \Delta\tau(g_x - E_s)n_{x\mu}` on the excitors and
         // `-\Delta\tau(g_x - E_s)N_x` on the references, with `g_xN_x = (GN)_x`.
-        let gn = ev.g.dot(&nref);
-        for (x, (nx, rx)) in n.iter_mut().zip(&ev.residual).enumerate() {
+        let gn = effective.g.dot(&nref);
+        for (x, (nx, rx)) in n.iter_mut().zip(&residual).enumerate() {
             let growth = gn[x] / nref[x] - shift;
             *nx *= 1.0 - dt * growth;
             nx.scaled_add(-dt * nref[x], rx);
@@ -892,7 +918,7 @@ pub fn propagate_populations(
 /// the relevant and null subspaces of the overlap.
 /// # Arguments:
 /// - `jm`: Propagation data.
-/// - `populations`: Final populations and their evaluation.
+/// - `populations`: Final populations.
 /// - `history`: Flattened amplitudes of every step.
 /// - `options`: JM-NOCCMC options.
 /// - `dir`: Directory receiving the `jacobian_history` file.
@@ -905,13 +931,14 @@ pub fn report_converged(
     options: &JMNOCCMCOptions,
     dir: &str,
 ) -> f64 {
-    let JMPopulations { t, nref, ev } = populations;
-    let energies = jm_energies(&ev.g);
+    let JMPopulations { t, nref } = populations;
+    let effective = jm.effective(&jm.correlate(t));
+    let energies = jm_energies(&effective.g);
     let norms = t.iter().map(|tx| tx.dot(tx).sqrt()).collect::<Vec<_>>();
-    print_jm_energies(&energies, &ev.se, nref, &norms);
+    print_jm_energies(&energies, &effective.se, nref, &norms);
 
     if options.diagnostics {
-        let (sigma, vt) = jm.null_diagnostics(t, ev, options, "final");
+        let (sigma, vt) = jm.null_diagnostics(t, options, "final");
         let tfinal = t.iter().flatten().copied().collect::<Array1<f64>>();
         create_dir_all(dir).unwrap();
         let path = format!("{}/{}", dir, "jacobian_history");
