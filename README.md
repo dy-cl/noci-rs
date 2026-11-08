@@ -300,9 +300,7 @@ Both updates keep $N_w$ in $\text{range}(S_{wx})$, avoiding population in the ov
 
 - Generalised-normal-ordered, spin-free coupled cluster with singles and doubles over a NOCI reference, truncated at second order in the cluster operator and fourth order in the cumulants [19, 21].
 - The reference enters only through its spin-free RDMs and cumulants, evaluated with the extended nonorthogonal Wick's theorem; redundant excitations are removed by projecting onto the first-order interacting space.
-- Jeziorski-Monkhorst NOCC (JM-NOCCMC): one cluster operator of arbitrary rank per nonorthogonal reference, with the state energies from the effective Hamiltonian [27].
-- Stochastic JM-NOCCMC by linked coupled cluster Monte Carlo on sparse excitor populations [20, 28], and deterministic propagation as its noise-free counterpart.
-- Analytic Jacobian diagnostics of the state-universal null space: stability, near-null singular values and their internal (type I) or external (type II) character.
+- Jeziorski-Monkhorst NOCC (JM-NOCCMC) with one cluster operator per nonorthogonal reference [27]: stochastic by linked CCMC [20, 28], deterministic as its noise-free counterpart, with Jacobian null-space diagnostics.
 
 ## Features
 
@@ -715,27 +713,9 @@ Natural orbitals within `active_space_tol` of two or zero electrons are treated 
 
 ### JM-NOCCMC
 
-The `jmnoccmc` table enables Jeziorski-Monkhorst NOCC on the reference determinants [27]. Each reference $|{}^x\Psi\rangle$ carries its own cluster operator $\hat T_x=\sum_\mu t_{x\mu}\hat\tau_{x\mu}$, with excitations up to `cluster_rank` in the orbital frame of $|{}^x\Psi\rangle$. This gives the correlated references $|\Phi_x\rangle=e^{\hat T_x}|{}^x\Psi\rangle$ and the state-universal states $|\Psi_k\rangle=\sum_x c_x^{(k)}|\Phi_x\rangle$.
+The `jmnoccmc` table enables Jeziorski-Monkhorst NOCC [27]. Each reference $|{}^x\Psi\rangle$ has its own cluster operator $\hat T_x$ of rank `cluster_rank`, giving correlated references $|\Phi_x\rangle=e^{\hat T_x}|{}^x\Psi\rangle$. The state energies are the eigenvalues of $G=(S^e)^{-1}H^e$, with $S^e_{zx}=\langle{}^z\Psi|\Phi_x\rangle$ and $H^e_{zx}=\langle{}^z\Psi|\hat H|\Phi_x\rangle$. The residuals are $R_{x\mu}=\langle{}^x\Psi|\hat\tau_{x\mu}^\dagger e^{-\hat T_x}|W_x\rangle$, with $|W_x\rangle=(\hat I-\hat P)\hat H|\Phi_x\rangle$ and $\hat P=\sum_{xz}|\Phi_x\rangle[(S^e)^{-1}]_{xz}\langle{}^z\Psi|$.
 
-The span $\mathcal M$ of the correlated references is invariant under the Hamiltonian when
-
-$$
-\hat H|\Phi_y\rangle=\sum_x G_{xy}|\Phi_x\rangle,
-\qquad
-G_{xy}=\sum_z[(S^e)^{-1}]_{xz}\langle{}^z\Psi|\hat H|\Phi_y\rangle,
-\qquad
-S^e_{zy}=\langle{}^z\Psi|\Phi_y\rangle.
-$$
-
-The state energies $E_k$ are the eigenvalues of $G$, with $\sum_y G_{xy}c_y^{(k)}=E_kc_x^{(k)}$. With the oblique projector $\hat P=\sum_{xz}|\Phi_x\rangle[(S^e)^{-1}]_{xz}\langle{}^z\Psi|$ onto $\mathcal M$, the invariance residual and the amplitude residuals are
-
-$$
-|W_x\rangle=\hat H|\Phi_x\rangle-\sum_y G_{yx}|\Phi_y\rangle=(\hat I-\hat P)\hat H|\Phi_x\rangle,
-\qquad
-R_{x\mu}=\langle{}^x\Psi|\hat\tau_{x\mu}^\dagger e^{-\hat T_x}|W_x\rangle.
-$$
-
-The amplitudes are carried by excitor populations $n_{x\mu}$ and reference populations $N_x$, with $t_{x\mu}=n_{x\mu}/N_x$. With one shift $E_s$ and $g_x=\sum_y G_{xy}N_y/N_x$, every step applies
+The amplitudes $t_{x\mu}=n_{x\mu}/N_x$ are carried by excitor and reference populations. With one shift $E_s$ and $g_x=\sum_yG_{xy}N_y/N_x$, each step applies:
 
 $$
 n_{x\mu}\leftarrow n_{x\mu}-\Delta\tau N_xR_{x\mu}-\Delta\tau(g_x-E_s)n_{x\mu},
@@ -743,33 +723,19 @@ n_{x\mu}\leftarrow n_{x\mu}-\Delta\tau N_xR_{x\mu}-\Delta\tau(g_x-E_s)n_{x\mu},
 N_x\leftarrow N_x-\Delta\tau(g_x-E_s)N_x.
 $$
 
-The reference populations follow the power iteration of $G$ towards its ground-state coefficients $c_x^{(0)}$. The amplitudes follow $t_{x\mu}\leftarrow t_{x\mu}-\Delta\tau R_{x\mu}/[1-\Delta\tau(g_x-E_s)]$, which is the plain update $t\leftarrow t-\Delta\tau R$ once the shift balances the growth. The projected energy onto the NOCI trial $\langle\Psi_T|=\sum_z c_z\langle{}^z\Psi|$ is
-
-$$
-E=\frac{\sum_{zx}c_z\langle{}^z\Psi|\hat H|\Phi_x\rangle N_x}{\sum_{zx}c_zS^e_{zx}N_x}.
-$$
-
-The populations start from the reference NOCI coefficients with no excitors.
-
-- **Stochastic propagation** is selected by a nested `qmc` table, which takes the options of [Stochastic Propagation](#stochastic-propagation) with the uniform generator only.
-  - The same-reference part of $N_xR_{x\mu}$ is sampled by linked coupled cluster Monte Carlo [20, 28], and the coupling between references through sampled projections of $e^{\hat T_x}$ clusters.
-  - $G$ is taken from running sums of $S^e$ and $\langle{}^z\Psi|\hat H|\Phi_x\rangle$ over the report blocks so far, each block forgotten by $\lambda=1-1/$`memory_effective`, and applied one block late.
-- **Deterministic propagation**, used without a `qmc` table, is its noise-free counterpart.
-  - It applies the same update with $G$ evaluated exactly at every step.
-  - It renormalises the populations after every step and keeps the removed amplitude, as deterministic NOCIQMC does.
+- **Stochastic propagation:** a nested `qmc` table selects it. The excitor terms are sampled by linked CCMC [20, 28], and $G$ comes from report-block sums forgotten over `memory_effective` blocks.
+- **Deterministic propagation:** without `qmc`, the same update runs as the noise-free counterpart, with exact $G$. Populations are renormalised every step and the dynamic shift is optional, as in deterministic NOCIQMC.
 
 ```lua
 jmnoccmc = {
     cluster_rank = 2,
     expansion_rank = nil,
-
     dt = 0.1,
     memory_effective = 100,
 
     max_steps = 10000,
     residual_tol = 1e-9,
     e_tol = 1e-10,
-
     dynamic_shift = true,
     dynamic_shift_alpha = 0.1,
 
@@ -779,76 +745,16 @@ jmnoccmc = {
 }
 ```
 
-**Ranks.**
-- `cluster_rank` is the highest excitation rank of each $\hat T_x$, `2` for CCSD.
-- Each $|\Phi_x\rangle$ is expanded over the determinants of $|{}^x\Psi\rangle$ up to rank `expansion_rank`, or every rank when it is omitted. The Hamiltonian and overlap are therefore built once, as rectangular matrices between each reference's excitations up to `cluster_rank` and these expansion spaces.
-- Values of `expansion_rank` below `cluster_rank + 2` are rejected, since the single-reference terms need that rank.
-- The references have different orbitals, so every determinant of one reference overlaps the excitations of another. A finite `expansion_rank` truncates these inter-reference overlaps; only the complete expansion is exact. It corresponds to the largest cluster size sampled by stochastic propagation.
+**Options:**
+- `expansion_rank` truncates the expansion of each $|\Phi_x\rangle$, which is exact only when complete. It must be at least `cluster_rank + 2`.
+- Deterministic runs stop once $\max|R_{x\mu}|<$ `residual_tol` and the projected energy changes by less than `e_tol`.
+- `diagnostics = true` diagnoses the Jacobian $J=\partial R/\partial t$ at the initial and final amplitudes. It reports:
+  - the lowest eigenvalues, where $\mathrm{Re}\,\lambda\le0$ marks a growing mode such as an intruder;
+  - the singular values below `null_eps` relative to the largest;
+  - the lowest `null_n` singular values, each with the external fraction of its vector: 0 for internal mixing of the $|\Phi_x\rangle$ (type I), 1 for an external response (type II).
 
-**Time step and convergence.**
-- `dt` is the imaginary-time step of both propagations.
-- Deterministic propagation stops after `max_steps`, or once $\max|R_{x\mu}|$ falls below `residual_tol` and the projected energy changes by less than `e_tol` per step.
-- With `dynamic_shift = true`, the shift follows the population, $E_s\leftarrow E_s-(\alpha/\Delta\tau)\Delta\ln N_w$ with $\alpha=$ `dynamic_shift_alpha`, as in deterministic NOCIQMC. It starts from the reference NOCI energy.
-- The table reports the projected energy, the lowest eigenvalue of $G$, the shift, the total and reference populations, and $\max|R_{x\mu}|$.
-
-#### Jacobian diagnostics
-
-`diagnostics = true` diagnoses the Jacobian $J_{y\mu,x\nu}=\partial R_{y\mu}/\partial t_{x\nu}$ at the initial and final amplitudes. This mirrors the diagnosis of the overlap null space in deterministic NOCIQMC. $J$ is formed analytically:
-
-$$
-J_{y\mu,x\nu}=\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}(\hat I-\hat P)(\delta_{yx}\hat H-G_{xy})e^{\hat T_x}\hat\tau_{x\nu}|{}^x\Psi\rangle-\delta_{yx}\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger\hat\tau_{y\nu}e^{-\hat T_y}|W_y\rangle,
-$$
-
-whose second term vanishes at a solution.
-
-**Stability.** Near a solution the update linearises to $I-\Delta\tau J$. That contracts only if every eigenvalue $\lambda$ of $J$ has $\mathrm{Re}\,\lambda>0$ and $\Delta\tau<2\,\mathrm{Re}\,\lambda/|\lambda|^2$.
-
-**Null space.** A null of $J$ is a variation $\delta t$ with $\delta R_{y\mu}=0$ for every $y,\mu$. Each variation of the correlated references splits into internal mixing and an external part:
-
-$$
-|\delta\Phi_x\rangle=\sum_z C_{zx}|\Phi_z\rangle+|X_x\rangle,
-\qquad
-C_{zx}=\sum_y[(S^e)^{-1}]_{zy}\langle{}^y\Psi|\delta\Phi_x\rangle,
-\qquad
-|X_x\rangle=(\hat I-\hat P)|\delta\Phi_x\rangle.
-$$
-
-With $\hat H_\perp=(\hat I-\hat P)\hat H(\hat I-\hat P)$, this gives
-
-$$
-|\delta W_x\rangle=\sum_z C_{zx}|W_z\rangle+\hat H_\perp|X_x\rangle-\sum_y G_{yx}|X_y\rangle,
-$$
-
-and a null requires $\langle{}^x\Psi|\hat\tau_{x\mu}^\dagger e^{-\hat T_x}|\delta W_x\rangle=0$ for every retained $\mu$.
-
-- **Type I (internal mixing only, $|X_x\rangle=0$).** This needs two conditions:
-  - *Condition A:* the mixing must be representable at the cluster rank, $\hat\Pi_{x,>n}\sum_{z\neq x}C_{zx}e^{-\hat T_x}|\Phi_z\rangle=0$ with $n=$ `cluster_rank`.
-  - *Condition B:* $\sum_z C_{zx}\langle{}^x\Psi|\hat\tau_{x\mu}^\dagger e^{-\hat T_x}|W_z\rangle=0$.
-
-  Condition A holds at the complete cluster limit. There, $|W_x\rangle=0$ at a solution, so condition B holds too, and the $M(M-1)$ mixings of $M$ references are exact nulls that leave the state energies unchanged. Below the complete limit, condition A generically fails and the truncation removes these nulls.
-- **Type II (external response only, $C_{zx}=0$).** Summing with the coefficients of state $k$ gives $\sum_x c_x^{(k)}|\delta W_x\rangle=(\hat H_\perp-E_k)|X^{(k)}\rangle$, with $|X^{(k)}\rangle=\sum_x c_x^{(k)}|X_x\rangle$. This vanishes when an external level of $\hat H_\perp$ meets a target root, which is the intruder problem:
-  - At such a crossing $J$ is singular.
-  - Beyond it, an eigenvalue of $J$ with negative real part is a growing mode, and the update diverges.
-- **Type III** combines both types.
-
-**Printed output.** At each of the two points the diagnostics print:
-- the lowest eigenvalues of $J$, how many have $\mathrm{Re}\,\lambda\le0$, and the largest stable `dt`;
-- the condition number of $S^e$;
-- the partition of the singular values of $J$ into a near-null part $\sigma_i<\epsilon\sigma_{\max}$, with $\epsilon=$ `null_eps`, and its complement;
-- the lowest `null_n` singular values, each with the external fraction of its right singular vector:
-
-$$
-\frac{\sum_x\||X_x\rangle\|^2}{\sum_x(\|\hat P|\delta\Phi_x\rangle\|^2+\||X_x\rangle\|^2)}.
-$$
-
-The external fraction is 0 for type I and 1 for type II. Its norms need the overlap between every pair of expansion determinants, which is built only with `diagnostics`. This makes the diagnostics, like NOCIQMC's diagonalisation of the overlap, meant for small systems.
-
-**History file.** The file `jacobian_history` in `write.write_dir` resolves the amplitude error $\mathbf t_k-\mathbf t_\star$ of every step along the right singular vectors $\mathbf v_i$ of $J$ at the final amplitudes $\mathbf t_\star$. This is the counterpart of NOCIQMC's relevant and null coefficients.
-- Its rows are `iter,space,vector,sigma,component`, with `component` $=\mathbf v_i\cdot(\mathbf t_k-\mathbf t_\star)$.
-- Vectors are numbered from the lowest singular value.
-- `space` is `null` or `range` by `null_eps`.
-
-**Choosing references.** Reference sets with more references than target states produce intruders. RHF together with the spin-reversed UHF pair in stretched hydrogen chains is one example. Use the spin-reversed UHF pair alone.
+  It also writes `jacobian_history` to `write.write_dir`, giving $\mathbf t_k-\mathbf t_\star$ along the final singular vectors. It builds the overlap of all expansion determinants, so use it for small systems only.
+- With more references than target states (e.g. RHF plus the spin-reversed UHF pair in stretched hydrogen chains), intruders appear.
 
 ### Defaults
 
