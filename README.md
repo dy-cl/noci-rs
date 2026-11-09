@@ -635,7 +635,7 @@ A NOCI-PT2-only calculation may be performed by limiting the selected NOCI proce
 
 ### ResHF Reference Optimisation
 
-The `reshf` table replaces the real SCF states marked `noci = true` by resonating Hartree–Fock (ResHF) determinants before reference NOCI [29]. ResHF optimises the orbitals of every reference determinant together with the reference NOCI expansion, making the state-averaged energy $E_\text{SA} = \sum_I w_I E_I$ of the reference NOCI states stationary. The optimised states keep their labels and are used unchanged by reference NOCI, selected NOCI and NOCIQMC.
+The `reshf` table replaces the real SCF states marked `noci = true` by resonating Hartree–Fock (ResHF) determinants before reference NOCI [29]. ResHF optimises the orbitals of every reference determinant together with the reference NOCI expansion, minimising the state-averaged energy $E_\text{SA} = \sum_I w_I E_I$.
 
 ```lua
 reshf = {
@@ -644,7 +644,11 @@ reshf = {
 }
 ```
 
-`weights` are the state weights $w_I$, lowest root first; they must be non-negative and sum to one, and `{1.0}` optimises the ground state alone. `cutoff` is the ResHF-cutoff floor $c$ on the singular values of each occupied orbital overlap matrix: when $\sigma_\text{min}/\sigma_\text{ref} < c$, every singular value is raised to at least $c\,\sigma_\text{ref}$, with $\sigma_\text{ref} = \sigma_\text{max}$ for more than one occupied orbital and $1$ otherwise, which keeps nearly orthogonal determinant pairs finite. Each iteration solves the reference NOCI problem and takes one Roothaan step per determinant on its resonating Fock matrices, with one DIIS history shared by all determinants. Convergence uses `e_tol`, `fds_sdf_tol`, `max_cycle` and `diis.space` from the `scf` table; if `max_cycle` is reached, a warning is printed and the last determinants are used.
+`weights` are the state weights $w_I$, lowest root first, and must sum to one. `cutoff` floors the small singular values of the occupied orbital overlaps, so nearly orthogonal determinants stay finite. Convergence uses `e_tol`, `fds_sdf_tol`, `max_cycle` and `diis.space` from the `scf` table.
+
+- The commutator norm is summed over all determinants, so it grows roughly as the square root of their number.
+- ResHF minimises the floored energy, which equals the reference NOCI energy unless two determinants become nearly orthogonal.
+- The ResHF determinants also seed the SCF at the next geometry.
 
 ### Output
 
