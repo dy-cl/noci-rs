@@ -9,7 +9,7 @@ use ndarray::Array2;
 
 // Crate-root imports.
 use crate::elements::occ_coeffs;
-use crate::input::Input;
+use crate::input::{Input, ResHFOptions};
 use crate::scf::{
     DensityMode, Diis, occ_first, orbital_gradient, print_header, print_iteration, roothaan_step,
 };
@@ -33,13 +33,13 @@ const WEIGHTTOL: f64 = 1e-10;
 /// `E_{\text{SA}} = \sum_I w_I E_I` stationary. Each iteration builds the floored pair
 /// quantities, solves `H c = S c E`, builds the resonating Fock matrices and takes one
 /// Roothaan step per determinant, all accelerated by one DIIS history whose channels are the
-/// two spins of every determinant. Weights and cutoff come from `input.reshf`
-/// (defaults if absent); `e_tol`, `fds_sdf_tol`, `max_cycle` and the DIIS space from
-/// `input.scf`. Convergence needs `|E - E_{\text{old}}| <` `e_tol` and
+/// two spins of every determinant. Weights and cutoff come from `options`; `e_tol`,
+/// `fds_sdf_tol`, `max_cycle` and the DIIS space from `input.scf`. Convergence needs `|E - E_{\text{old}}| <` `e_tol` and
 /// `\sqrt{\sum_A \|X^\dagger (F^A P^A S - S P^A F^A) X\|^2} <` `fds_sdf_tol`.
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
 /// - `input`: User input specifications.
+/// - `options`: ResHF state weights and singular value floor.
 /// - `states`: SCF states; those with `noci_basis` are optimised, the others are kept as given.
 /// # Returns
 /// - `Vec<SCFState>`: Every input state, with the NOCI states replaced in place by their
@@ -47,9 +47,9 @@ const WEIGHTTOL: f64 = 1e-10;
 pub fn reshf_optimise(
     ao: &AoData,
     input: &Input,
+    options: &ResHFOptions,
     states: &[SCFState],
 ) -> Vec<SCFState> {
-    let options = input.reshf.clone().unwrap_or_default();
     let verbose = input.write.verbose >= 1;
 
     // Optimise the NOCI states in their original order, occupied orbitals first.

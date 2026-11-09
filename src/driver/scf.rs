@@ -46,10 +46,9 @@ pub fn generate_real_references(
             generate_reference_noci_basis(ao, input, Some(prev_states), None).states
         }
     });
-    let states = if input.reshf.is_some() {
-        crate::noci::optimised::reshf_optimise(ao, input, &states)
-    } else {
-        states
+    let states = match &input.reshf {
+        Some(options) => crate::noci::optimised::reshf_optimise(ao, input, options, &states),
+        None => states,
     };
 
     RealReferencePrep {
