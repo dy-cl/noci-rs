@@ -13,15 +13,16 @@ use crate::scf::fock_nonsymmetric;
 use crate::{AoData, NOCIScalar, SCFState};
 
 /// Cutoff-floored quantities of one ordered determinant pair `(A, B)`.
-pub struct ResHFPair {
+#[derive(Clone)]
+pub(super) struct ResHFPair {
     /// Signed overlap `s_{AB} = \eta \prod_i \sigma^\alpha_i \prod_j \sigma^\beta_j`, floored.
-    pub s: f64,
+    pub(super) s: f64,
     /// Coupling `H_{AB}`, including `s_{AB} E_{\text{nuc}}`.
-    pub h: f64,
+    pub(super) h: f64,
     /// `Q^{AB,\alpha}` and `Q^{AB,\beta}`.
-    pub q: [Array2<f64>; 2],
+    pub(super) q: [Array2<f64>; 2],
     /// `F^{AB,\alpha}` and `F^{AB,\beta}`.
-    pub f: [Array2<f64>; 2],
+    pub(super) f: [Array2<f64>; 2],
 }
 
 impl ResHFPair {
@@ -39,62 +40,6 @@ impl ResHFPair {
             q: [self.q[0].t().to_owned(), self.q[1].t().to_owned()],
             f: [self.f[0].t().to_owned(), self.f[1].t().to_owned()],
         }
-    }
-}
-
-/// Cutoff-floored quantities of all ordered pairs of a determinant list, stored row-major with
-/// index `a * n + b`.
-pub struct ResHFPairs {
-    /// Number of determinants `n`.
-    n: usize,
-    /// Quantities of pair `(A, B)` at index `a * n + b`.
-    pairs: Vec<ResHFPair>,
-}
-
-impl ResHFPairs {
-    /// Number of determinants `n` the pairs are formed from.
-    /// # Arguments:
-    /// - `self`: Pair quantities.
-    /// # Returns
-    /// - `usize`: Number of determinants.
-    pub fn ndet(&self) -> usize {
-        self.n
-    }
-
-    /// Quantities of the ordered pair `(A, B)`.
-    /// # Arguments:
-    /// - `self`: Pair quantities.
-    /// - `a`: Bra determinant index `A`.
-    /// - `b`: Ket determinant index `B`.
-    /// # Returns
-    /// - `&ResHFPair`: Quantities of the pair `(A, B)`.
-    /// # Panics
-    /// - Panics if `a` or `b` is not below `n`.
-    pub fn pair(
-        &self,
-        a: usize,
-        b: usize,
-    ) -> &ResHFPair {
-        assert!(a < self.n && b < self.n, "pair ({a}, {b}) out of range");
-        &self.pairs[a * self.n + b]
-    }
-
-    /// Hamiltonian matrix `H_{AB}` built from the floored pair couplings.
-    /// # Arguments:
-    /// - `self`: Pair quantities.
-    /// # Returns
-    /// - `Array2<f64>`: Hamiltonian matrix, including nuclear repulsion.
-    pub fn h(&self) -> Array2<f64> {
-        Array2::from_shape_fn((self.n, self.n), |(a, b)| self.pair(a, b).h)
-    }
-
-    /// Overlap matrix `S_{AB} = s_{AB}` built from the floored pair overlaps.
-    /// # Arguments:
-    /// - `self`: Pair quantities.
-    /// # Returns
-    /// - `Array2<f64>`: Overlap matrix.
-    pub fn s(&self) -> Array2<f64> {
-        Array2::from_shape_fn((self.n, self.n), |(a, b)| self.pair(a, b).s)
     }
 }
 
@@ -136,7 +81,7 @@ fn spin_transition(
 /// - `cutoff`: Relative singular value floor; see [`build_s_pair_floored`].
 /// # Returns
 /// - `ResHFPair`: Floored overlap, coupling, transition densities and Fock matrices.
-pub fn reshf_pair(
+fn reshf_pair(
     ao: &AoData,
     a: &SCFState,
     b: &SCFState,
@@ -172,38 +117,35 @@ pub fn reshf_pair(
     }
 }
 
-/// Cutoff-floored ResHF quantities of every ordered pair of `dets`. Pairs `(A, B)` with
-/// `B \le A` are built directly and `(B, A)` follows from them by [`ResHFPair::reversed`].
+/// Cutoff-floored ResHF quantities of every ordered pair of `dets`, indexed `[(a, b)]`. Pairs
+/// `(A, B)` with `B \le A` are built directly and `(B, A)` follows from them by
+/// [`ResHFPair::reversed`].
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
 /// - `dets`: Determinants `A = 0, \ldots, n - 1`.
 /// - `cutoff`: Relative singular value floor.
 /// # Returns
-/// - `ResHFPairs`: Quantities of all `n^2` ordered pairs.
-pub fn reshf_pairs(
+/// - `Array2<ResHFPair>`: Quantities of all `n^2` ordered pairs.
+pub(super) fn reshf_pairs(
     ao: &AoData,
     dets: &[SCFState],
     cutoff: f64,
-) -> ResHFPairs {
+) -> Array2<ResHFPair> {
     let n = dets.len();
 
     // Build the lower triangle and fill the upper triangle from the reversed pairs.
-    let mut pairs: Vec<Option<ResHFPair>> = (0..n * n).map(|_| None).collect();
-    for a in 0..n {
-        for b in 0..=a {
-            let ab = reshf_pair(ao, &dets[a], &dets[b], cutoff);
-            if b != a {
-                pairs[b * n + a] = Some(ab.reversed());
-            }
-            pairs[a * n + b] = Some(ab);
+    let lower: Vec<Vec<ResHFPair>> = (0..n)
+        .map(|a| {
+            (0..=a)
+                .map(|b| reshf_pair(ao, &dets[a], &dets[b], cutoff))
+                .collect()
+        })
+        .collect();
+    Array2::from_shape_fn((n, n), |(a, b)| {
+        if b <= a {
+            lower[a][b].clone()
+        } else {
+            lower[b][a].reversed()
         }
-    }
-
-    ResHFPairs {
-        n,
-        pairs: pairs
-            .into_iter()
-            .map(|p| p.expect("every pair is built"))
-            .collect(),
-    }
+    })
 }

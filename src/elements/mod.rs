@@ -46,7 +46,6 @@ pub(crate) use excited::{calculate_hs_excited, calculate_hs_states, calculate_s_
 pub(crate) use fock::{calculate_f_pair, compare_f_pair_wicks_naive};
 pub(crate) use hs::{calculate_hs_pair, calculate_hs_pair_dense, compare_hs_pair_wicks_naive};
 pub(crate) use m::calculate_m_pair;
-pub(crate) use naive::calculate_hs_pair_naive_reshf;
 pub(crate) use naive::{
     build_s_pair, build_s_pair_floored, calculate_s_pair_naive, occ_coeffs, pair_density,
 };

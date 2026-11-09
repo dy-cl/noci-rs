@@ -21,7 +21,7 @@ use super::diis::Diis;
 use super::kernels::DensityMode;
 use super::kernels::{density, energy, fock, orbital_gradient};
 use super::occupation::{mo_occupancies, occvec_to_bits};
-use super::print::{print_header, print_mos};
+use super::print::{print_header, print_iteration, print_mos};
 use super::select::{aufbau_indices, mom_select};
 
 /// Convert spin enum to printable label.
@@ -397,10 +397,7 @@ pub fn scf_cycle(
             (ga.iter().map(|z| z * z).sum::<f64>() + gb.iter().map(|z| z * z).sum::<f64>()).sqrt();
 
         if input.write.verbose >= 1 {
-            println!(
-                "{:4} {:12.6} {:12.4e} {:12.4e} {:12.4e}",
-                iter, step.e, d_e, err, gnorm
-            );
+            print_iteration(iter, step.e, d_e, err, gnorm);
         }
 
         // Finalise immediately once both configured convergence criteria are satisfied.

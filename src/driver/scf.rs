@@ -47,7 +47,7 @@ pub fn generate_real_references(
         }
     });
     let states = if input.reshf.is_some() {
-        crate::noci::optimised::reshf_optimise(ao, input, &states).states
+        crate::noci::optimised::reshf_optimise(ao, input, &states)
     } else {
         states
     };

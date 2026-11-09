@@ -7,7 +7,7 @@ scf = {
 }
 
 mol = {
-    basis = 'STO-3G',
+    basis = '3-21G',
     r = {1.5},
     unit = 'Ang',
     atoms = function(r)
@@ -49,4 +49,5 @@ wicks = {
 
 reshf = {
     weights = {1.0},
+    cutoff = 1e-8,
 }

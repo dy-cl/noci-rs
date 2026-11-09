@@ -43,3 +43,4 @@ pub(crate) use diis::Diis;
 // Restricted function re-exports.
 pub(crate) use cycle::roothaan_step;
 pub(crate) use h::{continue_hscf_track, initialise_hscf_track, physical_hscf_state};
+pub(crate) use print::{print_header, print_iteration};

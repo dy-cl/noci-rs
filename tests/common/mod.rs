@@ -38,6 +38,8 @@ pub fn load_test<T: DeserializeOwned>(name: &str) -> (Input, AoData, T) {
 /// # Returns
 /// - `(MutexGuard<'static, ()>, &'static mpi::environment::Universe)`: Guard held while MPI is used
 ///   and the process-global MPI universe.
+// Only tests that build Wick's intermediates or run QMC initialise MPI.
+#[allow(dead_code)]
 pub fn mpi_universe() -> (MutexGuard<'static, ()>, &'static mpi::environment::Universe) {
     static MPI_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     static MPI_UNIVERSE: OnceLock<mpi::environment::Universe> = OnceLock::new();
