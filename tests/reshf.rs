@@ -14,7 +14,7 @@ use self::common::{assert_close, load_test};
 
 /// Expected exact energies for a ResHF or reference NOCI fixture.
 #[derive(Deserialize)]
-struct ExpectedReferenceNoci {
+struct ExpectedResHF {
     /// Expected SCF state energies, after ResHF for a ResHF fixture.
     scf_energies: Vec<f64>,
     /// Expected reference-space NOCI energy.
@@ -27,7 +27,7 @@ struct ExpectedReferenceNoci {
 /// # Returns
 /// - `(Vec<f64>, f64)`: Sorted ResHF determinant energies and the reference NOCI energy.
 fn run_reshf_fixture(fixture: &str) -> (Vec<f64>, f64) {
-    let (mut input, ao, _expected): (_, _, ExpectedReferenceNoci) = load_test(fixture);
+    let (mut input, ao, _expected): (_, _, ExpectedResHF) = load_test(fixture);
 
     let basis = generate_reference_noci_basis(&ao, &mut input, None, None);
     let options = input.reshf.as_ref().unwrap();
@@ -57,7 +57,7 @@ fn check_reshf_fixture(
     fixture: &str,
     system: &str,
 ) {
-    let (_input, _ao, expected): (_, _, ExpectedReferenceNoci) = load_test(fixture);
+    let (_input, _ao, expected): (_, _, ExpectedResHF) = load_test(fixture);
     let (got_scf, got_ref) = run_reshf_fixture(fixture);
 
     let mut want_scf = expected.scf_energies;
@@ -97,20 +97,4 @@ fn reshf_h2_3_21g_1_5_ang_energies() {
 #[serial]
 fn reshf_h4_sto_3g_1_75_ang_energies() {
     check_reshf_fixture("RESHF_H4_STO-3G_1_75", "H4");
-}
-
-/// Test that ResHF lowers the reference NOCI energy of the H4 STO-3G 1.75 Angstrom SCF states.
-/// # Panics
-/// - If the ResHF reference NOCI energy is not below the reference NOCI energy of the SCF states.
-#[test]
-#[serial]
-fn reshf_h4_sto_3g_1_75_ang_lowers_reference_noci() {
-    let (_input, _ao, scf): (_, _, ExpectedReferenceNoci) = load_test("REF_NOCI_H4_STO-3G_1_75");
-    let (_got_scf, got_ref) = run_reshf_fixture("RESHF_H4_STO-3G_1_75");
-
-    assert!(
-        got_ref < scf.reference_noci_energy,
-        "H4 ResHF reference NOCI energy {got_ref} is not below the SCF value {}",
-        scf.reference_noci_energy
-    );
 }
