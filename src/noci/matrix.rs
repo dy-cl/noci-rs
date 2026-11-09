@@ -378,7 +378,8 @@ pub fn build_noci_hs<T: NOCIScalar>(
         scatter_matrix_elements_dense(&mut h, &mut s, symmetric);
 
         if data.input.write.write_matrices {
-            write_hs_matrices(&data.input.write.write_dir, &h, &s);
+            let write = &data.input.write;
+            write_hs_matrices(&write.write_dir, &h, &s, &write.matrix_format);
         }
         (h, s, dt)
     })

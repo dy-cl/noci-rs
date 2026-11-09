@@ -13,10 +13,10 @@ use crate::{Error, Result};
 // Parent/sibling imports.
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
-    InitialShift, Input, JMNOCCMCOptions, Metadynamics, MolOptions, NOCCMCOptions, NOCCNewton,
-    NOCCPreconditioner, PropagationOptions, Propagator, QMCOptions, ResHFOptions, SCFExcitation,
-    SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin, SpinBias,
-    StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
+    InitialShift, Input, JMNOCCMCOptions, MatrixFormat, Metadynamics, MolOptions, NOCCMCOptions,
+    NOCCNewton, NOCCPreconditioner, PropagationOptions, Propagator, QMCOptions, ResHFOptions,
+    SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin,
+    SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -310,6 +310,21 @@ fn read_write(write_tbl: Option<Table>) -> WriteOptions {
                 std::process::exit(1);
             }
         };
+        // Check the matrix file format.
+        let matrix_format = match write_tbl
+            .get::<_, Option<String>>("matrix_format")
+            .unwrap_or(None)
+            .as_deref()
+        {
+            None => defaults.matrix_format,
+            Some("text") => MatrixFormat::Text,
+            Some("npy") => MatrixFormat::Npy,
+            Some(other) => {
+                eprintln!("write.matrix_format must be \"text\" or \"npy\", not \"{other}\"");
+                std::process::exit(1);
+            }
+        };
+
         WriteOptions {
             verbose,
             write_deterministic_coeffs: write_tbl
@@ -324,6 +339,7 @@ fn read_write(write_tbl: Option<Table>) -> WriteOptions {
             write_matrices: write_tbl
                 .get("write_matrices")
                 .unwrap_or(defaults.write_matrices),
+            matrix_format,
             write_dir: write_tbl.get("write_dir").unwrap_or(defaults.write_dir),
             write_restart: write_tbl
                 .get("write_restart")

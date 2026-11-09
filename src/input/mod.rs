@@ -46,7 +46,7 @@ pub use scf::{DiisOptions, SCFInfo};
 pub use selected::{SNOCIOptions, SNOCIPreconditioner, SNOCIStorage};
 pub use state::{Metadynamics, SCFExcitation, SpatialBias, Spin, SpinBias, StateRecipe, StateType};
 pub use wicks::{WicksOptions, WicksStorage};
-pub use write::WriteOptions;
+pub use write::{MatrixFormat, WriteOptions};
 
 // Public function re-exports.
 pub use parse::load_input;

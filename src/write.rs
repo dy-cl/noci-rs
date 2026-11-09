@@ -10,8 +10,10 @@ use hdf5::types::VarLenUnicode;
 use ndarray::{Array1, Array2};
 
 // Crate-root imports.
-use crate::AoData;
-use crate::input::{ExcitationGen, InitialShift, Input, Spin, StateType, WicksStorage};
+use crate::input::{
+    ExcitationGen, InitialShift, Input, MatrixFormat, Spin, StateType, WicksStorage,
+};
+use crate::{AoData, NOCIScalar};
 
 const CAMEL: &str = r#"
                                                            .:=+#%%%%%#*+:
@@ -332,6 +334,11 @@ pub fn print_input(input: &Input) {
         input.write.write_excitation_hist
     );
     println!("WRITE_MATRICES: {}", input.write.write_matrices);
+    let matrix_format = match &input.write.matrix_format {
+        MatrixFormat::Text => "text",
+        MatrixFormat::Npy => "npy",
+    };
+    println!("MATRIX_FORMAT: {}", matrix_format);
     println!("WRITE_RESTART: {:?}", input.write.write_restart);
     println!(
         "WRITE_RESTART_INTERVAL: {:?}",
@@ -490,19 +497,67 @@ pub fn write_matrix<T: Display>(
     }
 }
 
+/// Write a matrix to disk as a C-ordered little-endian NumPy `.npy` file, `float64` for real
+/// and `complex128` for complex scalars.
+/// # Arguments:
+/// - `path`: Output path.
+/// - `m`: Matrix to write.
+/// # Returns:
+/// - `()`: Writes matrix to disk.
+pub fn write_npy<T: NOCIScalar>(
+    path: &str,
+    m: &Array2<T>,
+) {
+    let mut f = BufWriter::with_capacity(1 << 24, StdFile::create(path).unwrap());
+
+    // Header dictionary, padded with spaces so the data start on a 64-byte boundary.
+    let complex = std::mem::size_of::<T>() == 2 * std::mem::size_of::<f64>();
+    let descr = if complex { "<c16" } else { "<f8" };
+    let dict = format!(
+        "{{'descr': '{descr}', 'fortran_order': False, 'shape': ({}, {}), }}",
+        m.nrows(),
+        m.ncols()
+    );
+    let pad = (64 - (10 + dict.len() + 1) % 64) % 64;
+    let header = format!("{dict}{}\n", " ".repeat(pad));
+
+    // Magic string, version 1.0, header length and header.
+    f.write_all(b"\x93NUMPY\x01\x00").unwrap();
+    f.write_all(&(header.len() as u16).to_le_bytes()).unwrap();
+    f.write_all(header.as_bytes()).unwrap();
+
+    // Elements in row-major order, imaginary parts after real parts for complex scalars.
+    for x in m.iter() {
+        f.write_all(&x.re().to_le_bytes()).unwrap();
+        if complex {
+            f.write_all(&x.im().to_le_bytes()).unwrap();
+        }
+    }
+}
+
 /// Write Hamiltonian and overlap matrices to disk.
 /// # Arguments:
 /// - `write_dir`: Directory to write matrices into.
 /// - `h`: Hamiltonian matrix.
 /// - `s`: Overlap matrix.
+/// - `format`: File format of the matrices.
 /// # Returns:
-/// - `()`: Writes Hamiltonian and overlap matrices.
-pub fn write_hs_matrices<T: Display>(
+/// - `()`: Writes `HAMI` and `OVLP`, or `HAMI.npy` and `OVLP.npy`.
+pub fn write_hs_matrices<T: NOCIScalar + Display>(
     write_dir: &str,
     h: &Array2<T>,
     s: &Array2<T>,
+    format: &MatrixFormat,
 ) {
     create_dir_all(write_dir).unwrap();
-    write_matrix(&format!("{}/HAMI", write_dir), h);
-    write_matrix(&format!("{}/OVLP", write_dir), s);
+    match format {
+        MatrixFormat::Text => {
+            write_matrix(&format!("{}/HAMI", write_dir), h);
+            write_matrix(&format!("{}/OVLP", write_dir), s);
+        }
+        MatrixFormat::Npy => {
+            write_npy(&format!("{}/HAMI.npy", write_dir), h);
+            write_npy(&format!("{}/OVLP.npy", write_dir), s);
+        }
+    }
 }

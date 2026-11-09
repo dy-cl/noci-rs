@@ -1,5 +1,13 @@
 // input/write.rs
 
+/// File format of the Hamiltonian and overlap matrices written by `write_matrices`.
+pub enum MatrixFormat {
+    /// Plain text, one matrix row per line, written to `HAMI` and `OVLP`.
+    Text,
+    /// NumPy `.npy` binary, written to `HAMI.npy` and `OVLP.npy`.
+    Npy,
+}
+
 pub struct WriteOptions {
     /// Output verbosity: 0 = minimal/results, 1 = normal progress/debug, 2 = raw numerical diagnostics.
     pub verbose: u8,
@@ -11,6 +19,8 @@ pub struct WriteOptions {
     pub write_excitation_hist: bool,
     /// Whether to write matrix data.
     pub write_matrices: bool,
+    /// File format of the written matrices.
+    pub matrix_format: MatrixFormat,
     /// Output directory.
     pub write_dir: String,
     /// Optional restart output path.
@@ -32,6 +42,7 @@ impl Default for WriteOptions {
             write_orbitals: false,
             write_excitation_hist: false,
             write_matrices: false,
+            matrix_format: MatrixFormat::Text,
             write_dir: "data".to_string(),
             write_restart: None,
             write_restart_interval: None,
