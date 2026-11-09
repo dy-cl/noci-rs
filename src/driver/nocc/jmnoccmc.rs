@@ -8,7 +8,7 @@ use crate::PostSCFData;
 use crate::determinant::NOCIIndex;
 use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WicksView;
-use crate::input::Input;
+use crate::input::{InitialShift, Input};
 use crate::nocc::{JMEquations, jm_qmc_step, jm_space, propagate_populations, report_converged};
 use crate::noci::{build_noci_hs, build_noci_s};
 
@@ -89,11 +89,11 @@ pub(crate) fn run_jmnoccmc(
 /// - `post`: Data shared by post-SCF methods.
 /// - `input`: User input specifications.
 /// - `reference`: Reference NOCI coefficients and energy, giving the initial reference
-///   populations and shift.
+///   populations and, with `initial_shift = "noci"`, the initial shift.
 /// - `wicks`: Optional precomputed Wick's intermediates of the reference parents.
 /// - `world`: MPI communicator.
 /// # Returns:
-/// - `f64`: Averaged ground-state JM-NOCCMC energy.
+/// - `f64`: Projected energy of the last report.
 /// # Panics
 /// - Panics if the JM-NOCCMC options are absent.
 pub(crate) fn run_jmnoccmc_stochastic(
@@ -109,6 +109,13 @@ pub(crate) fn run_jmnoccmc_stochastic(
         .expect("JM-NOCCMC options are required");
     let (c0, e_noci) = reference;
 
+    // Start population control from the requested shift, as stochastic NOCIQMC does.
+    let shift = match options.qmc.as_ref().unwrap().initial_shift {
+        InitialShift::Hf => post.space.parents()[0].e,
+        InitialShift::Noci => e_noci,
+        InitialShift::Value(x) => x,
+    };
+
     if world.rank() == 0 {
         println!("{}", "=".repeat(100));
         println!(
@@ -117,5 +124,5 @@ pub(crate) fn run_jmnoccmc_stochastic(
         );
     }
     let data = NOCIData::new(post.ao, post.space, input, post.tol, wicks).withmocache(post.mocache);
-    jm_qmc_step(&data, options, c0, e_noci, world)
+    jm_qmc_step(&data, options, c0, shift, world)
 }

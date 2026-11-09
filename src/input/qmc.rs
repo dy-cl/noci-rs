@@ -99,7 +99,7 @@ pub struct QMCOptions {
     pub initial_shift: InitialShift,
     /// Damping `\zeta` of the population-control Newton update.
     pub shift_damping: f64,
-    /// Dimensionless target-restoring strength `\kappa` for range propagators.
+    /// Dimensionless target-restoring strength `\kappa` for range propagators and JM-NOCCMC.
     pub population_restoring: f64,
     /// Dimensionless report-level heavy-ball coefficient `\beta` for BApply.
     pub momentum_beta: f64,

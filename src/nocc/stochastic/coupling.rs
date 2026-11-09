@@ -150,38 +150,20 @@ pub(super) fn left_action(
 ) -> Vec<(ExcitorKey, f64)> {
     let reference = &block.reference;
     let (ranks, empty) = distribution;
-    // Excitors in increasing rank, so the enumeration stops at the first one over budget.
+
+    // Excitors with `P t_{y\mu}` and their rank, in increasing rank so that the sets on one row
+    // stop at the first excitor over the cluster rank.
     let mut amplitudes = block
         .excitors
         .iter()
-        .map(|&(excitor, n)| (excitor, ranks * n / block.nref))
-        .collect::<Vec<(Excitor, f64)>>();
-    amplitudes.sort_by_key(|(excitor, _)| rank(reference, &excitor.det));
+        .map(|&(excitor, n)| {
+            let r = rank(reference, &excitor.det);
+            (excitor, ranks * n / block.nref, r)
+        })
+        .collect::<Vec<_>>();
+    amplitudes.sort_by_key(|&(_, _, r)| r);
 
-    // Depth-first enumeration of sets of distinct excitors in increasing order; each excitor
-    // carries `P t`, and the leading `1/P` gives the weight `P^{|K|-1}`.
-    fn visit(
-        det: ExcitedDeterminant,
-        coefficient: f64,
-        start: usize,
-        context: (&ExcitedDeterminant, &[(Excitor, f64)], usize, usize),
-        out: &mut Vec<(ExcitorKey, f64)>,
-    ) {
-        let (reference, amplitudes, cluster_rank, index) = context;
-        let r = rank(reference, &det);
-        if start > 0 {
-            out.push(((index, det.alpha, det.beta), coefficient));
-        }
-        for (k, &(excitor, t)) in amplitudes.iter().enumerate().skip(start) {
-            if r + rank(reference, &excitor.det) > cluster_rank {
-                break;
-            }
-            if let Some((next, sign)) = excitor.apply(&det) {
-                visit(next, -coefficient * t * sign, k + 1, context, out);
-            }
-        }
-    }
-
+    // Every nonzero row independently, in parallel.
     q.par_iter()
         .filter(|(_, value)| *value != 0.0)
         .fold(Vec::new, |mut out, &((alpha, beta), value)| {
@@ -190,19 +172,63 @@ pub(super) fn left_action(
                 alpha,
                 beta,
             };
+            let r = rank(reference, &nu);
+
             // The empty set enters once with weight one, the other sets with `P^{|K|-1}`.
-            if empty && rank(reference, &nu) > 0 {
+            if empty && r > 0 {
                 out.push(((index, alpha, beta), value));
             }
-            visit(
-                nu,
-                value / ranks,
-                0,
-                (reference, &amplitudes, cluster_rank, index),
+            apply_negative_exponential(
+                &amplitudes,
+                (nu, r, value / ranks),
+                index,
+                cluster_rank,
                 &mut out,
             );
             out
         })
         .flatten()
         .collect()
+}
+
+/// Add the nonempty sets `K` of `e^{-\hat T_y}` acting on one row,
+/// `\sum_{K \ne \emptyset}(-1)^{|K|}\prod_{k\in K}c_k\,\hat\tau_K\,w|D_\nu\rangle`, to the
+/// population changes, keeping only images within the cluster rank. The sets of distinct
+/// excitors are enumerated depth first in increasing order, as a stack of determinant, rank,
+/// coefficient and next excitor, so that each set is visited once; since the excitors are in
+/// increasing rank, the children of a set end at the first excitor that would exceed the
+/// cluster rank, found by binary search.
+/// # Arguments:
+/// - `amplitudes`: Excitors of the block with their coefficients `c_k` and ranks, in increasing
+///   rank.
+/// - `row`: Row determinant `|D_\nu\rangle`, its rank and its weight `w`.
+/// - `index`: Block index `y`.
+/// - `cluster_rank`: Highest excitation rank of the cluster operator.
+/// - `out`: Population changes per unit time, receiving the sets.
+/// # Returns:
+/// - `()`: Appends one change per nonempty set with a nonvanishing image.
+fn apply_negative_exponential(
+    amplitudes: &[(Excitor, f64, usize)],
+    row: (ExcitedDeterminant, usize, f64),
+    index: usize,
+    cluster_rank: usize,
+    out: &mut Vec<(ExcitorKey, f64)>,
+) {
+    let mut stack = vec![(row.0, row.1, row.2, 0)];
+    while let Some((det, r, coefficient, start)) = stack.pop() {
+        // Every set but the empty one, which the caller adds.
+        if start > 0 {
+            out.push(((index, det.alpha, det.beta), coefficient));
+        }
+
+        // Children `K \cup \{k\}` for the later excitors that keep the image within the cluster
+        // rank, pushed in reverse to be visited in increasing order.
+        let end = start.max(amplitudes.partition_point(|&(_, _, rk)| r + rk <= cluster_rank));
+        for k in (start..end).rev() {
+            let (excitor, c, rk) = amplitudes[k];
+            if let Some((next, sign)) = excitor.apply(&det) {
+                stack.push((next, r + rk, -coefficient * c * sign, k + 1));
+            }
+        }
+    }
 }

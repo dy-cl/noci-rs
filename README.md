@@ -585,7 +585,7 @@ Hartree. A shift closer to the ground-state energy slows the initial growth, so 
 `target_population` less before the controller catches up. A restart file overrides it.
 
 `shift_damping` damps Newton range-population shift updates. `population_restoring` is dimensionless
-target-restoring strength $\kappa$ in Newton range-population controller: `0` gives zero-growth
+target-restoring strength $\kappa$ in the Newton range-population controller, and in the JM-NOCCMC controller it reduces to: `0` gives zero-growth
 control; positive values restore toward `target_population`, with larger values restoring more
 strongly. `momentum_beta` is dimensionless BApply-only report-level heavy-ball coefficient
 $0 \le \beta < 1$; `0` disables momentum. `fri.population.cutoff`, `fri.spawn.cutoff`,
@@ -730,7 +730,7 @@ n_{x\mu}\leftarrow n_{x\mu}-\Delta\tau N_xR_{x\mu}-\Delta\tau(g_x-E_s)n_{x\mu},
 N_x\leftarrow N_x-\Delta\tau(g_x-E_s)N_x.
 $$
 
-- **Stochastic propagation:** a nested `qmc` table selects it. The excitor terms are sampled by linked CCMC [20, 28], and $G$ comes from report-block sums forgotten over `memory_effective` blocks.
+- **Stochastic propagation:** a nested `qmc` table selects it, with the uniform generator only and without `n_projected`, since only trials of reference determinants give the JM-NOCCMC energy. The excitor terms are sampled by linked CCMC [20, 28], and $G$ comes from report-block sums forgotten over `memory_effective` blocks.
 - **Deterministic propagation:** without `qmc`, the same update runs as the noise-free counterpart, with exact $G$. Populations are renormalised every step and the dynamic shift is optional, as in deterministic NOCIQMC.
 
 ```lua

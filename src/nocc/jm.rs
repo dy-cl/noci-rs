@@ -1,13 +1,77 @@
 // nocc/jm.rs
 //! Jeziorski-Monkhorst layer shared by the deterministic and stochastic JM-NOCCMC propagations:
-//! enumeration of each reference's determinants and the state energies of the effective
-//! Hamiltonian.
+//! enumeration of each reference's determinants, the effective overlap and Hamiltonian, and the
+//! state energies of the effective Hamiltonian.
 
 // External crate imports.
 use itertools::Itertools;
 use ndarray::Array2;
-use ndarray_linalg::Eig;
+use ndarray_linalg::{Eig, Inverse};
 use num_complex::Complex64;
+
+/// Effective overlap `S^e_{zx}=\langle{}^z\Psi|\Phi_x\rangle` and Hamiltonian
+/// `H^e_{zx}=\langle{}^z\Psi|\hat H|\Phi_x\rangle` of the correlated references, evaluated
+/// exactly or accumulated from samples. Stochastic samples are divided by the reference
+/// populations `N_x` before accumulation, so the ratio estimate `G=(S^e)^{-1}H^e` is independent
+/// of the population growth.
+pub struct Effective {
+    /// Effective overlap `S^e`.
+    pub se: Array2<f64>,
+    /// Effective Hamiltonian elements `H^e`.
+    pub he: Array2<f64>,
+}
+
+impl Effective {
+    /// Construct zero matrices for `M` references.
+    /// # Arguments:
+    /// - `m`: Number of references.
+    /// # Returns:
+    /// - `Effective`: Zero matrices.
+    pub(in crate::nocc) fn new(m: usize) -> Self {
+        Self {
+            se: Array2::zeros((m, m)),
+            he: Array2::zeros((m, m)),
+        }
+    }
+
+    /// Add another accumulation.
+    /// # Arguments:
+    /// - `self`: Accumulators.
+    /// - `other`: Accumulation to add.
+    /// # Returns:
+    /// - `()`: Adds `other` in place.
+    pub(in crate::nocc) fn add(
+        &mut self,
+        other: &Effective,
+    ) {
+        self.se += &other.se;
+        self.he += &other.he;
+    }
+
+    /// Scale the accumulation, as when forgetting old report blocks.
+    /// # Arguments:
+    /// - `self`: Accumulators.
+    /// - `factor`: Scale factor.
+    /// # Returns:
+    /// - `()`: Scales both matrices in place.
+    pub(in crate::nocc) fn scale(
+        &mut self,
+        factor: f64,
+    ) {
+        self.se *= factor;
+        self.he *= factor;
+    }
+
+    /// Effective Hamiltonian `G=(S^e)^{-1}H^e`.
+    /// # Arguments:
+    /// - `self`: Effective overlap and Hamiltonian.
+    /// # Returns:
+    /// - `Option<Array2<f64>>`: `G`, or `None` if `S^e` is singular or `G` is not finite.
+    pub(in crate::nocc) fn g(&self) -> Option<Array2<f64>> {
+        let g = self.se.inv().ok()?.dot(&self.he);
+        g.iter().all(|v| v.is_finite()).then_some(g)
+    }
+}
 
 /// Enumerate the determinants of one reference up to an excitation rank, ordered by rank.
 /// # Arguments:

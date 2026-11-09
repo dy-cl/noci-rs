@@ -34,7 +34,9 @@ pub(crate) use hash::FastMap;
 pub(crate) use rng::QmcRng;
 
 // Crate-visible function re-exports.
-pub(crate) use exchange::{coalesce, exchange_updates, gather_updates, pack_updates};
+pub(crate) use exchange::{
+    coalesce, exchange_to_owners, exchange_updates, gather_updates, pack_updates,
+};
 pub(crate) use fri::{
     compress_sparse, cutoff_candidate, pivotal_push, resolve_pivotal, target_cutoff,
 };

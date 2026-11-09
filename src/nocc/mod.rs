@@ -75,6 +75,7 @@ pub use deterministic::{jm_space, propagate_populations, report_converged};
 // Restricted type re-exports.
 #[cfg(feature = "gnocc")]
 pub(crate) use deterministic::AmplitudeSolution;
+pub(in crate::nocc) use jm::Effective;
 #[cfg(feature = "gnocc")]
 pub(crate) use setup::ReferenceState;
 #[cfg(feature = "gnocc")]
