@@ -266,11 +266,12 @@ pub fn scf_cycle(
 
         // Extrapolate the trial Fock from commutator errors when sufficient history exists.
         if use_diis {
-            diis.push(&fa_curr, &fb_curr, &da, &db, &ao.s, &ao.x);
+            diis.push(&[&fa_curr, &fb_curr], &[&da, &db], &ao.s, &ao.x);
         }
         let (fa_use, fb_use) = if use_diis {
             diis.extrapolate_fock()
-                .unwrap_or((fa_curr.clone(), fb_curr.clone()))
+                .and_then(|f| <[Array2<f64>; 2]>::try_from(f).ok())
+                .map_or((fa_curr.clone(), fb_curr.clone()), |[fa, fb]| (fa, fb))
         } else {
             (fa_curr.clone(), fb_curr.clone())
         };

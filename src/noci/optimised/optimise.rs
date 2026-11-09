@@ -1,14 +1,14 @@
 // noci/optimised/optimise.rs
 //! Self-consistent ResHF loop: alternate the CI step with a Roothaan step on every
 //! determinant's resonating Fock matrices, accelerated by one DIIS history shared by all
-//! determinants, as in yucca. The determinants are coupled through the CI expansion, so a
-//! common set of extrapolation coefficients keeps their updates consistent.
+//! determinants. The determinants are coupled through the CI expansion, so a common set of
+//! extrapolation coefficients keeps their updates consistent.
 
 // Standard library imports.
 use std::sync::Arc;
 
 // External crate imports.
-use ndarray::{Array2, s};
+use ndarray::Array2;
 
 // Crate-root imports.
 use crate::elements::occ_coeffs;
@@ -41,44 +41,6 @@ pub struct ResHFSolution {
     pub iterations: usize,
     /// Whether the energy and commutator criteria of `input.scf` were met.
     pub converged: bool,
-}
-
-/// Block-diagonal matrix `\mathrm{diag}(M_0, M_1, \ldots)`, which lets one DIIS history extrapolate
-/// the matrices of all determinants with common coefficients.
-/// # Arguments:
-/// - `blocks`: Diagonal blocks, in determinant order.
-/// # Returns
-/// - `Array2<f64>`: The block-diagonal matrix.
-fn block_diagonal(blocks: &[&Array2<f64>]) -> Array2<f64> {
-    let rows: usize = blocks.iter().map(|m| m.nrows()).sum();
-    let cols: usize = blocks.iter().map(|m| m.ncols()).sum();
-    let mut out = Array2::<f64>::zeros((rows, cols));
-
-    // Place each block below and to the right of the previous one.
-    let (mut r, mut c) = (0, 0);
-    for m in blocks {
-        out.slice_mut(s![r..r + m.nrows(), c..c + m.ncols()])
-            .assign(m);
-        r += m.nrows();
-        c += m.ncols();
-    }
-    out
-}
-
-/// Diagonal block `a` of a block-diagonal matrix of `n \times n` blocks.
-/// # Arguments:
-/// - `m`: Block-diagonal matrix.
-/// - `a`: Block index.
-/// - `n`: Dimension of each block.
-/// # Returns
-/// - `Array2<f64>`: Block `a`.
-fn diagonal_block(
-    m: &Array2<f64>,
-    a: usize,
-    n: usize,
-) -> Array2<f64> {
-    m.slice(s![a * n..(a + 1) * n, a * n..(a + 1) * n])
-        .to_owned()
 }
 
 /// Roothaan step for one spin: solve `F C = S C \epsilon` and occupy the `nocc` orbitals that
@@ -151,8 +113,8 @@ fn reshf_step(
 /// Optimise the orbitals of every NOCI state by ResHF-cutoff, making
 /// `E_{\text{SA}} = \sum_I w_I E_I` stationary. Each iteration builds the floored pair
 /// quantities, solves `H c = S c E`, builds the resonating Fock matrices and takes one
-/// Roothaan step per determinant, all accelerated by one DIIS history of the block-diagonal
-/// Fock and error matrices. Weights and cutoff come from `input.reshf`
+/// Roothaan step per determinant, all accelerated by one DIIS history whose channels are the
+/// two spins of every determinant. Weights and cutoff come from `input.reshf`
 /// (defaults if absent); `e_tol`, `fds_sdf_tol`, `max_cycle` and the DIIS space from
 /// `input.scf`. Convergence needs `|E - E_{\text{old}}| <` `e_tol` and
 /// `\sqrt{\sum_A \|X^\dagger (F^A P^A S - S P^A F^A) X\|^2} <` `fds_sdf_tol`.
@@ -177,12 +139,8 @@ pub fn reshf_optimise(
         .collect();
     let mut dets: Vec<SCFState> = indices.iter().map(|&i| occ_first(&states[i])).collect();
 
-    // One DIIS history for all determinants, on block-diagonal matrices whose error
-    // `X^\dagger (F P S - S P F) X` is block diagonal too.
-    let nao = ao.s.nrows();
+    // One DIIS history for all determinants, with channels `F^{0,\alpha}, F^{0,\beta}, F^{1,\alpha}, \ldots`.
     let mut diis = Diis::new(input.scf.diis.space);
-    let s_all = block_diagonal(&vec![&ao.s; dets.len()]);
-    let x_all = block_diagonal(&vec![&ao.x; dets.len()]);
 
     if verbose {
         println!("{}", "=".repeat(100));
@@ -205,19 +163,10 @@ pub fn reshf_optimise(
         let fock = reshf_fock(ao, &pairs, &expansion);
 
         // Residual of the ResHF condition, `X^\dagger (F^A P^A S - S P^A F^A) X` for every
-        // determinant, stacked block-diagonally into the shared DIIS history.
-        let fa: Vec<&Array2<f64>> = fock.iter().map(|f| &f[0]).collect();
-        let fb: Vec<&Array2<f64>> = fock.iter().map(|f| &f[1]).collect();
-        let da: Vec<&Array2<f64>> = dets.iter().map(|d| &*d.da).collect();
-        let db: Vec<&Array2<f64>> = dets.iter().map(|d| &*d.db).collect();
-        diis.push(
-            &block_diagonal(&fa),
-            &block_diagonal(&fb),
-            &block_diagonal(&da),
-            &block_diagonal(&db),
-            &s_all,
-            &x_all,
-        );
+        // determinant and spin, as channels of the shared DIIS history.
+        let f: Vec<&Array2<f64>> = fock.iter().flatten().collect();
+        let d: Vec<&Array2<f64>> = dets.iter().flat_map(|d| [&*d.da, &*d.db]).collect();
+        diis.push(&f, &d, &ao.s, &ao.x);
         let err = diis.last_error_norm2().unwrap_or(f64::INFINITY).sqrt();
         let d_e = (e - e_old).abs();
 
@@ -234,17 +183,15 @@ pub fn reshf_optimise(
             break (e, false);
         }
 
-        // Roothaan step on each weighted determinant's block of the extrapolated Fock matrices.
-        let extrapolated = diis.extrapolate_fock();
+        // Roothaan step on each weighted determinant's extrapolated Fock matrices.
+        let f = diis
+            .extrapolate_fock()
+            .unwrap_or_else(|| fock.into_iter().flatten().collect());
         for (a, det) in dets.iter_mut().enumerate() {
             if expansion.pair_weights[(a, a)] < WEIGHTTOL {
                 continue;
             }
-            let (fa, fb) = match &extrapolated {
-                Some((fa, fb)) => (diagonal_block(fa, a, nao), diagonal_block(fb, a, nao)),
-                None => (fock[a][0].clone(), fock[a][1].clone()),
-            };
-            *det = reshf_step(ao, det, &fa, &fb);
+            *det = reshf_step(ao, det, &f[2 * a], &f[2 * a + 1]);
         }
         e_old = e;
     };
