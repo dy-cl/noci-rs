@@ -41,6 +41,7 @@ macro_rules! for_each_counter {
     ($tot:ident, $f:ident) => {
         $f!($tot.general.generate_integrals);
         $f!($tot.general.run_scf);
+        $f!($tot.general.reshf_optimise);
         $f!($tot.general.run_reference_noci);
         $f!($tot.general.calculate_noci_energy);
         $f!($tot.general.build_wicks_shared);

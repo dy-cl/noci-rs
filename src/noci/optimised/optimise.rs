@@ -20,10 +20,6 @@ use super::ci::reshf_solve;
 use super::fock::reshf_fock;
 use super::pair::reshf_pairs;
 
-/// Overlap eigenvalue below which the CI step projects a direction out, the tolerance the
-/// geometry driver uses for reference NOCI.
-const NOCITOL: f64 = 1e-8;
-
 /// Pair weight `D_{AA}` below which determinant `A` keeps its orbitals: it then barely enters
 /// the averaged states, so `F^{A,\omega}` is close to zero and diagonalising it would scramble
 /// the orbitals.
@@ -41,6 +37,7 @@ const WEIGHTTOL: f64 = 1e-10;
 /// - `input`: User input specifications.
 /// - `options`: ResHF state weights and singular value floor.
 /// - `states`: SCF states; those with `noci_basis` are optimised, the others are kept as given.
+/// - `tol`: Overlap eigenvalue below which the CI step projects a direction out.
 /// # Returns
 /// - `Vec<SCFState>`: Every input state, with the NOCI states replaced in place by their
 ///   converged (or last) ResHF determinants and labels kept.
@@ -49,6 +46,7 @@ pub fn reshf_optimise(
     input: &Input,
     options: &ResHFOptions,
     states: &[SCFState],
+    tol: f64,
 ) -> Vec<SCFState> {
     let verbose = input.write.verbose >= 1;
 
@@ -74,7 +72,7 @@ pub fn reshf_optimise(
         let pairs = reshf_pairs(ao, &dets, options.cutoff);
         let h = pairs.map(|p| p.h);
         let s = pairs.map(|p| p.s);
-        let expansion = reshf_solve(&h, &s, &options.weights, NOCITOL);
+        let expansion = reshf_solve(&h, &s, &options.weights, tol);
         let e: f64 = options
             .weights
             .iter()

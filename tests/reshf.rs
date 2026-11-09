@@ -31,7 +31,7 @@ fn run_reshf_fixture(fixture: &str) -> (Vec<f64>, f64) {
 
     let basis = generate_reference_noci_basis(&ao, &mut input, None, None);
     let options = input.reshf.as_ref().unwrap();
-    let states = reshf_optimise(&ao, &input, options, &basis.states);
+    let states = reshf_optimise(&ao, &input, options, &basis.states, 1e-8);
 
     let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
 
