@@ -50,7 +50,6 @@ members = [
 default = []
 timings = []
 gnocc = ["dep:wick-build"]
-reference-optimisation = []
 
 [profile.release]
 opt-level = 3

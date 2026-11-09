@@ -36,12 +36,9 @@ pub use kernels::{density, energy, fock, fock_lambda, orbital_energies, orbital_
 pub use occupation::{occ_first, spin_occupation};
 
 // Restricted type re-exports.
-#[cfg(feature = "reference-optimisation")]
 pub(crate) use diis::Diis;
 
 // Restricted function re-exports.
 pub(crate) use h::{continue_hscf_track, initialise_hscf_track, physical_hscf_state};
-#[cfg(feature = "reference-optimisation")]
 pub(crate) use occupation::occvec_to_bits;
-#[cfg(feature = "reference-optimisation")]
 pub(crate) use select::mom_select;

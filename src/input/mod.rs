@@ -25,7 +25,6 @@ mod nocc;
 mod parse;
 mod prop;
 mod qmc;
-#[cfg(feature = "reference-optimisation")]
 mod reshf;
 mod scf;
 mod selected;
@@ -42,7 +41,6 @@ pub use mol::MolOptions;
 pub use nocc::{NOCCMCOptions, NOCCNewton, NOCCPreconditioner};
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, FriOptions, InitialShift, QMCOptions};
-#[cfg(feature = "reference-optimisation")]
 pub use reshf::ResHFOptions;
 pub use scf::{DiisOptions, SCFInfo};
 pub use selected::{SNOCIOptions, SNOCIPreconditioner, SNOCIStorage};
@@ -79,7 +77,6 @@ pub struct Input {
     /// Non-orthogonal Wick's theorem options.
     pub wicks: WicksOptions,
     /// ResHF reference optimisation options; ResHF runs only when present.
-    #[cfg(feature = "reference-optimisation")]
     pub reshf: Option<ResHFOptions>,
 }
 
@@ -131,7 +128,6 @@ impl Default for Input {
             excit: ExcitationOptions::default(),
             prop: None,
             wicks: WicksOptions::default(),
-            #[cfg(feature = "reference-optimisation")]
             reshf: None,
         }
     }

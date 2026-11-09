@@ -21,7 +21,6 @@
 //!   [doi:10.1021/acs.jctc.9b00441](https://doi.org/10.1021/acs.jctc.9b00441).
 
 pub mod deterministic;
-#[cfg(feature = "reference-optimisation")]
 pub mod optimised;
 pub mod selected;
 pub mod stochastic;

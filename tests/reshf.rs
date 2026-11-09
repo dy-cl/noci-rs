@@ -1,4 +1,3 @@
-#![cfg(feature = "reference-optimisation")]
 // tests/reshf.rs
 
 // The ResHF tests never initialise MPI, so `common::mpi_universe` is unused here.

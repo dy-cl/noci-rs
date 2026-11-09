@@ -1165,7 +1165,6 @@ pub(in crate::elements::nonorthogonalwicks) fn contraction_orbitals<T: NOCIScala
 /// - `m`: Matrix to contract.
 /// # Returns:
 /// - `(Array2<f64>, Array2<f64>)`: `J[M]` and `K[M]`.
-#[cfg(feature = "reference-optimisation")]
 pub(crate) fn build_jk_reshf(
     eri: &Array4<f64>,
     m: &Array2<f64>,
