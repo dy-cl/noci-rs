@@ -25,6 +25,7 @@ mod nocc;
 mod parse;
 mod prop;
 mod qmc;
+mod reshf;
 mod scf;
 mod selected;
 mod state;
@@ -40,6 +41,7 @@ pub use mol::MolOptions;
 pub use nocc::{NOCCMCOptions, NOCCNewton, NOCCPreconditioner};
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, FriOptions, InitialShift, QMCOptions};
+pub use reshf::ResHFOptions;
 pub use scf::{DiisOptions, SCFInfo};
 pub use selected::{SNOCIOptions, SNOCIPreconditioner, SNOCIStorage};
 pub use state::{Metadynamics, SCFExcitation, SpatialBias, Spin, SpinBias, StateRecipe, StateType};
@@ -74,6 +76,8 @@ pub struct Input {
     pub prop: Option<PropagationOptions>,
     /// Non-orthogonal Wick's theorem options.
     pub wicks: WicksOptions,
+    /// ResHF reference optimisation options; ResHF runs only when present.
+    pub reshf: Option<ResHFOptions>,
 }
 
 impl Input {
@@ -124,6 +128,7 @@ impl Default for Input {
             excit: ExcitationOptions::default(),
             prop: None,
             wicks: WicksOptions::default(),
+            reshf: None,
         }
     }
 }

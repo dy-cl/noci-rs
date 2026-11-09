@@ -10,6 +10,8 @@ pub struct Totals {
     pub generate_integrals: Counter,
     /// Total time spent in `run_scf`.
     pub run_scf: Counter,
+    /// Total time spent in `reshf_optimise`.
+    pub reshf_optimise: Counter,
     /// Total time spent in `run_reference_noci`.
     pub run_reference_noci: Counter,
     /// Total time spent in `calculate_noci_energy`.
@@ -32,6 +34,7 @@ impl Totals {
         self.generate_integrals
             .merge_from(&other.generate_integrals);
         self.run_scf.merge_from(&other.run_scf);
+        self.reshf_optimise.merge_from(&other.reshf_optimise);
         self.run_reference_noci
             .merge_from(&other.run_reference_noci);
         self.calculate_noci_energy
@@ -59,6 +62,16 @@ pub fn add_generate_integrals(ns: u64) {
 #[inline(always)]
 pub fn add_run_scf(ns: u64) {
     with_totals(|t| t.general.run_scf.add_ns(ns));
+}
+
+/// Add one timed call to the `reshf_optimise` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `reshf_optimise`.
+/// # Returns:
+/// - `()`: Updates the current thread local `reshf_optimise` counter.
+#[inline(always)]
+pub fn add_reshf_optimise(ns: u64) {
+    with_totals(|t| t.general.reshf_optimise.add_ns(ns));
 }
 
 /// Add one timed call to the `run_reference_noci` counter.

@@ -4,6 +4,7 @@
 // Crate-root imports.
 use crate::basis::{generate_reference_noci_basis, hermitian_hnoci_basis};
 use crate::input::Input;
+use crate::noci::optimised::reshf_optimise;
 use crate::time_call;
 use crate::{AoData, HSCFState, SCFState};
 
@@ -32,12 +33,14 @@ pub struct HolomorphicReferencePrep {
 /// - `ao`: Contains AO integrals and other system data.
 /// - `input`: User input specifications.
 /// - `prev_states`: Converged SCF states at previous r, used for seeding.
+/// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
 /// - `RealReferencePrep`: Generated real states and reference basis.
 pub fn generate_real_references(
     ao: &AoData,
     input: &mut Input,
     prev_states: &[SCFState],
+    tol: f64,
 ) -> RealReferencePrep {
     let states = time_call!(crate::timers::general::add_run_scf, {
         if prev_states.is_empty() {
@@ -46,6 +49,12 @@ pub fn generate_real_references(
             generate_reference_noci_basis(ao, input, Some(prev_states), None).states
         }
     });
+    let states = match &input.reshf {
+        Some(options) => time_call!(crate::timers::general::add_reshf_optimise, {
+            reshf_optimise(ao, input, options, &states, tol)
+        }),
+        None => states,
+    };
 
     RealReferencePrep {
         basis: states.clone(),

@@ -73,6 +73,32 @@ fn calculate_s_red(
     (prod, zeros)
 }
 
+/// Floor singular values for ResHF-cutoff: if `\sigma_{\min} / \sigma_{\text{ref}} < c`, set
+/// `\sigma_i \leftarrow \max(\sigma_i, c\,\sigma_{\text{ref}})`, where `\sigma_{\text{ref}}` is
+/// `\sigma_{\max}` for more than one orbital and `1` for a single orbital.
+/// # Arguments
+/// - `tilde_s`: `Vector of singular values, the diagonal of {}^{xw} \tilde{S}.`
+/// - `cutoff`: Relative floor `c`.
+/// # Returns:
+/// - `Array1<f64>`: Floored singular values.
+fn floor_singular_values(
+    tilde_s: &Array1<f64>,
+    cutoff: f64,
+) -> Array1<f64> {
+    let reference = if tilde_s.len() > 1 {
+        tilde_s.fold(0.0, |m: f64, &x| m.max(x))
+    } else {
+        1.0
+    };
+    let smallest = tilde_s.fold(f64::INFINITY, |m: f64, &x| m.min(x));
+
+    if smallest / reference < cutoff {
+        tilde_s.mapv(|x| x.max(cutoff * reference))
+    } else {
+        tilde_s.clone()
+    }
+}
+
 /// Build overlap-related intermediates for a pair of determinants.
 /// An SVD is performed on the occupied MO overlap matrix
 /// `{}^{xw} S_{ij} = U {}^{xw}\tilde{S}_{ij} V^{\dagger},`
@@ -85,13 +111,56 @@ fn calculate_s_red(
 /// - `s_munu`: AO overlap matrix.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
-/// # Returns:
 /// - `Pair<T>`: Overlap-related intermediates for this determinant pair.
 pub(crate) fn build_s_pair<T: NOCIScalar>(
     l_c_occ: &Array2<T>,
     g_c_occ: &Array2<T>,
     s_munu: &Array2<f64>,
     tol: f64,
+) -> Pair<T> {
+    build_s_pair_cutoff(l_c_occ, g_c_occ, s_munu, tol, None)
+}
+
+/// Build overlap-related intermediates for a pair of determinants as [`build_s_pair`] does,
+/// after flooring the singular values by [`floor_singular_values`]. Every floored singular value
+/// is non-zero, so `w` is the transition density `{}^w \tilde{C} \tilde{S}^{-1} {}^x \tilde{C}^\dagger`
+/// and `s` the floored overlap.
+/// # Arguments:
+/// - `l_c_occ`: `Occupied MO coefficient matrix {}^x C.`
+/// - `g_c_occ`: `Occupied MO coefficient matrix {}^w C.`
+/// - `s_munu`: AO overlap matrix.
+/// - `cutoff`: Relative singular value floor.
+/// # Returns:
+/// - `Pair<T>`: Floored overlap-related intermediates for this determinant pair.
+pub(crate) fn build_s_pair_floored<T: NOCIScalar>(
+    l_c_occ: &Array2<T>,
+    g_c_occ: &Array2<T>,
+    s_munu: &Array2<f64>,
+    cutoff: f64,
+) -> Pair<T> {
+    build_s_pair_cutoff(l_c_occ, g_c_occ, s_munu, 0.0, Some(cutoff))
+}
+
+/// Build overlap-related intermediates for a pair of determinants.
+/// An SVD is performed on the occupied MO overlap matrix
+/// `{}^{xw} S_{ij} = U {}^{xw}\tilde{S}_{ij} V^{\dagger},`
+/// `each set of occupied MOs is rotated to form {}^x \tilde{C} and`
+/// `{}^w \tilde{C}, and the quantities required for the generalised`
+/// Slater-Condon rules are constructed.
+/// # Arguments:
+/// - `l_c_occ`: `Occupied MO coefficient matrix {}^x C.`
+/// - `g_c_occ`: `Occupied MO coefficient matrix {}^w C.`
+/// - `s_munu`: AO overlap matrix.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `cutoff`: Optional relative singular value floor; see [`floor_singular_values`].
+/// # Returns:
+/// - `Pair<T>`: Overlap-related intermediates for this determinant pair.
+fn build_s_pair_cutoff<T: NOCIScalar>(
+    l_c_occ: &Array2<T>,
+    g_c_occ: &Array2<T>,
+    s_munu: &Array2<f64>,
+    tol: f64,
+    cutoff: Option<f64>,
 ) -> Pair<T> {
     // Occupied MO overlap.
     let s = real2_as::<T>(s_munu);
@@ -102,6 +171,12 @@ pub(crate) fn build_s_pair<T: NOCIScalar>(
     let u = u.unwrap();
     let v = adjoint(&vdag.unwrap());
     let phase = u.det().unwrap() * v.det().unwrap().conj();
+
+    // Floor the singular values if requested.
+    let tilde_s = match cutoff {
+        Some(c) => floor_singular_values(&tilde_s, c),
+        None => tilde_s,
+    };
 
     // Calculate the reduced MO overlap matrix.
     let (s_red, zeros) = calculate_s_red(&tilde_s, tol);

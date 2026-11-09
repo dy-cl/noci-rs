@@ -13,7 +13,7 @@ mod rules;
 
 // Crate-visible function re-exports.
 pub(crate) use pairs::calculate_s_pair_naive;
-pub(crate) use rules::{build_s_pair, occ_coeffs, pair_density};
+pub(crate) use rules::{build_s_pair, build_s_pair_floored, occ_coeffs, pair_density};
 
 // Restricted function re-exports.
 pub(in crate::elements) use pairs::{

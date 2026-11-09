@@ -242,6 +242,7 @@ RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs h2.lua > output.out
 - Hamiltonian, overlap, and generalised Fock matrix construction.
 - Standard orthogonal Slater–Condon rules for determinants from the same parent orbital frame [4].
 - Generalised Slater–Condon rules and extended nonorthogonal Wick's theorem for nonorthogonal determinant pairs [5, 12].
+- ResHF optimisation of the reference determinants, which makes their orbitals stationary for the state-averaged reference NOCI energy [29].
 
 ### Selected NOCI and NOCI-PT2
 
@@ -334,6 +335,7 @@ The optional top-level tables are:
 - `wicks`: extended nonorthogonal Wick settings.
 - `noccmc`: GNOCC amplitude equations, when built with the `gnocc` feature.
 - `jmnoccmc`: deterministic JM-NOCCMC propagation.
+- `reshf`: ResHF optimisation of the reference determinants.
 
 ### Molecule
 
@@ -631,6 +633,23 @@ preconditioner diagonals.
 
 A NOCI-PT2-only calculation may be performed by limiting the selected NOCI procedure to one iteration. Although arbitrary excitation orders are currently accepted, the rigorous NOCI-PT2 first-order interacting space consists of single and double excitations.
 
+### ResHF Reference Optimisation
+
+The `reshf` table replaces the real SCF states marked `noci = true` by resonating Hartree–Fock (ResHF) determinants before reference NOCI [29]. ResHF optimises the orbitals of every reference determinant together with the reference NOCI expansion, minimising the state-averaged energy $E_\text{SA} = \sum_I w_I E_I$.
+
+```lua
+reshf = {
+    weights = {1.0},
+    cutoff = 1e-8,
+}
+```
+
+`weights` are the state weights $w_I$, lowest root first, and must sum to one. `cutoff` floors the small singular values of the occupied orbital overlaps, so nearly orthogonal determinants stay finite. Convergence uses `e_tol`, `fds_sdf_tol`, `max_cycle` and `diis.space` from the `scf` table.
+
+- The commutator norm is summed over all determinants, so it grows roughly as the square root of their number.
+- ResHF minimises the floored energy, which equals the reference NOCI energy unless two determinants become nearly orthogonal.
+- The ResHF determinants also seed the SCF at the next geometry.
+
 ### Output
 
 The `write` table controls optional output files, restart files, and the amount of information printed during a calculation.
@@ -753,7 +772,7 @@ Defaults are defined by the input structures under
 
 `noci-rs` is not yet associated with a dedicated software publication. Until one is available, cite the repository and the relevant method publications listed below.
 
-Markers [1]–[28] refer to method publications; [S1]–[S2] refer to software and data publications.
+Markers [1]–[29] refer to method publications; [S1]–[S2] refer to software and data publications.
 
 ### Method References
 
@@ -812,6 +831,8 @@ Markers [1]–[28] refer to method publications; [S1]–[S2] refer to software a
 27. Bogumil Jeziorski and Hendrik J. Monkhorst. Coupled-cluster method for multideterminantal reference states. *Physical Review A* **24**, 1668–1681 (1981). [doi:10.1103/PhysRevA.24.1668](https://doi.org/10.1103/PhysRevA.24.1668).
 
 28. Robert S. T. Franklin, James S. Spencer, Alberto Zoccante, and Alex J. W. Thom. Linked coupled cluster Monte Carlo. *The Journal of Chemical Physics* **144**, 044111 (2016). [doi:10.1063/1.4940317](https://doi.org/10.1063/1.4940317).
+
+29. Ericka Roy Miller and Shane M. Parker. Numerically stable resonating Hartree–Fock. *The Journal of Chemical Physics* **162**, 104115 (2025). [doi:10.1063/5.0246790](https://doi.org/10.1063/5.0246790).
 
 ### Software and Data References
 

@@ -21,7 +21,7 @@ use super::diis::Diis;
 use super::kernels::DensityMode;
 use super::kernels::{density, energy, fock, orbital_gradient};
 use super::occupation::{mo_occupancies, occvec_to_bits};
-use super::print::{print_header, print_mos};
+use super::print::{print_header, print_iteration, print_mos};
 use super::select::{aufbau_indices, mom_select};
 
 /// Convert spin enum to printable label.
@@ -116,6 +116,101 @@ fn occupy(
 
     let c_occ = c.select(Axis(1), &idx);
     (idx, c_occ)
+}
+
+/// Orbitals, occupations, densities, Fock matrices and energy after one Roothaan step.
+pub(crate) struct SCFIterate {
+    /// Alpha- and beta-spin MO energies.
+    pub(crate) e_mo: (Array1<f64>, Array1<f64>),
+    /// Alpha- and beta-spin MO coefficients, in eigenvalue order.
+    pub(crate) c: (Array2<f64>, Array2<f64>),
+    /// Alpha- and beta-spin occupied MO indices.
+    pub(crate) idx: (Vec<usize>, Vec<usize>),
+    /// Alpha- and beta-spin occupied MO coefficients.
+    pub(crate) c_occ: (Array2<f64>, Array2<f64>),
+    /// Alpha- and beta-spin density matrices.
+    pub(crate) d: (Array2<f64>, Array2<f64>),
+    /// Alpha- and beta-spin Fock matrices of the new densities.
+    pub(crate) f: (Array2<f64>, Array2<f64>),
+    /// SCF energy of the new densities.
+    pub(crate) e: f64,
+}
+
+impl SCFIterate {
+    /// Convert the iterate into an SCF state.
+    /// # Arguments
+    /// - `self`: Iterate to convert.
+    /// - `label`: Label for the state.
+    /// - `noci_basis`: Whether or not to use this state in the NOCI basis.
+    /// # Returns
+    /// - `SCFState`: State with the iterate's orbitals, occupations, densities and energy.
+    pub(crate) fn into_state(
+        self,
+        label: &str,
+        noci_basis: bool,
+    ) -> SCFState {
+        SCFState {
+            e: self.e,
+            oa: occvec_to_bits(&self.idx.0),
+            ob: occvec_to_bits(&self.idx.1),
+            ca: Arc::new(self.c.0),
+            cb: Arc::new(self.c.1),
+            da: Arc::new(self.d.0),
+            db: Arc::new(self.d.1),
+            label: label.to_string(),
+            noci_basis,
+        }
+    }
+}
+
+/// Take one Roothaan step: solve `F^\sigma C^\sigma = S C^\sigma \epsilon^\sigma` for both
+/// spins, select the occupied orbitals by Aufbau or MOM, and rebuild the densities, Fock
+/// matrices and SCF energy.
+/// # Arguments
+/// - `ao`: Contains AO integrals and metadata.
+/// - `f`: Alpha- and beta-spin Fock matrices to diagonalise.
+/// - `nocc`: Number of alpha- and beta-spin occupied MOs.
+/// - `mom`: Whether alpha- and beta-spin occupations use MOM.
+/// - `c_occ_old`: Previous alpha- and beta-spin occupied MO coefficients, if any.
+/// - `scfexcitation`: Optional excited SCF occupation request.
+/// # Returns
+/// - `SCFIterate`: New orbitals, occupations, densities, Fock matrices and energy.
+pub(crate) fn roothaan_step(
+    ao: &AoData,
+    f: (&Array2<f64>, &Array2<f64>),
+    nocc: (usize, usize),
+    mom: (bool, bool),
+    c_occ_old: (Option<&Array2<f64>>, Option<&Array2<f64>>),
+    scfexcitation: Option<&SCFExcitation>,
+) -> SCFIterate {
+    let (na, nb) = nocc;
+
+    // Solve both spin eigenproblems and select occupied orbitals by Aufbau or MOM.
+    let ((ea, ca), (eb, cb)) =
+        rayon::join(|| general_evp_x(f.0, &ao.x), || general_evp_x(f.1, &ao.x));
+
+    let (idx_a, ca_occ) = occupy(&ea, &ca, &ao.s, na, mom.0, c_occ_old.0, scfexcitation);
+    let (idx_b, cb_occ) = occupy(&eb, &cb, &ao.s, nb, mom.1, c_occ_old.1, scfexcitation);
+
+    // Rebuild physical densities, Fock matrices, and the unbiased SCF energy.
+    let (da, db) = rayon::join(
+        || density(&ca_occ, na, DensityMode::Hermitian),
+        || density(&cb_occ, nb, DensityMode::Hermitian),
+    );
+
+    let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
+
+    let e = energy(&ao.h, ao.enuc, &da, &db, &fa, &fb);
+
+    SCFIterate {
+        e_mo: (ea, eb),
+        c: (ca, cb),
+        idx: (idx_a, idx_b),
+        c_occ: (ca_occ, cb_occ),
+        d: (da, db),
+        f: (fa, fb),
+        e,
+    }
 }
 
 /// Calculate spin contamination expectation value.
@@ -266,51 +361,27 @@ pub fn scf_cycle(
 
         // Extrapolate the trial Fock from commutator errors when sufficient history exists.
         if use_diis {
-            diis.push(&fa_curr, &fb_curr, &da, &db, &ao.s, &ao.x);
+            diis.push(&[&fa_curr, &fb_curr], &[&da, &db], &ao.s, &ao.x);
         }
         let (fa_use, fb_use) = if use_diis {
             diis.extrapolate_fock()
-                .unwrap_or((fa_curr.clone(), fb_curr.clone()))
+                .and_then(|f| <[Array2<f64>; 2]>::try_from(f).ok())
+                .map_or((fa_curr.clone(), fb_curr.clone()), |[fa, fb]| (fa, fb))
         } else {
             (fa_curr.clone(), fb_curr.clone())
         };
 
-        // Solve both spin eigenproblems and select occupied orbitals by Aufbau or MOM.
-        let ((ea, ca), (eb, cb)) = rayon::join(
-            || general_evp_x(&fa_use, &ao.x),
-            || general_evp_x(&fb_use, &ao.x),
-        );
-
-        let (idx_a, ca_occ) = occupy(
-            &ea,
-            &ca,
-            &ao.s,
-            na,
-            mom_a,
-            ca_occ_old.as_ref(),
+        // Diagonalise, occupy and rebuild the densities, Fock matrices and energy.
+        let step = roothaan_step(
+            ao,
+            (&fa_use, &fb_use),
+            (na, nb),
+            (mom_a, mom_b),
+            (ca_occ_old.as_ref(), cb_occ_old.as_ref()),
             scfexcitation,
         );
-        let (idx_b, cb_occ) = occupy(
-            &eb,
-            &cb,
-            &ao.s,
-            nb,
-            mom_b,
-            cb_occ_old.as_ref(),
-            scfexcitation,
-        );
-        ca_occ_old = Some(ca_occ.clone());
-        cb_occ_old = Some(cb_occ.clone());
-
-        // Rebuild physical densities, Fock matrices, and the unbiased SCF energy.
-        let (da_new, db_new) = rayon::join(
-            || density(&ca_occ, na, DensityMode::Hermitian),
-            || density(&cb_occ, nb, DensityMode::Hermitian),
-        );
-
-        let (fa_new, fb_new) = fock(&ao.h, &ao.eri_coul, &da_new, &db_new);
-
-        let e_new = energy(&ao.h, ao.enuc, &da_new, &db_new, &fa_new, &fb_new);
+        ca_occ_old = Some(step.c_occ.0.clone());
+        cb_occ_old = Some(step.c_occ.1.clone());
 
         // Evaluate energy, commutator, and orbital-gradient convergence diagnostics.
         let err = if use_diis {
@@ -318,42 +389,28 @@ pub fn scf_cycle(
         } else {
             f64::INFINITY
         };
-        let d_e = (e_new - e).abs();
+        let d_e = (step.e - e).abs();
 
-        let ga = orbital_gradient(&ca, &fa_new, na, DensityMode::Hermitian);
-        let gb = orbital_gradient(&cb, &fb_new, nb, DensityMode::Hermitian);
+        let ga = orbital_gradient(&step.c.0, &step.f.0, na, DensityMode::Hermitian);
+        let gb = orbital_gradient(&step.c.1, &step.f.1, nb, DensityMode::Hermitian);
         let gnorm =
             (ga.iter().map(|z| z * z).sum::<f64>() + gb.iter().map(|z| z * z).sum::<f64>()).sqrt();
 
         if input.write.verbose >= 1 {
-            println!(
-                "{:4} {:12.6} {:12.4e} {:12.4e} {:12.4e}",
-                iter, e_new, d_e, err, gnorm
-            );
+            print_iteration(iter, step.e, d_e, err, gnorm);
         }
 
         // Finalise immediately once both configured convergence criteria are satisfied.
         if d_e < input.scf.e_tol && err < input.scf.fds_sdf_tol {
-            let state = SCFState {
-                e: e_new,
-                oa: occvec_to_bits(&idx_a),
-                ob: occvec_to_bits(&idx_b),
-                ca: Arc::new(ca),
-                cb: Arc::new(cb),
-                da: Arc::new(da_new),
-                db: Arc::new(db_new),
-                label: label.to_string(),
-                noci_basis,
-            };
+            let (ea, eb) = step.e_mo.clone();
+            let state = step.into_state(label, noci_basis);
             return Some(finalise(state, &ea, &eb, ao, input));
         }
 
         // Commit the physical iterate for the next cycle.
-        da = da_new;
-        db = db_new;
-        fa_phys = fa_new;
-        fb_phys = fb_new;
-        e = e_new;
+        (da, db) = step.d;
+        (fa_phys, fb_phys) = step.f;
+        e = step.e;
         iter += 1;
     }
 

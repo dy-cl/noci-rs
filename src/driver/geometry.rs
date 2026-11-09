@@ -132,7 +132,7 @@ pub fn run_geometry(
     } else {
         // Run the ordinary real-reference path when no holomorphic recipe is requested.
         let mut prep = if world.rank() == 0 {
-            generate_real_references(&ao, input, prev_states)
+            generate_real_references(&ao, input, prev_states, tol)
         } else {
             RealReferencePrep {
                 states: Vec::new(),

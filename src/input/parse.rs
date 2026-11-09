@@ -14,9 +14,9 @@ use crate::{Error, Result};
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
     InitialShift, Input, JMNOCCMCOptions, Metadynamics, MolOptions, NOCCMCOptions, NOCCNewton,
-    NOCCPreconditioner, PropagationOptions, Propagator, QMCOptions, SCFExcitation, SCFInfo,
-    SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin, SpinBias, StateRecipe,
-    StateType, WicksOptions, WicksStorage, WriteOptions,
+    NOCCPreconditioner, PropagationOptions, Propagator, QMCOptions, ResHFOptions, SCFExcitation,
+    SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin, SpinBias,
+    StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -850,6 +850,46 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
     })
 }
 
+/// Read ResHF options from optional Lua table. The weights must be non-empty, numeric,
+/// non-negative and sum to one, and the cutoff must be positive.
+/// # Arguments:
+/// - `reshf_tbl`: Optional Lua reshf table.
+/// # Returns:
+/// - `Option<ResHFOptions>`: Parsed ResHF options.
+fn read_reshf(reshf_tbl: Option<Table>) -> Option<ResHFOptions> {
+    reshf_tbl.map(|reshf_tbl| {
+        let defaults = ResHFOptions::default();
+        let weights: Vec<f64> = reshf_tbl
+            .get::<_, Option<Table>>("weights")
+            .unwrap_or(None)
+            .map(|t| {
+                t.sequence_values::<f64>()
+                    .map(|x| {
+                        x.unwrap_or_else(|_| {
+                            eprintln!("reshf.weights entries must be numbers");
+                            std::process::exit(1);
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or(defaults.weights);
+        let cutoff: f64 = reshf_tbl.get("cutoff").unwrap_or(defaults.cutoff);
+
+        // Validate the state average and the floor.
+        let total: f64 = weights.iter().sum();
+        if weights.is_empty() || weights.iter().any(|&w| w < 0.0) || (total - 1.0).abs() > 1e-12 {
+            eprintln!("reshf.weights must be non-empty, non-negative and sum to 1, not {total}");
+            std::process::exit(1);
+        }
+        if cutoff.is_nan() || cutoff <= 0.0 {
+            eprintln!("reshf.cutoff must be positive");
+            std::process::exit(1);
+        }
+
+        ResHFOptions { weights, cutoff }
+    })
+}
+
 /// Read NOCCMC options from optional Lua table.
 /// # Arguments:
 /// - `noccmc_tbl`: Optional Lua noccmc table.
@@ -1126,6 +1166,7 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
     let det_tbl: Option<Table> = globals.get::<_, Option<Table>>("det").unwrap_or(None);
     let qmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("qmc").unwrap_or(None);
     let snoci_tbl: Option<Table> = globals.get::<_, Option<Table>>("snoci").unwrap_or(None);
+    let reshf_tbl: Option<Table> = globals.get::<_, Option<Table>>("reshf").unwrap_or(None);
     let noccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("noccmc").unwrap_or(None);
     let jmnoccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("jmnoccmc").unwrap_or(None);
 
@@ -1134,11 +1175,21 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
     let prop = read_prop(prop_tbl);
     let qmc = read_qmc(qmc_tbl, prop.as_ref().map(|options| options.propagator));
 
+    // ResHF optimises real SCF states only, so it cannot follow holomorphic recipes.
+    let states = read_states(state_tbl);
+    let reshf = read_reshf(reshf_tbl);
+    if reshf.is_some()
+        && matches!(&states, StateType::Mom(recipes) if recipes.iter().any(|r| r.holomorphic))
+    {
+        eprintln!("reshf cannot be combined with holomorphic state recipes");
+        std::process::exit(1);
+    }
+
     Ok(Input {
         mol: read_mol(mol_tbl),
         scf: read_scf(scf_tbl),
         write: read_write(write_tbl),
-        states: read_states(state_tbl),
+        states,
         det: read_det(det_tbl),
         qmc,
         snoci: read_snoci(snoci_tbl),
@@ -1147,5 +1198,6 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
         excit: read_excit(excit_tbl),
         prop,
         wicks: read_wicks(wicks_tbl),
+        reshf,
     })
 }

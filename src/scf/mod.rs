@@ -32,8 +32,15 @@ pub use occupation::SpinOccupation;
 // Public function re-exports.
 pub use cycle::scf_cycle;
 pub use h::normalise_hermitian;
-pub use kernels::{density, energy, fock, fock_lambda, orbital_energies, orbital_gradient};
+pub use kernels::{
+    density, energy, fock, fock_lambda, fock_nonsymmetric, orbital_energies, orbital_gradient,
+};
 pub use occupation::{occ_first, spin_occupation};
 
+// Restricted type re-exports.
+pub(crate) use diis::Diis;
+
 // Restricted function re-exports.
+pub(crate) use cycle::roothaan_step;
 pub(crate) use h::{continue_hscf_track, initialise_hscf_track, physical_hscf_state};
+pub(crate) use print::{print_header, print_iteration};

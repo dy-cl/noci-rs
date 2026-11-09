@@ -16,7 +16,7 @@ Organise methods by family first and approach second, above three shared layers:
 Each family folder holds its shared layer at the root and one subfolder per approach:
 
 1. `noci/`: full NOCI matrices, the reference NOCI state and factorised operators, with
-   `deterministic/`, `stochastic/` and `selected/`.
+   `deterministic/`, `stochastic/`, `selected/` and `optimised/`.
 2. `nocc/`: the shared NOCC layer (`setup/`, `cumulants/`, `space/`, `terms/` and
    `equations/`), with `deterministic/` and, later, `stochastic/`.
 

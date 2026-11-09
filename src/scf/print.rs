@@ -16,7 +16,7 @@ use super::cycle::spin_label;
 /// - `scfexcitation`: Optional excited SCF occupation request.
 /// # Returns
 /// - `()`: Prints the header when verbose output is enabled.
-pub(in crate::scf) fn print_header(
+pub(crate) fn print_header(
     input: &Input,
     scfexcitation: Option<&SCFExcitation>,
 ) {
@@ -36,6 +36,28 @@ pub(in crate::scf) fn print_header(
     println!(
         "{:>4} {:>12} {:>12} {:>12} {:>12}",
         "i", "E", "dE", "‖FDS - SDF‖", "||g_ov||"
+    );
+}
+
+/// Print one SCF iteration row under [`print_header`].
+/// # Arguments
+/// - `iter`: Iteration number.
+/// - `e`: Energy.
+/// - `d_e`: Energy change from the previous iteration.
+/// - `err`: DIIS commutator error norm.
+/// - `gnorm`: Occupied-virtual orbital gradient norm.
+/// # Returns
+/// - `()`: Prints the row.
+pub(crate) fn print_iteration(
+    iter: i32,
+    e: f64,
+    d_e: f64,
+    err: f64,
+    gnorm: f64,
+) {
+    println!(
+        "{:4} {:12.6} {:12.4e} {:12.4e} {:12.4e}",
+        iter, e, d_e, err, gnorm
     );
 }
 

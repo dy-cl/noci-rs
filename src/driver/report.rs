@@ -133,6 +133,7 @@ pub fn print_report(
         0,
     );
     print_counter("Total SCF time", res.timings.general.run_scf, 0);
+    print_counter("Total ResHF time", res.timings.general.reshf_optimise, 0);
     print_counter(
         "Total Reference NOCI time",
         res.timings.general.run_reference_noci,
