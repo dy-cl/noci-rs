@@ -5,13 +5,12 @@
 //! coupling, overlap and resonating Fock matrices are all built from the same floored `Q`.
 
 // External crate imports.
-use ndarray::{Array1, Array2};
+use ndarray::Array2;
 
 // Crate-root imports.
-use crate::elements::nonorthogonalwicks::SameSpinBuild;
-use crate::elements::occ_coeffs;
+use crate::elements::{build_s_pair_floored, occ_coeffs};
 use crate::scf::fock_nonsymmetric;
-use crate::{AoData, SCFState};
+use crate::{AoData, NOCIScalar, SCFState};
 
 /// Cutoff-floored quantities of one ordered determinant pair `(A, B)`.
 pub struct ResHFPair {
@@ -99,37 +98,10 @@ impl ResHFPairs {
     }
 }
 
-/// Floor singular values by yucca's rule: if `\sigma_{\min} / \sigma_{\text{ref}} < c`, set
-/// `\sigma_i \leftarrow \max(\sigma_i, c\,\sigma_{\text{ref}})`, where `\sigma_{\text{ref}}` is
-/// `\sigma_{\max}` for more than one orbital and `1` for a single orbital.
-/// # Arguments:
-/// - `sigma`: Singular values of an occupied orbital overlap matrix.
-/// - `cutoff`: Relative floor `c`.
-/// # Returns
-/// - `Array1<f64>`: Floored singular values.
-fn floor_singular_values(
-    sigma: &Array1<f64>,
-    cutoff: f64,
-) -> Array1<f64> {
-    let reference = if sigma.len() > 1 {
-        sigma.fold(0.0, |m: f64, &x| m.max(x))
-    } else {
-        1.0
-    };
-    let smallest = sigma.fold(f64::INFINITY, |m: f64, &x| m.min(x));
-
-    if smallest / reference < cutoff {
-        sigma.mapv(|x| x.max(cutoff * reference))
-    } else {
-        sigma.clone()
-    }
-}
-
-/// Floored overlap factor and transition density of one spin,
-/// `s^\omega = \eta^\omega \prod_i \sigma_i` and `Q^{AB,\omega} = B_o \Sigma^{-1} A_o^\dagger`,
-/// where `S^{AB,\omega}_{oo} = U \Sigma V^\dagger`, `A_o = C^A_o U`, `B_o = C^B_o V` and
-/// `\eta^\omega = \det U \det V`. Unfloored, `Q^{AB,\omega} = C^B_o (S^{AB,\omega}_{oo})^{-1}
-/// (C^A_o)^\dagger`.
+/// Floored overlap factor and transition density of one spin, `s^\omega` and
+/// `Q^{AB,\omega} = B_o \Sigma^{-1} A_o^\dagger` with floored singular values `\Sigma`; see
+/// [`build_s_pair_floored`]. A spin without electrons contributes `s^\omega = 1` and
+/// `Q^{AB,\omega} = 0`.
 /// # Arguments:
 /// - `s_ao`: AO overlap matrix.
 /// - `a_occ`: Occupied coefficients `C^A_o` of the bra determinant.
@@ -143,38 +115,14 @@ fn spin_transition(
     b_occ: &Array2<f64>,
     cutoff: f64,
 ) -> (f64, Array2<f64>) {
-    // A spin without electrons contributes `s^\omega = 1` and `Q^{AB,\omega} = 0`.
     let nao = s_ao.nrows();
     if a_occ.ncols() == 0 {
         return (1.0, Array2::zeros((nao, nao)));
     }
 
-    // Pair the occupied orbitals by SVD; the ket-side orbitals `B_o` are returned first.
-    let (sigma, b_tilde, a_tilde, eta) =
-        SameSpinBuild::<f64>::perform_ortho_and_svd_and_rotate(s_ao, a_occ, b_occ);
-    let sigma = floor_singular_values(&sigma, cutoff);
-
-    // `Q = B_o \Sigma^{-1} A_o^\dagger`: scale each paired ket orbital by `1 / \sigma_i`.
-    let mut b_scaled = b_tilde;
-    for (mut col, &x) in b_scaled.columns_mut().into_iter().zip(sigma.iter()) {
-        col /= x;
-    }
-    let q = b_scaled.dot(&a_tilde.t());
-
-    (eta * sigma.product(), q)
-}
-
-/// `\mathrm{tr}(X Q) = \sum_{\mu\nu} X_{\mu\nu} Q_{\nu\mu}` for possibly non-symmetric matrices.
-/// # Arguments:
-/// - `x`: First matrix.
-/// - `q`: Second matrix.
-/// # Returns
-/// - `f64`: Trace of the product.
-fn trace_product(
-    x: &Array2<f64>,
-    q: &Array2<f64>,
-) -> f64 {
-    (x * &q.t()).sum()
+    let pair = build_s_pair_floored(a_occ, b_occ, s_ao, cutoff);
+    let q = pair.w.unwrap_or_else(|| Array2::zeros((nao, nao)));
+    (pair.s, q)
 }
 
 /// Cutoff-floored ResHF quantities of the ordered pair `(A, B)`: per spin the floored
@@ -185,7 +133,7 @@ fn trace_product(
 /// - `ao`: Contains AO integrals and other system data.
 /// - `a`: Bra determinant `A`.
 /// - `b`: Ket determinant `B`.
-/// - `cutoff`: Relative singular value floor; see [`floor_singular_values`].
+/// - `cutoff`: Relative singular value floor; see [`build_s_pair_floored`].
 /// # Returns
 /// - `ResHFPair`: Floored overlap, coupling, transition densities and Fock matrices.
 pub fn reshf_pair(
@@ -213,8 +161,8 @@ pub fn reshf_pair(
 
     // `H_{AB} = s_{AB} [E_{\text{nuc}} + \frac{1}{2} \sum_\omega \mathrm{tr}((h + F^\omega) Q^\omega)]`.
     let s = sa * sb;
-    let e =
-        ao.enuc + 0.5 * (trace_product(&(&ao.h + &fa), &qa) + trace_product(&(&ao.h + &fb), &qb));
+    let e = ao.enuc
+        + 0.5 * (f64::einsum_ba_ab(&(&ao.h + &fa), &qa) + f64::einsum_ba_ab(&(&ao.h + &fb), &qb));
 
     ResHFPair {
         s,
