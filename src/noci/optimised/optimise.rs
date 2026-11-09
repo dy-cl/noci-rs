@@ -4,17 +4,13 @@
 //! determinants. The determinants are coupled through the CI expansion, so a common set of
 //! extrapolation coefficients keeps their updates consistent.
 
-// Standard library imports.
-use std::sync::Arc;
-
 // External crate imports.
 use ndarray::Array2;
 
 // Crate-root imports.
 use crate::elements::occ_coeffs;
 use crate::input::Input;
-use crate::maths::general_evp_x;
-use crate::scf::{DensityMode, Diis, density, energy, fock, mom_select, occ_first, occvec_to_bits};
+use crate::scf::{Diis, occ_first, roothaan_step};
 use crate::{AoData, SCFState};
 
 // Parent/sibling imports.
@@ -41,73 +37,6 @@ pub struct ResHFSolution {
     pub iterations: usize,
     /// Whether the energy and commutator criteria of `input.scf` were met.
     pub converged: bool,
-}
-
-/// Roothaan step for one spin: solve `F C = S C \epsilon` and occupy the `nocc` orbitals that
-/// overlap most with the previous occupied space (MOM).
-/// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
-/// - `f`: Resonating Fock matrix `F^{A,\omega}`.
-/// - `c_occ_old`: Previous occupied coefficients `C^A_o`.
-/// - `nocc`: Number of occupied orbitals.
-/// # Returns
-/// - `(Array2<f64>, u128)`: New MO coefficients and their occupation bitstring.
-fn occupy(
-    ao: &AoData,
-    f: &Array2<f64>,
-    c_occ_old: &Array2<f64>,
-    nocc: usize,
-) -> (Array2<f64>, u128) {
-    let (_, c) = general_evp_x(f, &ao.x);
-    let idx = mom_select(c_occ_old, &c, &ao.s, nocc);
-    (c, occvec_to_bits(&idx))
-}
-
-/// New orbitals of one determinant from its resonating Fock matrices, with occupied orbitals
-/// first, `P^\sigma`, `F^\sigma` and its own energy `E` rebuilt as `scf_cycle` does.
-/// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
-/// - `det`: Current determinant.
-/// - `fa`: Resonating Fock matrix `F^{A,\alpha}`, possibly DIIS-extrapolated.
-/// - `fb`: Resonating Fock matrix `F^{A,\beta}`, possibly DIIS-extrapolated.
-/// # Returns
-/// - `SCFState`: The updated determinant, with the same label.
-fn reshf_step(
-    ao: &AoData,
-    det: &SCFState,
-    fa: &Array2<f64>,
-    fb: &Array2<f64>,
-) -> SCFState {
-    let na = det.oa.count_ones() as usize;
-    let nb = det.ob.count_ones() as usize;
-
-    // Diagonalise each spin's resonating Fock matrix and follow the occupied space by MOM.
-    let (ca, oa) = occupy(ao, fa, &occ_coeffs(&det.ca, det.oa), na);
-    let (cb, ob) = occupy(ao, fb, &occ_coeffs(&det.cb, det.ob), nb);
-    let st = occ_first(&SCFState {
-        e: det.e,
-        oa,
-        ob,
-        ca: Arc::new(ca),
-        cb: Arc::new(cb),
-        da: det.da.clone(),
-        db: det.db.clone(),
-        label: det.label.clone(),
-        noci_basis: true,
-    });
-
-    // Rebuild `P^\sigma`, `F^\sigma` and the determinant's own SCF energy.
-    let da = density(&st.ca, na, DensityMode::Hermitian);
-    let db = density(&st.cb, nb, DensityMode::Hermitian);
-    let (fa_own, fb_own) = fock(&ao.h, &ao.eri_coul, &da, &db);
-    let e = energy(&ao.h, ao.enuc, &da, &db, &fa_own, &fb_own);
-
-    SCFState {
-        e,
-        da: Arc::new(da),
-        db: Arc::new(db),
-        ..st
-    }
 }
 
 /// Optimise the orbitals of every NOCI state by ResHF-cutoff, making
@@ -191,7 +120,20 @@ pub fn reshf_optimise(
             if expansion.pair_weights[(a, a)] < WEIGHTTOL {
                 continue;
             }
-            *det = reshf_step(ao, det, &f[2 * a], &f[2 * a + 1]);
+
+            // Follow each spin's occupied space by MOM and rebuild the determinant's own
+            // densities, Fock matrices and SCF energy, keeping occupied orbitals first.
+            let nocc = (det.oa.count_ones() as usize, det.ob.count_ones() as usize);
+            let c_occ = (occ_coeffs(&det.ca, det.oa), occ_coeffs(&det.cb, det.ob));
+            let step = roothaan_step(
+                ao,
+                (&f[2 * a], &f[2 * a + 1]),
+                nocc,
+                (true, true),
+                (Some(&c_occ.0), Some(&c_occ.1)),
+                None,
+            );
+            *det = occ_first(&step.into_state(&det.label, true));
         }
         e_old = e;
     };

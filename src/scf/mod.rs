@@ -39,6 +39,5 @@ pub use occupation::{occ_first, spin_occupation};
 pub(crate) use diis::Diis;
 
 // Restricted function re-exports.
+pub(crate) use cycle::roothaan_step;
 pub(crate) use h::{continue_hscf_track, initialise_hscf_track, physical_hscf_state};
-pub(crate) use occupation::occvec_to_bits;
-pub(crate) use select::mom_select;
