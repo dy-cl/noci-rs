@@ -773,6 +773,7 @@ pub(crate) fn jm_qmc_step(
             (
                 qmc.target_population,
                 qmc.shift_damping,
+                qmc.population_restoring,
                 dt * qmc.ncycles as f64,
             ),
         );
