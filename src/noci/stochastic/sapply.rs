@@ -17,9 +17,7 @@ use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::input::ExcitationGen;
 use crate::noci::{OverlapFactors, OverlapScratch, SpinFactorisation};
 use crate::qmc::excitgen::ExcitationHist;
-use crate::qmc::{
-    QmcRng, coalesce, compress_sparse, exchange_updates, pack_updates, stream, target_cutoff,
-};
+use crate::qmc::{QmcRng, coalesce, compress_sparse, exchange_to_owners, stream, target_cutoff};
 use crate::time_call;
 
 // Parent/sibling imports.
@@ -194,13 +192,10 @@ pub(in crate::noci::stochastic) fn exchange_shift_tangent(
     // Each rank holds partial contributions to `B_w = \sum_a dt \sum_x S_{wx}\tilde N_x`.
     // Redistribute them by determinant ownership before report-level FRI.
     mpi.send_ranked.append(&mut tangent.remote);
-    pack_updates(run.nranks, mpi, true);
-    let received = exchange_updates(world, mpi);
-    for &update in received {
+    for update in exchange_to_owners(world, run.irank, mpi) {
         tangent.add(update.det as usize, update.dn, true);
     }
     mpi.send_contig.clear();
-    mpi.send_ranked.clear();
 }
 
 /// Reduce thread-local dense retained-space tangents into one report-level vector.

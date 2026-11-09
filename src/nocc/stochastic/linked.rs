@@ -43,7 +43,7 @@ use super::state::{LinkedBatchedRequest, Target};
 /// # Returns:
 /// - `Option<((ExcitedDeterminant, f64), (ExcitedDeterminant, f64))>`: Ket and bra with the signs
 ///   of the excitor actions, or `None` if either part vanishes.
-fn partition(
+fn partition_cluster(
     reference: &ExcitedDeterminant,
     excitors: &[Excitor],
     projectee: &ExcitedDeterminant,
@@ -51,6 +51,8 @@ fn partition(
 ) -> Option<((ExcitedDeterminant, f64), (ExcitedDeterminant, f64))> {
     let (mut ket, mut sr) = (*reference, 1.0);
     let (mut bra, mut sl) = (*projectee, 1.0);
+
+    // Right excitors act on the ket and left ones are undone on the bra, accumulating the signs.
     for (k, excitor) in excitors.iter().enumerate() {
         if left >> k & 1 == 0 {
             let (next, sk) = excitor.apply(&ket)?;
@@ -60,6 +62,7 @@ fn partition(
             (bra, sl) = (prev, sl * sk);
         }
     }
+
     Some(((ket, sr), (bra, sl)))
 }
 
@@ -87,7 +90,9 @@ fn commutator(
     let (target, coefficient) = term;
     let s = excitors.len();
     for left in 0..1usize << s {
-        if let Some(((ket, sr), (bra, sl))) = partition(reference, excitors, projectee, left) {
+        if let Some(((ket, sr), (bra, sl))) =
+            partition_cluster(reference, excitors, projectee, left)
+        {
             if (bra.alpha ^ ket.alpha).count_ones() + (bra.beta ^ ket.beta).count_ones() > 4 {
                 continue;
             }
@@ -126,7 +131,7 @@ fn proposal(
     let s = excitors.len();
     let mut p = 0.0;
     for left in 0..1usize << s {
-        if let Some(((n, _), (m, _))) = partition(reference, excitors, projectee, left) {
+        if let Some(((n, _), (m, _))) = partition_cluster(reference, excitors, projectee, left) {
             let distance = (n.alpha ^ m.alpha).count_ones() + (n.beta ^ m.beta).count_ones();
             if distance != 0 && distance <= 4 {
                 p += pgen;

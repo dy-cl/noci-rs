@@ -19,7 +19,7 @@ use crate::input::{Input, Propagator};
 use crate::maths::general_evp;
 use crate::mpiutils::broadcast;
 use crate::noci::OverlapFactors;
-use crate::qmc::{exchange_updates, owner, pack_updates, rank_seed, stream};
+use crate::qmc::{exchange_to_owners, owner, rank_seed, stream};
 use crate::time_call;
 
 // Parent/sibling imports.
@@ -124,13 +124,10 @@ pub(in crate::noci::stochastic) fn exchange_accumulated_updates(
         scratch.send_ranked.clear();
         return;
     }
-    pack_updates(run.nranks, scratch, true);
-    let received = exchange_updates(world, scratch);
-    for &update in received {
+    for update in exchange_to_owners(world, run.irank, scratch) {
         add_delta(mc, update.det as usize, update.dn);
     }
     scratch.send_contig.clear();
-    scratch.send_ranked.clear();
 }
 
 /// Generate one stochastic estimate of the ordinary or SApply NOCI residual.

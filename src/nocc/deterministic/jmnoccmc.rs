@@ -455,6 +455,7 @@ impl JMEquations {
         &self,
         t: &[Array1<f64>],
     ) -> CorrelatedReferences {
+        // `|\Phi_x\rangle = e^{\hat T_x}|{}^x\Psi\rangle` over the determinants of each block.
         let phi = self
             .blocks
             .iter()
@@ -465,6 +466,9 @@ impl JMEquations {
                 apply_exponential(block, tx, &reference, 1.0)
             })
             .collect::<Vec<_>>();
+
+        // `\langle k|\hat H|\Phi_x\rangle` and `\langle k|\Phi_x\rangle` for every projection row `k`,
+        // from the columns of block `x`.
         let (hphi, sphi) = self
             .blocks
             .iter()
@@ -477,6 +481,7 @@ impl JMEquations {
                 )
             })
             .unzip();
+
         CorrelatedReferences { phi, hphi, sphi }
     }
 
@@ -519,11 +524,15 @@ impl JMEquations {
             .iter()
             .enumerate()
             .map(|(y, block)| {
+                // `\langle k|\hat H|\Phi_y\rangle - \sum_{x \neq y}G_{xy}\langle k|\Phi_x\rangle` on the
+                // rows `k` of `y`.
                 let rows = block.row..block.row + block.projected;
                 let mut a = phi.hphi[y].slice(s![rows.clone()]).to_owned();
                 for x in (0..m).filter(|&x| x != y) {
                     a.scaled_add(-g[(x, y)], &phi.sphi[x].slice(s![rows.clone()]));
                 }
+
+                // The blocks are orthonormal, so `e^{-\hat T_y}` acts on the row coefficients.
                 apply_exponential(block, &t[y], &a, -1.0)
             })
             .collect()
@@ -717,14 +726,24 @@ impl JMEquations {
         options: &JMNOCCMCOptions,
         label: &str,
     ) -> (Array1<f64>, Array2<f64>) {
+        // `|\Phi_x\rangle`, `S^e`, `H^e`, `G = (S^e)^{-1}H^e` and
+        // `|Z_y\rangle = e^{-\hat T_y}|W_y\rangle` at `t`, from which
+        // `J_{y\mu,x\nu} = \partial R_{y\mu}/\partial t_{x\nu}` is formed.
         let phi = self.correlate(t);
         let effective = self.effective(&phi);
         let g = effective.g().expect("singular effective overlap");
         let z = self.transformed(t, &phi, &g);
         let jac = self.jacobian(t, &phi, &effective, &g, &z);
+
+        // Eigenvalues `\lambda` of `J` by real part: the update `I - \Delta\tau J` contracts only
+        // if every `\mathrm{Re}\,\lambda > 0`.
         let (w, _) = jac.eig().unwrap();
         let mut w = w.to_vec();
         w.sort_by(|a, b| a.re.total_cmp(&b.re));
+
+        // `J = U\Sigma V^T` with `\sigma_i` descending: the rows `\mathbf v_i` of `V^T` are the
+        // amplitude variations `\delta t` with `\|J\delta t\| = \sigma_i`, near-null for small
+        // `\sigma_i`. The conditioning `\kappa(S^e) = s_{\max}/s_{\min}` bounds the noise of `G`.
         let (_, sigma, vt) = jac.svd(false, true).unwrap();
         let vt = vt.unwrap();
         let (_, sse, _) = effective.se.svd(false, false).unwrap();

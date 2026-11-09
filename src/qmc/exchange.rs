@@ -4,6 +4,7 @@
 use mpi::datatype::{Partition, PartitionMut};
 use mpi::topology::Communicator;
 use mpi::traits::*;
+use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::time_call;
@@ -223,6 +224,43 @@ pub(crate) fn gather_updates<'a, U: KeyedUpdate>(
         world.all_gather_varcount_into(send, &mut recv);
         &scratch.gather_recv[..]
     })
+}
+
+/// Send every routed update to its owning rank and return this rank's updates, annihilated.
+/// `scratch.send_ranked` holds each update paired with its owner, this rank's own included: those
+/// are kept back, the rest are packed and exchanged, and the received and kept updates are then
+/// sorted by key and coalesced.
+/// # Arguments:
+/// - `world`: `MPI communicator object (MPI_COMM_WORLD).`
+/// - `irank`: This rank.
+/// - `scratch`: Reusable MPI storage holding the routed updates in `send_ranked`.
+/// # Returns
+/// - `Vec<U>`: One nonzero update per key owned by this rank.
+pub(crate) fn exchange_to_owners<U>(
+    world: &impl CommunicatorCollectives,
+    irank: usize,
+    scratch: &mut ExchangeScratch<U>,
+) -> Vec<U>
+where
+    U: KeyedUpdate + Send,
+    U::Key: Send,
+{
+    let nranks = world.size() as usize;
+
+    // Keep this rank's own updates back and exchange the rest.
+    let (own, remote) = scratch
+        .send_ranked
+        .drain(..)
+        .partition::<Vec<_>, _>(|&(peer, _)| peer == irank);
+    scratch.send_ranked = remote;
+    pack_updates(nranks, scratch, true);
+    let mut received = exchange_updates(world, scratch).to_vec();
+
+    // Annihilate the received and kept updates together.
+    received.extend(own.into_iter().map(|(_, update)| update));
+    received.par_sort_unstable_by_key(|update| update.key());
+    coalesce(&mut received);
+    received
 }
 
 /// Annihilate key-sorted updates in place: sum consecutive updates sharing a key and drop zero
