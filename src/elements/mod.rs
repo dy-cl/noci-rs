@@ -48,7 +48,6 @@ pub(crate) use hs::{calculate_hs_pair, calculate_hs_pair_dense, compare_hs_pair_
 pub(crate) use m::calculate_m_pair;
 pub(crate) use naive::calculate_hs_pair_naive_reshf;
 pub(crate) use naive::{build_s_pair, calculate_s_pair_naive, occ_coeffs, pair_density};
-pub(crate) use nonorthogonalwicks::build_jk_reshf;
 pub(crate) use nonorthogonalwicks::update_wicks_fock;
 pub(crate) use orthogonal::{
     calculate_f_pair_orthogonal, calculate_h_pairs_orthogonal_batched, calculate_s_pair_orthogonal,

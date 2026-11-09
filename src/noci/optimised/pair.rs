@@ -9,7 +9,8 @@ use ndarray::{Array1, Array2};
 
 // Crate-root imports.
 use crate::elements::nonorthogonalwicks::SameSpinBuild;
-use crate::elements::{build_jk_reshf, occ_coeffs};
+use crate::elements::occ_coeffs;
+use crate::scf::fock_nonsymmetric;
 use crate::{AoData, SCFState};
 
 /// Cutoff-floored quantities of one ordered determinant pair `(A, B)`.
@@ -207,12 +208,8 @@ pub fn reshf_pair(
         cutoff,
     );
 
-    // `F^{AB,\omega} = h + J^\alpha + J^\beta - K^\omega` from the full, non-symmetric `J` and `K`.
-    let (ja, ka) = build_jk_reshf(&ao.eri_coul, &qa);
-    let (jb, kb) = build_jk_reshf(&ao.eri_coul, &qb);
-    let hj = &ao.h + &ja + &jb;
-    let fa = &hj - &ka;
-    let fb = &hj - &kb;
+    // `F^{AB,\omega} = h + J[Q^\alpha + Q^\beta] - K[Q^\omega]` from the non-symmetric `Q`.
+    let (fa, fb) = fock_nonsymmetric(&ao.h, &ao.eri_coul, &qa, &qb);
 
     // `H_{AB} = s_{AB} [E_{\text{nuc}} + \frac{1}{2} \sum_\omega \mathrm{tr}((h + F^\omega) Q^\omega)]`.
     let s = sa * sb;

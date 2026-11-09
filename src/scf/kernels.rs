@@ -35,32 +35,36 @@ pub fn density<T: StateScalar>(
     }
 }
 
-/// Build spin-resolved unrestricted Fock matrices from spin densities.
+/// Rows of the spin-resolved Fock matrices `F^\sigma = H + J - K^\sigma`, with
+/// `J_{pq} = \sum_{rs} D_{rs}(pq|rs)` from the total density and
+/// `K^\sigma_{pq} = \sum_{rs} D^\sigma_{rs}(pr|qs)`.
 /// # Arguments:
 /// - `h`: One-electron Hamiltonian.
 /// - `eri`: Coulomb ERIs `(pq|rs)`.
 /// - `da`: Alpha-spin density matrix.
 /// - `db`: Beta-spin density matrix.
+/// - `full`: Whether to form every element of each row, or only the lower triangle `q \le p`.
 /// # Returns:
-/// - `(Array2<T>, Array2<T>)`: Alpha- and beta-spin Fock matrices.
-pub fn fock<T: StateScalar>(
+/// - `Vec<(Vec<T>, Vec<T>)>`: Alpha- and beta-spin Fock rows; elements not formed are zero.
+fn fock_rows<T: StateScalar>(
     h: &Array2<f64>,
     eri: &Array4<f64>,
     da: &Array2<T>,
     db: &Array2<T>,
-) -> (Array2<T>, Array2<T>) {
+    full: bool,
+) -> Vec<(Vec<T>, Vec<T>)> {
     let n = h.nrows();
     let d = da + db;
 
-    // Form only the lower triangle in parallel. `J_{pq} = \sum_{rs} D_{rs}(pq|rs)`
-    // uses total density, while `K^\sigma_{pq} = \sum_{rs} D^\sigma_{rs}(pr|qs)`.
-    let rows: Vec<(Vec<T>, Vec<T>)> = (0..n)
+    // Form the rows in parallel.
+    (0..n)
         .into_par_iter()
         .map(|p| {
             let mut fa_row: Vec<T> = (0..n).map(|_| T::from_real(0.0)).collect();
             let mut fb_row: Vec<T> = (0..n).map(|_| T::from_real(0.0)).collect();
 
-            for q in 0..=p {
+            let qmax = if full { n } else { p + 1 };
+            for q in 0..qmax {
                 let mut j = T::from_real(0.0);
                 let mut ka = T::from_real(0.0);
                 let mut kb = T::from_real(0.0);
@@ -79,7 +83,27 @@ pub fn fock<T: StateScalar>(
 
             (fa_row, fb_row)
         })
-        .collect();
+        .collect()
+}
+
+/// Build spin-resolved unrestricted Fock matrices from spin densities.
+/// # Arguments:
+/// - `h`: One-electron Hamiltonian.
+/// - `eri`: Coulomb ERIs `(pq|rs)`.
+/// - `da`: Alpha-spin density matrix.
+/// - `db`: Beta-spin density matrix.
+/// # Returns:
+/// - `(Array2<T>, Array2<T>)`: Alpha- and beta-spin Fock matrices.
+pub fn fock<T: StateScalar>(
+    h: &Array2<f64>,
+    eri: &Array4<f64>,
+    da: &Array2<T>,
+    db: &Array2<T>,
+) -> (Array2<T>, Array2<T>) {
+    let n = h.nrows();
+
+    // Form only the lower triangle, which suffices for symmetric densities.
+    let rows = fock_rows(h, eri, da, db, false);
 
     let mut fa = Array2::<T>::zeros((n, n));
     let mut fb = Array2::<T>::zeros((n, n));
@@ -96,6 +120,36 @@ pub fn fock<T: StateScalar>(
         for q in 0..p {
             fa[(q, p)] = fa[(p, q)];
             fb[(q, p)] = fb[(p, q)];
+        }
+    }
+
+    (fa, fb)
+}
+
+/// Build spin-resolved unrestricted Fock matrices from spin densities that need not be
+/// symmetric, such as transition densities, forming every element.
+/// # Arguments:
+/// - `h`: One-electron Hamiltonian.
+/// - `eri`: Coulomb ERIs `(pq|rs)`.
+/// - `da`: Alpha-spin density matrix.
+/// - `db`: Beta-spin density matrix.
+/// # Returns:
+/// - `(Array2<T>, Array2<T>)`: Alpha- and beta-spin Fock matrices.
+pub fn fock_nonsymmetric<T: StateScalar>(
+    h: &Array2<f64>,
+    eri: &Array4<f64>,
+    da: &Array2<T>,
+    db: &Array2<T>,
+) -> (Array2<T>, Array2<T>) {
+    let n = h.nrows();
+    let rows = fock_rows(h, eri, da, db, true);
+
+    let mut fa = Array2::<T>::zeros((n, n));
+    let mut fb = Array2::<T>::zeros((n, n));
+    for (p, (fa_row, fb_row)) in rows.into_iter().enumerate() {
+        for q in 0..n {
+            fa[(p, q)] = fa_row[q];
+            fb[(p, q)] = fb_row[q];
         }
     }
 

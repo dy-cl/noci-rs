@@ -32,7 +32,9 @@ pub use occupation::SpinOccupation;
 // Public function re-exports.
 pub use cycle::scf_cycle;
 pub use h::normalise_hermitian;
-pub use kernels::{density, energy, fock, fock_lambda, orbital_energies, orbital_gradient};
+pub use kernels::{
+    density, energy, fock, fock_lambda, fock_nonsymmetric, orbital_energies, orbital_gradient,
+};
 pub use occupation::{occ_first, spin_occupation};
 
 // Restricted type re-exports.
