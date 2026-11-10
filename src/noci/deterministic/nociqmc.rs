@@ -50,36 +50,6 @@ pub struct Coefficients<T: NOCIScalar> {
     pub c_null: Array1<T>,
 }
 
-/// Return the overlap and identity shifts for a propagator.
-/// # Arguments
-/// - `prop`: Propagator choice.
-/// - `es_s`: Overlap-transformed shift.
-/// - `es`: Non-overlap-transformed shift.
-/// # Returns
-/// - `(f64, f64)`: Overlap shift and identity shift.
-/// # Panics
-/// - Panics if a range propagator is passed to the deterministic path.
-/// # References
-/// - Baumgarten, *Nonorthogonal and Overcomplete Hilbert Spaces for Quantum Monte Carlo Methods*
-///   (M.Sc. thesis, Cambridge, 2023), for the unshifted, shifted, doubly shifted and
-///   difference-doubly-shifted propagator definitions.
-fn propagator_shifts(
-    prop: &Propagator,
-    es_s: f64,
-    es: f64,
-) -> (f64, f64) {
-    match prop {
-        Propagator::Unshifted => (es_s, 0.0),
-        Propagator::Shifted => (es_s, es_s),
-        Propagator::DoublyShifted => (es_s, es),
-        Propagator::DifferenceDoublyShiftedU1 => (0.5 * (es + es_s), es - es_s),
-        Propagator::DifferenceDoublyShiftedU2 => (es_s, es - es_s),
-        Propagator::SApply | Propagator::BApply => {
-            panic!("range propagators cannot be specified in this deterministic path.")
-        }
-    }
-}
-
 /// Diagonalise the Hamiltonian in the canonically orthogonalised relevant subspace.
 /// # Arguments
 /// - `h`: Hamiltonian matrix in the full NOCI-QMC basis.
@@ -214,169 +184,106 @@ impl<T: NOCIScalar> Projectors<T> {
 
 impl<T: NOCIScalar> ProjPropagator<T> {
     /// Express the propagator in relevant and null subspace blocks, such as
-    /// `H_{rn} = U_r^\dagger H U_n`.
+    /// `U_{rn} = -\Delta\tau\, U_r^\dagger A U_n`, where the action is `A = S(H - E_s S)` for
+    /// S-apply and `A = H - E_s S` otherwise. For B-apply this is exact, because the factor
+    /// obeys `B^\dagger B = S` and `B^\dagger \hat H B = H`, so `B^\dagger(\hat H - E_s)B = H - E_s S`.
     /// # Arguments:
     /// - `h`: Hamiltonian in the full NOCI-QMC basis.
     /// - `s`: Overlap matrix in the full NOCI-QMC basis.
     /// - `p`: Relevant and null subspace projectors.
-    /// - `es_s`: Overlap-transformed energy shift.
-    /// - `es`: Identity energy shift.
+    /// - `es`: Shift `E_s`.
     /// - `dt`: Propagation time step.
     /// - `prop`: Propagator choice.
     /// # Returns
     /// - `ProjPropagator`: Propagator blocks in the relevant and null subspace basis.
-    /// # Panics
-    /// - Panics if BApply is selected; deterministic BApply is unsupported.
     pub fn calculate_projected_propagator(
         h: &Array2<T>,
         s: &Array2<T>,
         p: &Projectors<T>,
-        es_s: f64,
         es: f64,
         dt: f64,
         prop: &Propagator,
     ) -> Self {
-        if matches!(prop, Propagator::BApply) {
-            panic!("BApply has no deterministic propagation implementation.");
-        }
-        if matches!(prop, Propagator::SApply) {
-            let es_s = T::from_real(es_s);
-            let dt = T::from_real(dt);
-
-            // Actions on relevant and null source subspaces.
-            let hur = h.dot(&p.ur);
-            let hun = h.dot(&p.un);
-            let sur = s.dot(&p.ur);
-            let sun = s.dot(&p.un);
-
-            // (H - EsS S) U_r and (H - EsS S) U_n.
-            let residual_r = hur - sur.mapv(|z| es_s * z);
-
-            let residual_n = hun - sun.mapv(|z| es_s * z);
-
-            // S(H - EsS S) U_r and S(H - EsS S) U_n.
-            let action_r = s.dot(&residual_r);
-            let action_n = s.dot(&residual_n);
-
-            // Project the S-apply action into the relevant/null
-            // subspace basis.
-            let arr = p.ur_dag.dot(&action_r);
-            let anr = p.un_dag.dot(&action_r);
-            let arn = p.ur_dag.dot(&action_n);
-            let ann = p.un_dag.dot(&action_n);
-
-            let identity_r = Array2::<T>::eye(arr.nrows());
-            let identity_n = Array2::<T>::eye(ann.nrows());
-
-            let urr = identity_r - arr.mapv(|z| dt * z);
-
-            let unn = identity_n - ann.mapv(|z| dt * z);
-
-            let unr = anr.mapv(|z| -dt * z);
-
-            let urn = arn.mapv(|z| -dt * z);
-
-            return Self { urr, unn, unr, urn };
-        }
-
-        let (es_s, es) = propagator_shifts(prop, es_s, es);
-
-        let es_s = T::from_real(es_s);
         let es = T::from_real(es);
         let dt = T::from_real(dt);
 
-        // H U_r, H U_n, S U_r, and S U_n.
+        // H U_r, H U_n, S U_r and S U_n.
         let hur = h.dot(&p.ur);
         let hun = h.dot(&p.un);
         let sur = s.dot(&p.ur);
         let sun = s.dot(&p.un);
 
-        let hrr = p.ur_dag.dot(&hur);
-        let hnn = p.un_dag.dot(&hun);
-        let hnr = p.un_dag.dot(&hur);
-        let hrn = p.ur_dag.dot(&hun);
+        // The null-space couplings of `H` and `S` are diagnostic only for the unshifted
+        // propagator, whose population is not confined to the range of the overlap.
+        if matches!(prop, Propagator::Unshifted) {
+            print_projected_matrix_norms(
+                &sun,
+                &hun,
+                &p.un_dag.dot(&sun),
+                &p.un_dag.dot(&hun),
+                &p.ur_dag.dot(&hun),
+            );
+        }
 
-        let srr = p.ur_dag.dot(&sur);
-        let snn = p.un_dag.dot(&sun);
-        let snr = p.un_dag.dot(&sur);
-        let srn = p.ur_dag.dot(&sun);
+        // `(H - E_s S) U`, with `S` applied once more for S-apply.
+        let residual_r = &hur - &sur.mapv(|z| es * z);
+        let residual_n = &hun - &sun.mapv(|z| es * z);
 
-        print_projected_matrix_norms(&sun, &hun, &snn, &hnn, &hrn);
+        let (action_r, action_n) = if matches!(prop, Propagator::SApply) {
+            (s.dot(&residual_r), s.dot(&residual_n))
+        } else {
+            (residual_r, residual_n)
+        };
 
-        let identity_r = Array2::<T>::eye(hrr.nrows());
-        let identity_n = Array2::<T>::eye(hnn.nrows());
+        // `A_{rn} = U_r^\dagger A U_n` in the relevant and null subspace blocks.
+        let arr = p.ur_dag.dot(&action_r);
+        let anr = p.un_dag.dot(&action_r);
+        let arn = p.ur_dag.dot(&action_n);
+        let ann = p.un_dag.dot(&action_n);
 
-        let identity_fac = T::from_real(1.0) + dt * es;
-
-        let urr = identity_r.mapv(|z| identity_fac * z)
-            - (&hrr - &srr.mapv(|z| es_s * z)).mapv(|z| dt * z);
-
-        let unn = identity_n.mapv(|z| identity_fac * z)
-            - (&hnn - &snn.mapv(|z| es_s * z)).mapv(|z| dt * z);
-
-        let unr = (&hnr - &snr.mapv(|z| es_s * z)).mapv(|z| -dt * z);
-
-        let urn = (&hrn - &srn.mapv(|z| es_s * z)).mapv(|z| -dt * z);
+        // `U = I - \Delta\tau A`, with the identity only on the diagonal blocks.
+        let urr = Array2::<T>::eye(arr.nrows()) - arr.mapv(|z| dt * z);
+        let unn = Array2::<T>::eye(ann.nrows()) - ann.mapv(|z| dt * z);
+        let unr = anr.mapv(|z| -dt * z);
+        let urn = arn.mapv(|z| -dt * z);
 
         Self { urr, unn, unr, urn }
     }
 }
 
 /// Perform one deterministic NOCI-QMC propagation step from the Hamiltonian and overlap
-/// products of the current coefficients, so that the coefficient-space propagators need no
-/// further matrix-vector products and S-apply needs only `S` applied to the residual.
+/// products of the current vector, so that the unshifted and B-apply propagators need no further
+/// matrix-vector products and S-apply needs only `S` applied to the residual:
+/// `c' = c - \Delta\tau (H - E_s S)c` for unshifted, `N' = N - \Delta\tau S(H - E_s S)N` for
+/// S-apply and `N' = N - \Delta\tau B^\dagger(\hat H - E_s)BN = N - \Delta\tau(H - E_s S)N` for
+/// B-apply, the expectation of its stochastic update.
 /// # Arguments
 /// - `s`: Overlap matrix in the full NOCI-QMC basis.
-/// - `c`: NOCI-QMC coefficient vector.
+/// - `c`: Propagated vector, the coefficients `c` or the range population `N`.
 /// - `products`: Hamiltonian and overlap products `Hc` and `Sc`.
-/// - `es_s`: Overlap-transformed energy shift.
-/// - `es`: Non-overlap-transformed energy shift.
+/// - `es`: Shift `E_s`.
 /// - `dt`: Propagation time step.
 /// - `prop`: Propagator choice.
 /// # Returns
-/// - `Array1<T>`: Updated NOCI-QMC coefficient vector.
-/// # Panics
-/// - Panics if BApply is selected; deterministic BApply is unsupported.
+/// - `Array1<T>`: Updated propagated vector.
 pub fn propagate_step<T: NOCIScalar>(
     s: &Array2<T>,
     c: &Array1<T>,
     products: (&Array1<T>, &Array1<T>),
-    es_s: f64,
     es: f64,
     dt: f64,
     prop: &Propagator,
 ) -> Array1<T> {
     let (hc, sc) = products;
+    let es = T::from_real(es);
+    let dt = T::from_real(dt);
+
+    // Residual `(H - E_s S)c` from the cached products, with `S` applied once more for S-apply.
+    let residual = hc - &sc.mapv(|z| es * z);
+
     match prop {
-        Propagator::SApply => {
-            // `c' = c - \Delta t\, S (H - E_s S)c` in the overlap-applied propagator.
-            let es_s = T::from_real(es_s);
-            let dt = T::from_real(dt);
-
-            let residual = hc - &sc.mapv(|z| es_s * z);
-
-            let overlap_residual = parallel_matvec(s, &residual);
-
-            c - &overlap_residual.mapv(|z| dt * z)
-        }
-
-        Propagator::BApply => {
-            panic!("BApply has no deterministic propagation implementation.")
-        }
-
-        _ => {
-            // Other deterministic propagators use
-            // `c' = c - \Delta t\, [(H - E_s^S S)c - E_s c]` after shift selection.
-            let (es_s, es) = propagator_shifts(prop, es_s, es);
-
-            let es_s = T::from_real(es_s);
-            let es = T::from_real(es);
-            let dt = T::from_real(dt);
-
-            let residual = hc - &sc.mapv(|z| es_s * z) - c.mapv(|z| es * z);
-
-            c - &residual.mapv(|z| dt * z)
-        }
+        Propagator::Unshifted | Propagator::BApply => c - &residual.mapv(|z| dt * z),
+        Propagator::SApply => c - &parallel_matvec(s, &residual).mapv(|z| dt * z),
     }
 }
 
@@ -385,14 +292,12 @@ pub fn propagate_step<T: NOCIScalar>(
 /// - `h`: NOCI Hamiltonian in full NOCI-QMC basis.
 /// - `s`: Overlap matrix in full NOCI-QMC basis.
 /// - `c0`: Initial NOCI-QMC coefficient vector, start from reference NOCI coefficients.
-/// - `es`: Initial value of the non-overlap and overlap-transformed shifts.
+/// - `es`: Initial value of the shift `E_s`.
 /// - `history`: Storage for coefficient history during propagation.
 /// - `input`: User inputted options.
 /// - `basis`: Original NOCI-QMC determinant basis in the ordering used for H and S.
 /// # Returns
 /// - `Option<Array1<T>>`: Converged coefficient vector if propagation succeeds, otherwise `None`.
-/// # Panics
-/// - Panics if BApply is selected; deterministic BApply is unsupported.
 pub fn propagate<T: NOCIScalar>(
     h: &Array2<T>,
     s: &Array2<T>,
@@ -402,21 +307,14 @@ pub fn propagate<T: NOCIScalar>(
     input: &Input,
     basis: &crate::determinant::NOCISpace<T>,
 ) -> Option<Array1<T>> {
-    if matches!(input.prop_ref().propagator, Propagator::BApply) {
-        panic!("BApply has no deterministic propagation implementation.");
-    }
-    let mut es_s = es;
-    let sapply = matches!(input.prop_ref().propagator, Propagator::SApply);
+    let range = matches!(
+        input.prop_ref().propagator,
+        Propagator::SApply | Propagator::BApply
+    );
 
-    // There is no identity shift in S-apply propagation.
-    if sapply {
-        es = 0.0;
-    }
-
-    // Old style propagators evolve coefficient vector directly whilst
-    // S-apply propagation evolves coefficient vector acted on by
-    // the overlap.
-    let mut c_norm = if sapply {
+    // The unshifted propagator evolves the coefficients `c`, and S-apply and B-apply the range
+    // population `N = Sc`.
+    let mut c_norm = if range {
         parallel_matvec(s, c0)
     } else {
         c0.clone()
@@ -439,21 +337,18 @@ pub fn propagate<T: NOCIScalar>(
     // Unwrap deterministic propagation specific options.
     let det = input.det.as_ref().unwrap();
 
-    // Calculate initial populations.
-    let sc0 = sc.clone();
+    // Initial population `\|c\|_1` of the propagated vector, which controls the shift.
     let pop_c0 = c_norm.iter().map(|z| z.abs()).sum::<f64>();
-    let pop_sc0 = sc0.iter().map(|z| z.abs()).sum::<f64>();
 
-    if !pop_c0.is_finite() || !pop_sc0.is_finite() || pop_c0 <= 0.0 || pop_sc0 <= 0.0 {
+    if !pop_c0.is_finite() || pop_c0 <= 0.0 {
         println!(
-            "Invalid initial deterministic populations: ||C|| = {}, ||SC|| = {}.",
-            pop_c0, pop_sc0
+            "Invalid initial deterministic population: ||C|| = {}.",
+            pop_c0
         );
         return None;
     }
 
     let mut log_pop_c = pop_c0.ln();
-    let mut log_pop_sc = pop_sc0.ln();
 
     // If we're doing deterministic investigation into relevant and null subspaces we need to
     // calculate projectors onto these spaces which involves diagonalising S. Of course for larger
@@ -483,13 +378,12 @@ pub fn propagate<T: NOCIScalar>(
             h,
             s,
             &p,
-            es_s,
             es,
             input.prop_ref().dt,
             &input.prop_ref().propagator,
         );
 
-        print_projected_propagator_diagnostics(&proj_propagator, es, es_s, sapply);
+        print_projected_propagator_diagnostics(&proj_propagator, es, range);
 
         // Add initial coefficients to the history.
         history.push(Coefficients {
@@ -500,17 +394,17 @@ pub fn propagate<T: NOCIScalar>(
         projectors = Some(p);
     }
 
-    print_propagation_table_header(sapply);
+    print_propagation_table_header(range);
 
     // Print initial row.
     let den0 = c_norm
         .iter()
-        .zip(sc0.iter())
+        .zip(sc.iter())
         .map(|(&ci, &sci)| ci.conj() * sci)
         .sum::<T>()
         .re();
 
-    print_propagation_table_row(0, (e_prev, 0.0), (es, es_s), (pop_c0, pop_sc0), den0);
+    print_propagation_table_row(0, (e_prev, 0.0), es, pop_c0, den0);
 
     for it in 0..det.max_steps {
         // Perform one propagation step using the current shifts and products.
@@ -518,7 +412,6 @@ pub fn propagate<T: NOCIScalar>(
             s,
             &c_norm,
             (&hc, &sc),
-            es_s,
             es,
             input.prop_ref().dt,
             &input.prop_ref().propagator,
@@ -563,50 +456,37 @@ pub fn propagate<T: NOCIScalar>(
         let e = rayleigh_quotient(&c_new_norm, &hc_new, &sc_new);
         let de = (e - e_prev).abs();
 
-        // Calculate the coefficient norms after metric normalisation.
+        // Population of the propagated vector after metric normalisation.
         let c1norm = c_new_norm.iter().map(|z| z.abs()).sum::<f64>();
-        let sc1norm = sc_new.iter().map(|z| z.abs()).sum::<f64>();
 
-        if !c1norm.is_finite() || !sc1norm.is_finite() || c1norm <= 0.0 || sc1norm <= 0.0 {
+        if !c1norm.is_finite() || c1norm <= 0.0 {
             println!(
-                "Invalid deterministic populations at iter {}: ||C|| = {}, ||SC|| = {}.",
+                "Invalid deterministic population at iter {}: ||C|| = {}.",
                 it + 1,
-                c1norm,
-                sc1norm
+                c1norm
             );
             return None;
         }
 
-        // Reconstruct the unnormalised populations removed by metric normalisation.
+        // Reconstruct the unnormalised population removed by metric normalisation.
         let log_pop_c_new = logamp + c1norm.ln();
-        let log_pop_sc_new = logamp + sc1norm.ln();
         let pop_c = log_pop_c_new.exp();
-        let pop_sc = log_pop_sc_new.exp();
 
-        if !pop_c.is_finite() || !pop_sc.is_finite() {
+        if !pop_c.is_finite() {
             println!(
-                "Deterministic populations overflowed at iter {}: ||C|| = {}, ||SC|| = {}.",
+                "Deterministic population overflowed at iter {}: ||C|| = {}.",
                 it + 1,
-                pop_c,
-                pop_sc
+                pop_c
             );
             return None;
         }
 
-        // Update the non-overlap and overlap-transformed shifts independently.
+        // `E_s \leftarrow E_s - (\alpha/\Delta\tau) \ln(\|c_{k+1}\|_1/\|c_k\|_1)`.
         if det.dynamic_shift {
-            let fac = det.dynamic_shift_alpha / input.prop_ref().dt;
-
-            if sapply {
-                es_s -= fac * (log_pop_c_new - log_pop_c);
-            } else {
-                es -= fac * (log_pop_c_new - log_pop_c);
-                es_s -= fac * (log_pop_sc_new - log_pop_sc);
-            }
+            es -= det.dynamic_shift_alpha / input.prop_ref().dt * (log_pop_c_new - log_pop_c);
         }
 
         log_pop_c = log_pop_c_new;
-        log_pop_sc = log_pop_sc_new;
 
         if let Some(ref p) = projectors {
             let scale = T::from_real(logamp.exp());
@@ -623,7 +503,7 @@ pub fn propagate<T: NOCIScalar>(
             });
         }
 
-        print_propagation_table_row(it + 1, (e, de), (es, es_s), (pop_c, pop_sc), den);
+        print_propagation_table_row(it + 1, (e, de), es, pop_c, den);
 
         // If our energy change between iterations is large we likely have problems with
         // singularity and very low eigenvalues or a time-step that is too large.
