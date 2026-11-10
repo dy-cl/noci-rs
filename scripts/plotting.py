@@ -306,9 +306,6 @@ def findDeterministicQMC(path: Path):
                     line.lstrip().startswith("iter")
                     and "|dE|" in line
                     and "Shift (Es)" in line
-                    and "Shift (EsS)" in line
-                    and "||C||" in line
-                    and "||SC||" in line
                 ):
                     start = lineno + 1
                     inQMC = True
@@ -347,9 +344,7 @@ def readDeterministicQMC(path: Path) -> pd.DataFrame:
             "energy",
             "de",
             "es",
-            "ess",
             "nwc",
-            "nwsc",
             "metric_norm",
         ],
         engine="c",
@@ -1404,7 +1399,7 @@ def plotExcitationHist(args):
     formatAxes(
         xlabel=(
             r"$\frac{\Delta\tau|\langle {}^x\Psi|\hat H|{}^w\Psi\rangle"
-            r" - E_s^S(\tau)\langle {}^x\Psi|{}^w\Psi\rangle|}"
+            r" - E_s(\tau)\langle {}^x\Psi|{}^w\Psi\rangle|}"
             r"{P_{\mathrm{gen}}(w|x)}$"
         ),
         ylabel=ylabel,
@@ -1447,9 +1442,9 @@ def plotProjectedShift(args):
             # Draw the shift beneath the projected energy.
             if iterShift is not None:
                 shiftLabel = (
-                    rf"{label} $E_s^S(\tau)$"
+                    rf"{label} $E_s(\tau)$"
                     if args.overlay
-                    else r"$E_s^S(\tau)$"
+                    else r"$E_s(\tau)$"
                 )
 
                 plt.plot(
@@ -1497,7 +1492,7 @@ def plotProjectedShift(args):
     (lineShift,) = ax.plot(
         [],
         [],
-        label=r"$E_s^S(\tau)$",
+        label=r"$E_s(\tau)$",
         linewidth=LINEWIDTH,
         linestyle="-",
         color="tab:blue",
@@ -1722,13 +1717,11 @@ def plotNW(args):
 
 def plotDeterministicNW(args):
     """
-    Plot deterministic coefficient populations against iteration.
+    Plot the deterministic population of the propagated vector against iteration.
     """
     df = readDeterministicQMC(args.path)
 
     iterEs, _ = shiftChange(df["es"])
-
-    iterEsS, _ = shiftChange(df["ess"])
 
     setStyle()
     plt.figure()
@@ -1740,27 +1733,12 @@ def plotDeterministicNW(args):
         linewidth=LINEWIDTH,
     )
 
-    plt.plot(
-        df["iter"],
-        df["nwsc"],
-        label=r"$\|SC(\tau)\|_1$",
-        linewidth=LINEWIDTH,
-    )
-
     if iterEs is not None:
         plt.axvline(
             df["iter"].iloc[iterEs],
             linestyle="--",
             linewidth=LINEWIDTH,
             color="tab:blue",
-        )
-
-    if iterEsS is not None:
-        plt.axvline(
-            df["iter"].iloc[iterEsS],
-            linestyle="--",
-            linewidth=LINEWIDTH,
-            color="tab:orange",
         )
 
     formatAxes(
@@ -1781,8 +1759,6 @@ def plotDeterministicProjectedShift(args):
 
         iterEs, _ = shiftChange(df["es"])
 
-        iterEsS, _ = shiftChange(df["ess"])
-
         setStyle()
         plt.figure()
 
@@ -1794,28 +1770,12 @@ def plotDeterministicProjectedShift(args):
             color="tab:blue",
         )
 
-        plt.plot(
-            df["iter"],
-            df["ess"],
-            label=r"$E_s^S(\tau)$",
-            linewidth=LINEWIDTH,
-            color="tab:orange",
-        )
-
         if iterEs is not None:
             plt.axvline(
                 df["iter"].iloc[iterEs],
                 linestyle="--",
                 linewidth=LINEWIDTH,
                 color="tab:blue",
-            )
-
-        if iterEsS is not None:
-            plt.axvline(
-                df["iter"].iloc[iterEsS],
-                linestyle="--",
-                linewidth=LINEWIDTH,
-                color="tab:orange",
             )
 
         plt.plot(
@@ -1847,14 +1807,6 @@ def plotDeterministicProjectedShift(args):
         color="tab:blue",
     )
 
-    (lineEsS,) = ax.plot(
-        [],
-        [],
-        label=r"$E_s^S(\tau)$",
-        linewidth=LINEWIDTH,
-        color="tab:orange",
-    )
-
     (lineEnergy,) = ax.plot(
         [],
         [],
@@ -1871,14 +1823,6 @@ def plotDeterministicProjectedShift(args):
         visible=False,
     )
 
-    shiftEsSLine = ax.axvline(
-        0.0,
-        linestyle="--",
-        linewidth=LINEWIDTH,
-        color="tab:orange",
-        visible=False,
-    )
-
     formatAxes(
         xlabel=r"Iteration / $\tau$",
         ylabel="Energy / Ha",
@@ -1892,7 +1836,6 @@ def plotDeterministicProjectedShift(args):
                 "iter",
                 "energy",
                 "es",
-                "ess",
             ]
         )
 
@@ -1906,19 +1849,12 @@ def plotDeterministicProjectedShift(args):
             df["es"].to_numpy(),
         )
 
-        lineEsS.set_data(
-            x,
-            df["ess"].to_numpy(),
-        )
-
         lineEnergy.set_data(
             x,
             df["energy"].to_numpy(),
         )
 
         iterEs, _ = shiftChange(df["es"])
-
-        iterEsS, _ = shiftChange(df["ess"])
 
         if iterEs is not None:
             value = df["iter"].iloc[iterEs]
@@ -1928,15 +1864,6 @@ def plotDeterministicProjectedShift(args):
 
         else:
             shiftEsLine.set_visible(False)
-
-        if iterEsS is not None:
-            value = df["iter"].iloc[iterEsS]
-
-            shiftEsSLine.set_xdata([value, value])
-            shiftEsSLine.set_visible(True)
-
-        else:
-            shiftEsSLine.set_visible(False)
 
         ax.relim()
         ax.autoscale_view()
