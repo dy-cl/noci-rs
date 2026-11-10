@@ -5,9 +5,10 @@
 Organise methods by family first and approach second, above three shared layers:
 
 1. `determinant/`: parent orbital frames, determinant identities and the determinant spaces.
-2. `elements/`: every matrix element and reduced density matrix between determinants. The
-   operator files dispatch each determinant pair to one engine: `orthogonal/`, `naive/`
-   (generalised Slater-Condon) or `nonorthogonalwicks/`.
+2. `elements/`: every matrix element and reduced density matrix between determinants.
+   `operator.rs` defines each operator by its evaluation in every engine, and `pairs.rs`
+   dispatches each determinant pair to one engine: `orthogonal/`, `naive/` (generalised
+   Slater-Condon) or `nonorthogonalwicks/`.
 3. `qmc/`: stochastic machinery independent of the population representation: seeded random
    streams, MPI ownership, exchange and annihilation of keyed updates, FRI compression, the
    population-control shift, stop requests, and excitation generators within one parent frame
