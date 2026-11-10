@@ -53,7 +53,7 @@ excit = {
 
 prop = {
     dt = 1e-4,
-    propagator = "difference-doubly-shifted-u2",
+    propagator = "unshifted",
 }
 
 qmc = {
