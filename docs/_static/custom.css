@@ -1,0 +1,40 @@
+/* docs/_static/custom.css */
+
+/* Landing-page tagline under the title. */
+.hero p {
+  font-size: 1.3rem;
+  color: var(--color-foreground-secondary);
+  margin: -0.5rem 0 1.5rem;
+}
+
+/* Result figures sit on white, so give them a quiet frame in dark mode. */
+figure img {
+  border-radius: 6px;
+}
+
+body[data-theme="dark"] figure img {
+  background: #ffffff;
+  padding: 4px;
+}
+
+@media (prefers-color-scheme: dark) {
+  body:not([data-theme="light"]) figure img {
+    background: #ffffff;
+    padding: 4px;
+  }
+}
+
+/* Option tables: left-aligned, with the key column on one line. */
+table.docutils th,
+table.docutils td {
+  text-align: left;
+}
+
+table.docutils td:first-child code {
+  white-space: nowrap;
+}
+
+/* Grid cards accent the brand colour on hover. */
+.sd-card:hover {
+  border-color: var(--color-brand-primary) !important;
+}

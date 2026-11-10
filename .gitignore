@@ -16,3 +16,7 @@ build/generated/*
 .codex
 uprof
 /analysis/
+
+# Documentation builds.
+docs/_build/
+.docsenv/
