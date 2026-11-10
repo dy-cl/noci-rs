@@ -99,10 +99,15 @@ pub fn run_real_post_reference(
         ));
     }
 
-    // Deterministic JM-NOCCMC is replicated only on the root rank; the stochastic propagation,
-    // selected by a nested qmc table, uses every rank.
+    // As for NOCIQMC, nested det and qmc tables select the JM-NOCCMC propagations and the
+    // deterministic one runs first. It is replicated only on the root rank; the stochastic
+    // propagation uses every rank.
     if let Some(options) = input.jmnoccmc.as_ref() {
         let wicks = reference.wicks.as_ref().map(|ws| ws.view());
+        if options.det.is_some() && world.rank() == 0 {
+            out.e_jmnoccmc_det =
+                run_jmnoccmc(&post, input, (&reference.c0, reference.e_noci), wicks);
+        }
         if options.qmc.is_some() {
             let e = run_jmnoccmc_stochastic(
                 &post,
@@ -114,14 +119,11 @@ pub fn run_real_post_reference(
             if world.rank() == 0 {
                 out.e_jmnoccmc_stoch = Some(e);
             }
-        } else if world.rank() == 0 {
-            out.e_jmnoccmc_det =
-                run_jmnoccmc(&post, input, (&reference.c0, reference.e_noci), wicks);
         }
     }
 
     #[cfg(feature = "gnocc")]
-    if input.noccmc.is_some() {
+    if input.gnoccmc.is_some() {
         out.guess.nocc = run_gnocc(
             &post,
             input,

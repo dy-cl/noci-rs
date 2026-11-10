@@ -92,7 +92,7 @@ impl FromStr for NOCCPreconditioner {
     }
 }
 
-pub struct NOCCMCOptions {
+pub struct GNOCCMCOptions {
     /// Natural-occupation tolerance for the active space: orbitals within this distance of two
     /// or zero electrons are core or virtual, and all others active.
     pub active_space_tol: f64,
@@ -122,10 +122,10 @@ pub struct NOCCMCOptions {
     pub gmres: GMRESOptions,
 }
 
-impl Default for NOCCMCOptions {
-    /// Return default NOCCMC options.
+impl Default for GNOCCMCOptions {
+    /// Return default GNOCCMC options.
     /// # Returns:
-    /// - `Self`: NOCCMC options.
+    /// - `Self`: GNOCCMC options.
     fn default() -> Self {
         Self {
             active_space_tol: 1e-6,

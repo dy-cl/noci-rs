@@ -46,9 +46,12 @@ states = {
 jmnoccmc = {
     cluster_rank = 4,
     dt = 0.1,
-    max_steps = 1e5,
-    residual_tol = 1e-10,
-    e_tol = 1e-12,
+
+    det = {
+        max_steps = 1e5,
+        residual_tol = 1e-10,
+        e_tol = 1e-12,
+    },
 }
 
 wicks = {

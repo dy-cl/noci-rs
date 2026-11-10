@@ -36,6 +36,10 @@ pub(crate) fn run_jmnoccmc(
         .jmnoccmc
         .as_ref()
         .expect("JM-NOCCMC options are required");
+    let det = options
+        .det
+        .as_ref()
+        .expect("deterministic JM-NOCCMC options are required");
 
     // Expand every reference into its projection and expansion spaces.
     println!("{}", "=".repeat(100));
@@ -62,7 +66,7 @@ pub(crate) fn run_jmnoccmc(
 
     // The external fractions of the Jacobian diagnostics need the overlap between every pair of
     // expansion determinants.
-    let metric = options.diagnostics.then(|| {
+    let metric = det.diagnostics.then(|| {
         println!(
             "Calculating JM-NOCCMC expansion overlap for diagnostics ({} elements)...",
             columns.len() * columns.len()
@@ -73,12 +77,12 @@ pub(crate) fn run_jmnoccmc(
     println!("Running deterministic JM-NOCCMC propagation....");
     let jm = JMEquations::new(space, h, s, metric);
     let mut history = Vec::new();
-    let populations = propagate_populations(&jm, options, reference, &mut history)?;
+    let populations = propagate_populations(&jm, options.dt, det, reference, &mut history)?;
     Some(report_converged(
         &jm,
         &populations,
         &history,
-        options,
+        det,
         &input.write.write_dir,
     ))
 }
