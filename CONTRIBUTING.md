@@ -50,8 +50,8 @@ in step with the code in the same pull request:
 - **New result figures**: add the image under `assets/results/` and show it on
   `docs/results.md`.
 
-The README is only a landing page with the logo, badges, result figures and
-links into the documentation; put explanations in the docs instead.
+The README is only a landing page with the logo, badges and links into the
+documentation; put explanations and results in the docs instead.
 
 Build the documentation locally with warnings treated as errors, as Read the
 Docs does:
