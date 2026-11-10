@@ -52,22 +52,6 @@ pub(crate) enum OrthogonalConnection {
 }
 
 impl OrthogonalConnection {
-    /// Return the fixed-rank numerical sector of this connection.
-    /// # Arguments:
-    /// - `self`: Relative orthogonal connection topology.
-    /// # Returns:
-    /// - `usize`: Alpha single, beta single, alpha-alpha, beta-beta, or alpha-beta sector.
-    #[inline(always)]
-    pub(crate) fn sector(self) -> usize {
-        match self {
-            Self::AlphaSingle { .. } => 0,
-            Self::BetaSingle { .. } => 1,
-            Self::AlphaDouble { .. } => 2,
-            Self::BetaDouble { .. } => 3,
-            Self::AlphaBetaDouble { .. } => 4,
-        }
-    }
-
     /// Resolve occupied/virtual ranks into physical hole labels `i,j` and particle labels `a,b`.
     /// Relative occupied and virtual positions are translated through the canonical source
     /// component, producing the fixed-rank cache consumed by the Slater-Condon evaluator.

@@ -7,12 +7,11 @@ use crate::basis::excitation_between;
 use crate::determinant::{NOCIIndex, NOCISpace, OrthogonalConnection};
 use crate::elements::{DetPair, FockMOCache, NOCIData, PairDeterminant};
 use crate::time_call;
-use crate::{Excitation, ExcitationCache, ExcitationSpin, NOCIScalar, ReducedTwoSpinState};
+use crate::{Excitation, ExcitationSpin, NOCIScalar, ReducedTwoSpinState};
 
 // Parent/sibling imports.
-use super::{
-    xw_fock_orthogonal, xw_hamiltonian_orthogonal, xw_hamiltonian_orthogonal_batched,
-    xw_overlap_orthogonal,
+use super::eval::{
+    OrthogonalHamiltonian, xw_fock_orthogonal, xw_orthogonal_batched, xw_overlap_orthogonal,
 };
 
 /// Calculate the overlap matrix element between determinants x and w using
@@ -78,43 +77,41 @@ pub(in crate::elements) fn prepare_orthogonal_state(
     Some(ReducedTwoSpinState::from_excitation(g_occ, &excitation))
 }
 
-/// Reusable parent-and-sector grouping storage for compact orthogonal Hamiltonian requests.
+/// Reusable per-parent storage for compact orthogonal Hamiltonian requests.
 pub(crate) struct OrthogonalHamiltonianScratch {
-    /// Original request positions grouped by source parent and fixed-rank numerical sector.
+    /// Original request positions grouped by source parent.
     groups: Vec<Vec<usize>>,
+    /// Source occupations of the requests of one parent.
+    occupations: Vec<(u128, u128)>,
+    /// Reduced connections of the requests of one parent.
+    states: Vec<ReducedTwoSpinState>,
+    /// Hamiltonian elements of the requests of one parent.
+    values: Vec<f64>,
 }
 
 impl OrthogonalHamiltonianScratch {
-    /// Construct reusable source-parent and rank-sector request groups.
+    /// Construct reusable per-parent request storage.
     /// # Arguments:
     /// - `nparents`: Number of source parent references.
     /// # Returns:
-    /// - `Self`: Empty grouping storage with five numerical sectors per parent.
+    /// - `Self`: Empty storage with one request group per parent.
     pub(crate) fn new(nparents: usize) -> Self {
         Self {
-            groups: (0..5 * nparents).map(|_| Vec::new()).collect(),
-        }
-    }
-
-    /// Clear request groups while retaining their cycle-to-cycle allocation.
-    /// # Arguments:
-    /// - `self`: Reusable orthogonal numerical grouping storage.
-    /// # Returns:
-    /// - `()`: Removes all original request positions.
-    fn clear(&mut self) {
-        for group in &mut self.groups {
-            group.clear();
+            groups: (0..nparents).map(|_| Vec::new()).collect(),
+            occupations: Vec::new(),
+            states: Vec::new(),
+            values: Vec::new(),
         }
     }
 }
 
 /// Evaluate a compact batch `H_{D_kx_k}=\langle D_k^{P_k}|\hat H|\Phi_{x_k}^{P_k}\rangle`.
-/// Requests are grouped by source parent and fixed-rank Slater-Condon sector, so each full SIMD
-/// packet contains one double-excitation sector while `out` remains ordered by compact request.
+/// Requests are grouped by source parent and each parent is evaluated as one batch, binned by
+/// fixed-rank Slater-Condon sector, while `out` remains ordered by compact request.
 /// # Arguments:
 /// - `data`: Shared NOCI basis, AO data, and parent MO caches.
 /// - `pairs`: Compact `(source, connection)` requests in stochastic request order.
-/// - `scratch`: Reusable source-parent and rank-sector grouping storage.
+/// - `scratch`: Reusable per-parent request storage.
 /// - `out`: Hamiltonian results in request order.
 /// # Returns:
 /// - `()`: Writes all parent-orthogonal Hamiltonian matrix elements into `out`.
@@ -124,72 +121,43 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
     scratch: &mut OrthogonalHamiltonianScratch,
     out: &mut [f64],
 ) {
-    // Group output positions by parent and Slater-Condon sector without reordering `out`.
-    scratch.clear();
-    for (output, &(source, connection)) in pairs.iter().enumerate() {
-        let parent = data.space.state(source).parent;
-        scratch.groups[parent * 5 + connection.sector()].push(output);
+    let OrthogonalHamiltonianScratch {
+        groups,
+        occupations,
+        states,
+        values,
+    } = scratch;
+
+    // Group output positions by source parent without reordering `out`.
+    for group in groups.iter_mut() {
+        group.clear();
+    }
+    for (output, &(source, _)) in pairs.iter().enumerate() {
+        groups[data.space.state(source).parent].push(output);
     }
 
-    // Select the widest runtime-supported packet size for double-excitation kernels.
+    // Evaluate the requests of each parent as one batch, then scatter them to request order.
     let mocache = data
         .mocache
         .expect("orthogonal Hamiltonian batching requires parent MO caches");
-    #[cfg(target_arch = "x86_64")]
-    let width = if std::is_x86_feature_detected!("avx512f") {
-        8
-    } else if std::is_x86_feature_detected!("avx2") {
-        4
-    } else {
-        1
-    };
-    #[cfg(not(target_arch = "x86_64"))]
-    let width = 1;
+    for (outputs, cache) in groups.iter().zip(mocache) {
+        if outputs.is_empty() {
+            continue;
+        }
+        occupations.clear();
+        states.clear();
+        for &output in outputs {
+            let (source, connection) = pairs[output];
+            occupations.push(data.space.occupations(source));
+            states.push(connection.reduced(data.space.alpha(source), data.space.beta(source)));
+        }
+        values.clear();
+        values.resize(outputs.len(), 0.0);
 
-    // Evaluate each parent/sector group using homogeneous SIMD packets and a scalar tail.
-    for (parent, cache) in mocache.iter().enumerate().take(data.space.parents.len()) {
-        for sector in 0..5 {
-            let outputs = &scratch.groups[parent * 5 + sector];
-            if outputs.is_empty() {
-                continue;
-            }
-            let mut start = 0usize;
-            // Only double sectors use the fixed-rank vector kernels; singles remain scalar.
-            while sector >= 2 && width > 1 && start + width <= outputs.len() {
-                let mut occupations = [(0u128, 0u128); 8];
-                let mut states = [ReducedTwoSpinState::new(1.0, ExcitationCache::default()); 8];
-                let mut values = [0.0; 8];
-                for lane in 0..width {
-                    let output = outputs[start + lane];
-                    let (source, connection) = pairs[output];
-                    occupations[lane] = data.space.occupations(source);
-                    states[lane] =
-                        connection.reduced(data.space.alpha(source), data.space.beta(source));
-                }
-                // Evaluate one full packet, then scatter values back to request order.
-                xw_hamiltonian_orthogonal_batched(
-                    data.ao,
-                    cache,
-                    &occupations[..width],
-                    &states[..width],
-                    &mut values[..width],
-                );
-                for lane in 0..width {
-                    out[outputs[start + lane]] = values[lane];
-                }
-                start += width;
-            }
-            // Handle singles and any incomplete SIMD packet with the scalar kernel.
-            for &output in &outputs[start..] {
-                let (source, connection) = pairs[output];
-                let state = connection.reduced(data.space.alpha(source), data.space.beta(source));
-                out[output] = xw_hamiltonian_orthogonal(
-                    data.ao,
-                    cache,
-                    data.space.occupations(source),
-                    &state,
-                );
-            }
+        let hamiltonian = OrthogonalHamiltonian { ao: data.ao, cache };
+        xw_orthogonal_batched(&hamiltonian, occupations, states, values);
+        for (&output, &value) in outputs.iter().zip(values.iter()) {
+            out[output] = value;
         }
     }
 }

@@ -20,7 +20,7 @@ use super::nonorthogonalwicks::{
     xw_hamiltonian_overlap_prepared_batched,
 };
 use super::orthogonal::{
-    xw_fock_orthogonal_batched, xw_hamiltonian_orthogonal_batched, xw_overlap_orthogonal_batched,
+    OrthogonalFock, OrthogonalHamiltonian, OrthogonalOverlap, xw_orthogonal_batched,
 };
 
 /// An operator whose matrix elements between pairs of determinants can be evaluated by every
@@ -181,12 +181,12 @@ impl<T: NOCIScalar> PairOperator<T> for Overlap {
         &self,
         _data: &NOCIData<'_, T>,
         _parent: usize,
-        _occupations: &[(u128, u128)],
+        occupations: &[(u128, u128)],
         connections: &[ReducedTwoSpinState],
         values: &mut [T],
     ) {
         time_call!(crate::timers::noci::add_calculate_s_pair_orthogonal, {
-            xw_overlap_orthogonal_batched(connections, values);
+            xw_orthogonal_batched(&OrthogonalOverlap, occupations, connections, values);
         });
     }
 
@@ -299,14 +299,12 @@ impl<T: NOCIScalar> PairOperator<T> for Fock<'_, T> {
     ) {
         time_call!(crate::timers::noci::add_calculate_f_pair_orthogonal, {
             // Evaluate `F` and `S` with their own batched kernels before shifting.
-            xw_fock_orthogonal_batched(
-                &self.fock.fock_mocache[parent],
-                occupations,
-                connections,
-                values,
-            );
+            let fock = OrthogonalFock {
+                cache: &self.fock.fock_mocache[parent],
+            };
+            xw_orthogonal_batched(&fock, occupations, connections, values);
             let mut s = vec![T::from_real(0.0); connections.len()];
-            xw_overlap_orthogonal_batched(connections, &mut s);
+            xw_orthogonal_batched(&OrthogonalOverlap, occupations, connections, &mut s);
             for (value, &s) in values.iter_mut().zip(&s) {
                 *value -= T::from_real(self.shift) * s;
             }
@@ -427,16 +425,14 @@ impl<T: NOCIScalar> PairOperator<T> for HamiltonianOverlap {
             let mocache = data
                 .mocache
                 .expect("orthogonal Hamiltonian elements require parent MO caches");
+            let hamiltonian = OrthogonalHamiltonian {
+                ao: data.ao,
+                cache: &mocache[parent],
+            };
             let mut h = vec![T::from_real(0.0); connections.len()];
             let mut s = vec![T::from_real(0.0); connections.len()];
-            xw_hamiltonian_orthogonal_batched(
-                data.ao,
-                &mocache[parent],
-                occupations,
-                connections,
-                &mut h,
-            );
-            xw_overlap_orthogonal_batched(connections, &mut s);
+            xw_orthogonal_batched(&hamiltonian, occupations, connections, &mut h);
+            xw_orthogonal_batched(&OrthogonalOverlap, occupations, connections, &mut s);
             for ((value, &h), &s) in values.iter_mut().zip(&h).zip(&s) {
                 *value = (h, s);
             }
