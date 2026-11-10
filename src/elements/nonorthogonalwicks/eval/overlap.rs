@@ -1,30 +1,21 @@
 // elements/nonorthogonalwicks/eval/overlap.rs
 
-// Standard library imports.
-#[cfg(target_arch = "x86_64")]
-use std::any::TypeId;
-#[cfg(target_arch = "x86_64")]
-use std::arch::is_x86_feature_detected;
-
-// External crate imports.
-use num_complex::Complex64;
-
 // Crate-root imports.
 use crate::ExcitationSpin;
-#[cfg(target_arch = "x86_64")]
-use crate::ExcitationSpinCache;
 use crate::NOCIScalar;
-use crate::config::MAXEXCIT;
 use crate::determinant::ExcitedSpinState;
 #[cfg(target_arch = "x86_64")]
-use crate::maths::{C64x4, C64x8, F64x4, F64x8, Simd, det_simd_const};
+use crate::maths::{Simd, det_simd_const};
 use crate::maths::{det_const, det_dynamic};
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-use super::dispatch::{dispatch_overlap_ranks, dispatch_overlap_scalar_ranks, dispatch_pair_ranks};
+#[cfg(target_arch = "x86_64")]
+use super::batch::Packet;
+use super::batch::SpinFactor;
+use super::dispatch::{dispatch_pair_ranks, dispatch_spin_ranks};
 use super::helpers::mix_dets_same;
 use super::prepare::{construct_determinant_indices, prepare_same};
 
@@ -118,830 +109,78 @@ pub(crate) fn xw_overlap_prepared<T: NOCIScalar>(
     xw_overlap(w, l_ex, g_ex, scratch)
 }
 
-/// Inputs and outputs for one row of same-spin overlap factors.
-pub(crate) struct SameSpinOverlapBatch<'a, T: NOCIScalar> {
-    /// Target spin determinant shared by the row.
-    pub(crate) target: ExcitedSpinState,
-    /// Source spin determinants in output-column order.
-    pub(crate) sources: &'a [ExcitedSpinState],
-    /// Whether the target belongs to the left reference in `w`.
-    pub(crate) target_left: bool,
-    /// Output same-spin overlap factors in source order.
-    pub(crate) out: &'a mut [T],
-}
+/// The same-spin overlap factor family,
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`.
+pub(crate) struct OverlapFactor;
 
-/// Evaluate one row of same-spin overlaps for one ordered reference pair.
-/// Every output is
-/// `p_x p_w {}^{xw}\tilde S\sum_{m_1+\cdots+m_L = m}`
-/// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)`.
-/// The target is paired with every source. Requests with `m = 0`, scalar type `f64` or
-/// `Complex64`, `L = 1,\ldots,6`, and individual excitation ranks at most four are grouped by
-/// `(RX,RW,L)` and evaluated with the widest available SIMD kernel. Incomplete groups use the
-/// scalar overlap-only path. Other requests use the generic overlap-only evaluator. Excitation
-/// phases are applied here so each output is the complete alpha- or beta-spin factor.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `batch`: One row of same-spin overlap-factor work.
-/// - `scratch`: Reusable Wick workspace for scalar fallback evaluation.
-/// # Returns
-/// - `()`: Writes one complete same-spin overlap-factor row into `batch.out`.
-pub(crate) fn xw_overlap_prepared_batched<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    batch: SameSpinOverlapBatch<'_, T>,
-    scratch: &mut WickScratch<T>,
-) {
-    let SameSpinOverlapBatch {
-        target,
-        sources,
-        target_left,
-        out,
-    } = batch;
-
-    // A spin sector with near-zero orbital pairs is the sum of its branches.
-    if w.nbranches() > 1 {
-        let zero = <T as From<f64>>::from(0.0);
-        out.fill(zero);
-        let mut part = vec![zero; out.len()];
-        for k in 0..w.nbranches() {
-            let batch = SameSpinOverlapBatch {
-                target,
-                sources,
-                target_left,
-                out: &mut part,
-            };
-            xw_overlap_prepared_batched(&w.branch(k), batch, scratch);
-            for (value, branch) in out.iter_mut().zip(&part) {
-                *value += *branch;
-            }
-        }
-        return;
+impl SpinFactor<1> for OverlapFactor {
+    /// Evaluate one same-spin overlap through the prepared scalar path.
+    /// # Arguments:
+    /// - `self`: Overlap factor family.
+    /// - `w`: Same-spin reference-pair Wick intermediates.
+    /// - `pair`: Bra and ket determinants, oriented as the reference pair `(x,w)`.
+    /// - `scratch`: Reusable same-spin Wick workspace.
+    /// # Returns
+    /// - `[T; 1]`: Same-spin overlap, excluding the excitation phases.
+    fn values<T: NOCIScalar>(
+        &self,
+        w: &SameSpinView<'_, T>,
+        pair: (&ExcitedSpinState, &ExcitedSpinState),
+        scratch: &mut WickScratch<T>,
+    ) -> [T; 1] {
+        let (x, wdet) = pair;
+        [xw_overlap_prepared(
+            w,
+            &x.excitation,
+            &wdet.excitation,
+            scratch,
+        )]
     }
 
-    // The `m = 0` path may use fixed-width kernels; every other case retains the scalar
-    // prepared evaluator so arbitrary excitation rank and zero-overlap distributions remain valid.
+    /// Evaluate one packet of fixed-rank same-spin overlaps. Each lane evaluates
+    /// `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`, with `X^{(0)}` contractions
+    /// on and below the diagonal and `Y^{(0)}` contractions above it.
+    /// # Arguments:
+    /// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
+    /// - `packet`: Contraction labels of every lane.
+    /// # Returns
+    /// - `[[T; LANES]; 1]`: Overlap of every lane, excluding the excitation phases.
+    /// # Safety
+    /// - Cached labels must match `RX` and `RW`, and the caller must establish CPU support for `V`.
     #[cfg(target_arch = "x86_64")]
-    if w.m == 0 && TypeId::of::<T>() == TypeId::of::<f64>() {
-        unsafe {
-            // SAFETY: The explicit `TypeId` check proves every generic value has its `f64`
-            // instantiation for the duration of the SIMD helper call.
-            let w_f64 = &*std::ptr::from_ref(w).cast::<SameSpinView<'_, f64>>();
-            let scratch_f64 = &mut *std::ptr::from_mut(scratch).cast::<WickScratch<f64>>();
-            let out_f64 = std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<f64>(), out.len());
-            if try_xw_overlap_prepared_f64_simd(
-                w_f64,
-                (target, sources),
-                target_left,
-                scratch_f64,
-                out_f64,
-            ) {
-                return;
+    #[inline(always)]
+    unsafe fn packed<
+        T: NOCIScalar,
+        V: Simd<LANES, Scalar = T>,
+        const LANES: usize,
+        const RX: usize,
+        const RW: usize,
+        const L: usize,
+        const D: usize,
+        const XFIX: bool,
+    >(
+        w: &SameSpinView<'_, T>,
+        packet: &Packet<'_, LANES>,
+    ) -> [[T; LANES]; 1] {
+        // Build packed `\mathbf D_{\mathrm{ov}}(0,\ldots,0)`: lower entries use `X^{(0)}` and
+        // upper entries use `Y^{(0)}`.
+        let x0 = w.x_slice(0);
+        let y0 = w.y_slice(0);
+        let mut d = [V::zero(); D];
+        for eta in 0..L {
+            for z in 0..L {
+                let matrix = if eta >= z { x0 } else { y0 };
+                d[eta * L + z] = unsafe { packet.load::<T, V, RX, XFIX>(matrix, eta, z, false) };
             }
         }
-    }
 
-    #[cfg(target_arch = "x86_64")]
-    if w.m == 0 && TypeId::of::<T>() == TypeId::of::<Complex64>() {
-        unsafe {
-            // SAFETY: The explicit `TypeId` check proves every generic value has its `Complex64`
-            // instantiation for the duration of the SIMD helper call.
-            let w_c64 = &*std::ptr::from_ref(w).cast::<SameSpinView<'_, Complex64>>();
-            let scratch_c64 = &mut *std::ptr::from_mut(scratch).cast::<WickScratch<Complex64>>();
-            let out_c64 =
-                std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<Complex64>(), out.len());
-            if try_xw_overlap_prepared_c64_simd(
-                w_c64,
-                (target, sources),
-                target_left,
-                scratch_c64,
-                out_c64,
-            ) {
-                return;
-            }
-        }
-    }
-
-    // SIMD is an optional fast path. Fall back without changing source-column order.
-    for (col, source) in sources.iter().enumerate() {
-        out[col] = xw_overlap_prepared_scalar_value(w, (&target, source), target_left, scratch);
-    }
-}
-
-/// Evaluate one complete same-spin overlap factor through the scalar overlap-only path.
-/// The returned factor is
-/// `p_x p_w {}^{xw}\tilde S\sum_{m_1+\cdots+m_L = m}`
-/// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)`.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `dets`: Target and source spin determinants.
-/// - `target_left`: Whether the target belongs to the left reference in `w`.
-/// - `scratch`: Reusable same-spin Wick evaluator workspace.
-/// # Returns
-/// - `T`: Same-spin overlap including both excitation phases.
-#[inline(always)]
-fn xw_overlap_prepared_scalar_value<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    dets: (&ExcitedSpinState, &ExcitedSpinState),
-    target_left: bool,
-    scratch: &mut WickScratch<T>,
-) -> T {
-    let (target, source) = dets;
-
-    // Orient excitations consistently with the ordered reference pair `(x,w)` before constructing
-    // `\mathbf D_{\mathrm{ov}}`.
-    let (x, wdet) = if target_left {
-        (target, source)
-    } else {
-        (source, target)
-    };
-
-    // Excitation phases multiply the reduced-overlap determinant after Wick evaluation.
-    T::from_real(target.state.phase * source.state.phase)
-        * xw_overlap_prepared(w, &x.excitation, &wdet.excitation, scratch)
-}
-
-/// Fixed-rank packed overlap kernel selected by one target-feature entry point.
-#[cfg(target_arch = "x86_64")]
-type OverlapSimdKernel<T, const N: usize> = unsafe fn(
-    &SameSpinView<'_, T>,
-    (usize, usize),
-    bool,
-    &ExcitationSpinCache,
-    &[ExcitationSpinCache; N],
-    &mut [T; N],
-);
-
-/// Try to evaluate one real same-spin overlap row with fixed-rank SIMD kernels.
-/// # Arguments:
-/// - `w`: Real same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `dets`: Target spin determinant and source spin determinants in output-column order.
-/// - `target_left`: Whether the target belongs to the left reference in `w`.
-/// - `scratch`: Reusable same-spin Wick evaluator workspace.
-/// - `out`: Real overlap output row.
-/// # Returns
-/// - `bool`: Whether an available SIMD path evaluated the complete row.
-/// # Safety
-/// - `w` must contain no zero-overlap orbital pairs.
-#[cfg(target_arch = "x86_64")]
-unsafe fn try_xw_overlap_prepared_f64_simd(
-    w: &SameSpinView<'_, f64>,
-    dets: (ExcitedSpinState, &[ExcitedSpinState]),
-    target_left: bool,
-    scratch: &mut WickScratch<f64>,
-    out: &mut [f64],
-) -> bool {
-    // Prefer the widest available packet width; AVX2/FMA supplies the four-lane fallback.
-    if is_x86_feature_detected!("avx512f") {
-        unsafe {
-            xw_overlap_prepared_f64x8_row(w, dets, target_left, scratch, out);
-        }
-        return true;
-    }
-    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-        unsafe {
-            xw_overlap_prepared_f64x4_row(w, dets, target_left, scratch, out);
-        }
-        return true;
-    }
-    false
-}
-
-/// Try to evaluate one complex same-spin overlap row with fixed-rank SIMD kernels.
-/// # Arguments:
-/// - `w`: Complex same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `dets`: Target spin determinant and source spin determinants in output-column order.
-/// - `target_left`: Whether the target belongs to the left reference in `w`.
-/// - `scratch`: Reusable same-spin Wick evaluator workspace.
-/// - `out`: Complex overlap output row.
-/// # Returns
-/// - `bool`: Whether an available SIMD path evaluated the complete row.
-/// # Safety
-/// - `w` must contain no zero-overlap orbital pairs.
-#[cfg(target_arch = "x86_64")]
-unsafe fn try_xw_overlap_prepared_c64_simd(
-    w: &SameSpinView<'_, Complex64>,
-    dets: (ExcitedSpinState, &[ExcitedSpinState]),
-    target_left: bool,
-    scratch: &mut WickScratch<Complex64>,
-    out: &mut [Complex64],
-) -> bool {
-    // Prefer the widest available packet width; AVX2/FMA supplies the four-lane fallback.
-    if is_x86_feature_detected!("avx512f") {
-        unsafe {
-            xw_overlap_prepared_c64x8_row(w, dets, target_left, scratch, out);
-        }
-        return true;
-    }
-    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-        unsafe {
-            xw_overlap_prepared_c64x4_row(w, dets, target_left, scratch, out);
-        }
-        return true;
-    }
-    false
-}
-
-/// Evaluate one same-spin overlap row using packed fixed-rank kernels and scalar tails.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `dets`: Target spin determinant and source spin determinants in output-column order.
-/// - `target_left`: Whether the target belongs to the left reference in `w`.
-/// - `scratch`: Reusable same-spin Wick evaluator workspace.
-/// - `out`: Overlap output row.
-/// - `kernel`: Fixed-rank packed kernel behind the active target-feature boundary.
-/// # Returns
-/// - `()`: Writes one complete same-spin overlap-factor row.
-/// # Safety
-/// - `kernel` must support the current CPU and use `N` packed lanes.
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-unsafe fn xw_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
-    w: &SameSpinView<'_, T>,
-    dets: (ExcitedSpinState, &[ExcitedSpinState]),
-    target_left: bool,
-    scratch: &mut WickScratch<T>,
-    out: &mut [T],
-    kernel: OverlapSimdKernel<T, N>,
-) {
-    // Group source excitations by rank so every packet shares one compile-time determinant shape
-    // `(R_x,R_w,L)` and therefore one `\mathbf D_{\mathrm{ov}}` kernel.
-    let (target, sources) = dets;
-    let target_cache = target.state.excitation_cache;
-    let target_rank = usize::from(target_cache.rank);
-    let mut bins = [[ExcitationSpinCache::default(); N]; MAXEXCIT + 1];
-    let mut phases = [[1.0f64; N]; MAXEXCIT + 1];
-    let mut outputs = [[0usize; N]; MAXEXCIT + 1];
-    let mut counts = [0usize; MAXEXCIT + 1];
-
-    for (col, source) in sources.iter().enumerate() {
-        let source_cache = source.state.excitation_cache;
-        let source_rank = usize::from(source_cache.rank);
-        let ranks = if target_left {
-            (target_rank, source_rank)
-        } else {
-            (source_rank, target_rank)
-        };
-
-        // Empty determinants and ranks beyond generated limits use the scalar evaluator. Supported
-        // non-empty ranks accumulate until one complete `N`-lane packet is available.
-        if target_rank <= MAXEXCIT && source_rank <= MAXEXCIT && target_rank + source_rank != 0 {
-            let count = counts[source_rank];
-            bins[source_rank][count] = source_cache;
-            phases[source_rank][count] = source.state.phase;
-            outputs[source_rank][count] = col;
-            counts[source_rank] += 1;
-
-            if counts[source_rank] == N {
-                // Evaluate `N` determinants together and restore excitation phases when scattering
-                // lane results to source-column order.
-                let mut overlap = [T::from_real(0.0); N];
-                unsafe {
-                    kernel(
-                        w,
-                        ranks,
-                        target_left,
-                        &target_cache,
-                        &bins[source_rank],
-                        &mut overlap,
-                    );
-                }
-                for lane in 0..N {
-                    out[outputs[source_rank][lane]] =
-                        T::from_real(target.state.phase * phases[source_rank][lane])
-                            * overlap[lane];
-                }
-                counts[source_rank] = 0;
-            }
-        } else {
-            out[col] = xw_overlap_prepared_scalar_value(w, (&target, source), target_left, scratch);
-        }
-    }
-
-    // Incomplete rank bins use the scalar path rather than padded packets, preserving exact source
-    // metadata and source-column order.
-    for source_rank in 0..=MAXEXCIT {
-        for &col in &outputs[source_rank][..counts[source_rank]] {
-            out[col] =
-                xw_overlap_prepared_scalar_value(w, (&target, &sources[col]), target_left, scratch);
-        }
-    }
-}
-
-/// Evaluate one real same-spin overlap row with four-lane AVX2/FMA packets.
-/// # Arguments:
-/// - `w`: Real same-spin Wick intermediates.
-/// - `dets`: Target spin determinant and source spin determinants.
-/// - `target_left`: Whether the target belongs to the left reference in `w`.
-/// - `scratch`: Reusable Wick workspace.
-/// - `out`: Real overlap output row.
-/// # Returns
-/// - `()`: Writes one complete row.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_prepared_f64x4_row(
-    w: &SameSpinView<'_, f64>,
-    dets: (ExcitedSpinState, &[ExcitedSpinState]),
-    target_left: bool,
-    scratch: &mut WickScratch<f64>,
-    out: &mut [f64],
-) {
-    unsafe {
-        xw_overlap_prepared_simd_row::<f64, 4>(
-            w,
-            dets,
-            target_left,
-            scratch,
-            out,
-            xw_overlap_m0_prepared_f64x4,
-        );
-    }
-}
-
-/// Evaluate one real same-spin overlap row with eight-lane AVX-512 packets.
-/// # Arguments:
-/// - `w`: Real same-spin Wick intermediates.
-/// - `dets`: Target spin determinant and source spin determinants.
-/// - `target_left`: Whether the target belongs to the left reference in `w`.
-/// - `scratch`: Reusable Wick workspace.
-/// - `out`: Real overlap output row.
-/// # Returns
-/// - `()`: Writes one complete row.
-/// # Safety
-/// - The current CPU must support AVX-512F.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_prepared_f64x8_row(
-    w: &SameSpinView<'_, f64>,
-    dets: (ExcitedSpinState, &[ExcitedSpinState]),
-    target_left: bool,
-    scratch: &mut WickScratch<f64>,
-    out: &mut [f64],
-) {
-    unsafe {
-        xw_overlap_prepared_simd_row::<f64, 8>(
-            w,
-            dets,
-            target_left,
-            scratch,
-            out,
-            xw_overlap_m0_prepared_f64x8,
-        );
-    }
-}
-
-/// Evaluate one complex same-spin overlap row with four-lane AVX2/FMA packets.
-/// # Arguments:
-/// - `w`: Complex same-spin Wick intermediates.
-/// - `dets`: Target spin determinant and source spin determinants.
-/// - `target_left`: Whether the target belongs to the left reference in `w`.
-/// - `scratch`: Reusable Wick workspace.
-/// - `out`: Complex overlap output row.
-/// # Returns
-/// - `()`: Writes one complete row.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_prepared_c64x4_row(
-    w: &SameSpinView<'_, Complex64>,
-    dets: (ExcitedSpinState, &[ExcitedSpinState]),
-    target_left: bool,
-    scratch: &mut WickScratch<Complex64>,
-    out: &mut [Complex64],
-) {
-    unsafe {
-        xw_overlap_prepared_simd_row::<Complex64, 4>(
-            w,
-            dets,
-            target_left,
-            scratch,
-            out,
-            xw_overlap_m0_prepared_c64x4,
-        );
-    }
-}
-
-/// Evaluate one complex same-spin overlap row with eight-lane AVX-512 packets.
-/// # Arguments:
-/// - `w`: Complex same-spin Wick intermediates.
-/// - `dets`: Target spin determinant and source spin determinants.
-/// - `target_left`: Whether the target belongs to the left reference in `w`.
-/// - `scratch`: Reusable Wick workspace.
-/// - `out`: Complex overlap output row.
-/// # Returns
-/// - `()`: Writes one complete row.
-/// # Safety
-/// - The current CPU must support AVX-512F.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_prepared_c64x8_row(
-    w: &SameSpinView<'_, Complex64>,
-    dets: (ExcitedSpinState, &[ExcitedSpinState]),
-    target_left: bool,
-    scratch: &mut WickScratch<Complex64>,
-    out: &mut [Complex64],
-) {
-    unsafe {
-        xw_overlap_prepared_simd_row::<Complex64, 8>(
-            w,
-            dets,
-            target_left,
-            scratch,
-            out,
-            xw_overlap_m0_prepared_c64x8,
-        );
-    }
-}
-
-/// Evaluate packed fixed-rank overlaps using one packed arithmetic implementation.
-/// Each lane evaluates
-/// `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`, with `X^{(0)}` contractions
-/// on/below the diagonal and `Y^{(0)}` contractions above it.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `fixed`: Excitation cache shared by all lanes.
-/// - `varying`: Lane-local excitation caches.
-/// - `overlap`: Overlap outputs in lane order.
-/// # Returns
-/// - `()`: Writes `LANES` overlap values.
-/// # Safety
-/// - Cached labels must match `RX` and `RW`; caller must establish `V` CPU support.
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-unsafe fn xw_overlap_m0_prepared_simd_const<
-    T: NOCIScalar,
-    V: Simd<LANES, Scalar = T>,
-    const LANES: usize,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const XFIX: bool,
->(
-    w: &SameSpinView<'_, T>,
-    fixed: &ExcitationSpinCache,
-    varying: &[ExcitationSpinCache; LANES],
-    overlap: &mut [T; LANES],
-) {
-    // Map every packed lane to ordered labels
-    // `(r,c) \in (V_x\cup O_w)\times(O_x\cup V_w)`.
-    let n = w.n();
-    let x0 = w.x_slice(0);
-    let y0 = w.y_slice(0);
-    let nocc = w.nocc;
-    let nvirt = w.nmo - nocc;
-    let x_data = |lane: usize| -> &ExcitationSpinCache {
-        if XFIX {
-            fixed
-        } else {
-            unsafe { varying.get_unchecked(lane) }
-        }
-    };
-    let w_data = |lane: usize| -> &ExcitationSpinCache {
-        if XFIX {
-            unsafe { varying.get_unchecked(lane) }
-        } else {
-            fixed
-        }
-    };
-    let row_index = |eta: usize, lane: usize| -> usize {
-        if eta < RX {
-            usize::from(unsafe { *x_data(lane).particles.get_unchecked(eta) }) - nocc
-        } else {
-            nvirt + usize::from(unsafe { *w_data(lane).holes.get_unchecked(eta - RX) })
-        }
-    };
-    let col_index = |z: usize, lane: usize| -> usize {
-        if z < RX {
-            usize::from(unsafe { *x_data(lane).holes.get_unchecked(z) })
-        } else {
-            usize::from(unsafe { *w_data(lane).particles.get_unchecked(z - RX) })
-        }
-    };
-    let zero = V::zero();
-    let mut d = [zero; D];
-
-    // Build packed `\mathbf D_{\mathrm{ov}}(0,\ldots,0)`: lower entries use `X^{(0)}` and upper
-    // entries use `Y^{(0)}`. Entries fixed across lanes are broadcast instead of gathered.
-    for eta in 0..L {
-        for z in 0..L {
-            let matrix = if eta >= z { x0 } else { y0 };
-            let row_fixed = if eta < RX { XFIX } else { !XFIX };
-            let col_fixed = if z < RX { XFIX } else { !XFIX };
-            d[eta * L + z] = if row_fixed && col_fixed {
-                let src = row_index(eta, 0) * n + col_index(z, 0);
-                V::splat(unsafe { *matrix.get_unchecked(src) })
-            } else {
-                let mut values = [T::from_real(0.0); LANES];
-                for (lane, value) in values.iter_mut().enumerate() {
-                    let src = row_index(eta, lane) * n + col_index(z, lane);
-                    *value = unsafe { *matrix.get_unchecked(src) };
-                }
-                V::load(&values)
-            };
-        }
-    }
-
-    // `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`; `w.phase` carries orbital-pairing sign.
-    let determinant = det_simd_const::<V, LANES, L, D>(&d);
-    let pref = w.phase * T::from_real(w.tilde_s_prod);
-    V::store(V::mul(determinant, V::splat(pref)), overlap);
-}
-
-/// Dispatch four real overlaps to a compile-time rank arm.
-/// # Arguments:
-/// - `w`: Real same-spin Wick intermediates.
-/// - `ranks`: Bra and ket excitation ranks.
-/// - `x_fixed`: Whether the shared cache belongs to the bra.
-/// - `fixed`: Shared excitation cache.
-/// - `varying`: Lane-local excitation caches.
-/// - `overlap`: Real overlap outputs.
-/// # Returns
-/// - `()`: Writes four overlap values.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA; cached ranks must match `ranks`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_m0_prepared_f64x4(
-    w: &SameSpinView<'_, f64>,
-    ranks: (usize, usize),
-    x_fixed: bool,
-    fixed: &ExcitationSpinCache,
-    varying: &[ExcitationSpinCache; 4],
-    overlap: &mut [f64; 4],
-) {
-    if x_fixed {
-        dispatch_overlap_ranks!(
-            ranks,
-            |RX, RW, L, D| unsafe {
-                xw_overlap_m0_prepared_f64x4_const::<RX, RW, L, D, true>(w, fixed, varying, overlap)
-            },
-            (),
-        )
-    } else {
-        dispatch_overlap_ranks!(
-            ranks,
-            |RX, RW, L, D| unsafe {
-                xw_overlap_m0_prepared_f64x4_const::<RX, RW, L, D, false>(
-                    w, fixed, varying, overlap,
-                )
-            },
-            (),
-        )
-    }
-}
-
-/// Evaluate four real fixed-rank overlaps with AVX2/FMA.
-/// # Arguments:
-/// - `w`: Real same-spin Wick intermediates.
-/// - `fixed`: Shared excitation cache.
-/// - `varying`: Lane-local excitation caches.
-/// - `overlap`: Real overlap outputs.
-/// # Returns
-/// - `()`: Writes four overlap values.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA; cached labels must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_m0_prepared_f64x4_const<
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const XFIX: bool,
->(
-    w: &SameSpinView<'_, f64>,
-    fixed: &ExcitationSpinCache,
-    varying: &[ExcitationSpinCache; 4],
-    overlap: &mut [f64; 4],
-) {
-    unsafe {
-        xw_overlap_m0_prepared_simd_const::<f64, F64x4, 4, RX, RW, L, D, XFIX>(
-            w, fixed, varying, overlap,
-        );
-    }
-}
-
-/// Dispatch eight real overlaps to a compile-time rank arm.
-/// # Arguments:
-/// - `w`: Real same-spin Wick intermediates.
-/// - `ranks`: Bra and ket excitation ranks.
-/// - `x_fixed`: Whether the shared cache belongs to the bra.
-/// - `fixed`: Shared excitation cache.
-/// - `varying`: Lane-local excitation caches.
-/// - `overlap`: Real overlap outputs.
-/// # Returns
-/// - `()`: Writes eight overlap values.
-/// # Safety
-/// - The current CPU must support AVX-512F; cached ranks must match `ranks`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_m0_prepared_f64x8(
-    w: &SameSpinView<'_, f64>,
-    ranks: (usize, usize),
-    x_fixed: bool,
-    fixed: &ExcitationSpinCache,
-    varying: &[ExcitationSpinCache; 8],
-    overlap: &mut [f64; 8],
-) {
-    if x_fixed {
-        dispatch_overlap_ranks!(
-            ranks,
-            |RX, RW, L, D| unsafe {
-                xw_overlap_m0_prepared_f64x8_const::<RX, RW, L, D, true>(w, fixed, varying, overlap)
-            },
-            (),
-        )
-    } else {
-        dispatch_overlap_ranks!(
-            ranks,
-            |RX, RW, L, D| unsafe {
-                xw_overlap_m0_prepared_f64x8_const::<RX, RW, L, D, false>(
-                    w, fixed, varying, overlap,
-                )
-            },
-            (),
-        )
-    }
-}
-
-/// Evaluate eight real fixed-rank overlaps with AVX-512F.
-/// # Arguments:
-/// - `w`: Real same-spin Wick intermediates.
-/// - `fixed`: Shared excitation cache.
-/// - `varying`: Lane-local excitation caches.
-/// - `overlap`: Real overlap outputs.
-/// # Returns
-/// - `()`: Writes eight overlap values.
-/// # Safety
-/// - The current CPU must support AVX-512F; cached labels must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_m0_prepared_f64x8_const<
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const XFIX: bool,
->(
-    w: &SameSpinView<'_, f64>,
-    fixed: &ExcitationSpinCache,
-    varying: &[ExcitationSpinCache; 8],
-    overlap: &mut [f64; 8],
-) {
-    unsafe {
-        xw_overlap_m0_prepared_simd_const::<f64, F64x8, 8, RX, RW, L, D, XFIX>(
-            w, fixed, varying, overlap,
-        );
-    }
-}
-
-/// Dispatch four complex overlaps to a compile-time rank arm.
-/// # Arguments:
-/// - `w`: Complex same-spin Wick intermediates.
-/// - `ranks`: Bra and ket excitation ranks.
-/// - `x_fixed`: Whether the shared cache belongs to the bra.
-/// - `fixed`: Shared excitation cache.
-/// - `varying`: Lane-local excitation caches.
-/// - `overlap`: Complex overlap outputs.
-/// # Returns
-/// - `()`: Writes four overlap values.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA; cached ranks must match `ranks`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_m0_prepared_c64x4(
-    w: &SameSpinView<'_, Complex64>,
-    ranks: (usize, usize),
-    x_fixed: bool,
-    fixed: &ExcitationSpinCache,
-    varying: &[ExcitationSpinCache; 4],
-    overlap: &mut [Complex64; 4],
-) {
-    if x_fixed {
-        dispatch_overlap_ranks!(
-            ranks,
-            |RX, RW, L, D| unsafe {
-                xw_overlap_m0_prepared_c64x4_const::<RX, RW, L, D, true>(w, fixed, varying, overlap)
-            },
-            (),
-        )
-    } else {
-        dispatch_overlap_ranks!(
-            ranks,
-            |RX, RW, L, D| unsafe {
-                xw_overlap_m0_prepared_c64x4_const::<RX, RW, L, D, false>(
-                    w, fixed, varying, overlap,
-                )
-            },
-            (),
-        )
-    }
-}
-
-/// Evaluate four complex fixed-rank overlaps with AVX2/FMA.
-/// # Arguments:
-/// - `w`: Complex same-spin Wick intermediates.
-/// - `fixed`: Shared excitation cache.
-/// - `varying`: Lane-local excitation caches.
-/// - `overlap`: Complex overlap outputs.
-/// # Returns
-/// - `()`: Writes four overlap values.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA; cached labels must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_m0_prepared_c64x4_const<
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const XFIX: bool,
->(
-    w: &SameSpinView<'_, Complex64>,
-    fixed: &ExcitationSpinCache,
-    varying: &[ExcitationSpinCache; 4],
-    overlap: &mut [Complex64; 4],
-) {
-    unsafe {
-        xw_overlap_m0_prepared_simd_const::<Complex64, C64x4, 4, RX, RW, L, D, XFIX>(
-            w, fixed, varying, overlap,
-        );
-    }
-}
-
-/// Dispatch eight complex overlaps to a compile-time rank arm.
-/// # Arguments:
-/// - `w`: Complex same-spin Wick intermediates.
-/// - `ranks`: Bra and ket excitation ranks.
-/// - `x_fixed`: Whether the shared cache belongs to the bra.
-/// - `fixed`: Shared excitation cache.
-/// - `varying`: Lane-local excitation caches.
-/// - `overlap`: Complex overlap outputs.
-/// # Returns
-/// - `()`: Writes eight overlap values.
-/// # Safety
-/// - The current CPU must support AVX-512F; cached ranks must match `ranks`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_m0_prepared_c64x8(
-    w: &SameSpinView<'_, Complex64>,
-    ranks: (usize, usize),
-    x_fixed: bool,
-    fixed: &ExcitationSpinCache,
-    varying: &[ExcitationSpinCache; 8],
-    overlap: &mut [Complex64; 8],
-) {
-    if x_fixed {
-        dispatch_overlap_ranks!(
-            ranks,
-            |RX, RW, L, D| unsafe {
-                xw_overlap_m0_prepared_c64x8_const::<RX, RW, L, D, true>(w, fixed, varying, overlap)
-            },
-            (),
-        )
-    } else {
-        dispatch_overlap_ranks!(
-            ranks,
-            |RX, RW, L, D| unsafe {
-                xw_overlap_m0_prepared_c64x8_const::<RX, RW, L, D, false>(
-                    w, fixed, varying, overlap,
-                )
-            },
-            (),
-        )
-    }
-}
-
-/// Evaluate eight complex fixed-rank overlaps with AVX-512F.
-/// # Arguments:
-/// - `w`: Complex same-spin Wick intermediates.
-/// - `fixed`: Shared excitation cache.
-/// - `varying`: Lane-local excitation caches.
-/// - `overlap`: Complex overlap outputs.
-/// # Returns
-/// - `()`: Writes eight overlap values.
-/// # Safety
-/// - The current CPU must support AVX-512F; cached labels must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_m0_prepared_c64x8_const<
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const XFIX: bool,
->(
-    w: &SameSpinView<'_, Complex64>,
-    fixed: &ExcitationSpinCache,
-    varying: &[ExcitationSpinCache; 8],
-    overlap: &mut [Complex64; 8],
-) {
-    unsafe {
-        xw_overlap_m0_prepared_simd_const::<Complex64, C64x8, 8, RX, RW, L, D, XFIX>(
-            w, fixed, varying, overlap,
-        );
+        // `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`; `w.phase` carries the orbital-pairing
+        // sign.
+        let determinant = det_simd_const::<V, LANES, L, D>(&d);
+        let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
+        let mut overlap = [T::from_real(0.0); LANES];
+        V::store(V::mul(determinant, pref), &mut overlap);
+        [overlap]
     }
 }
 
@@ -975,7 +214,7 @@ pub(crate) fn xw_overlap_m0_direct<T: NOCIScalar>(
         return pref;
     }
 
-    dispatch_overlap_scalar_ranks!(
+    dispatch_spin_ranks!(
         (rx, rw),
         |RX, RW, L, D| xw_overlap_m0_direct_const::<T, RX, RW, L, D>(w, l_ex, g_ex),
         xw_overlap_m0_direct_gen(w, l_ex, g_ex, l),

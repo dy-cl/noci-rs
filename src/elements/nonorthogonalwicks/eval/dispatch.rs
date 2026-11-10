@@ -119,65 +119,7 @@ macro_rules! dispatch_hamiltonian_ranks_inner {
 include!(concat!(env!("OUT_DIR"), "/dispatch.rs"));
 
 #[cfg(feature = "gnocc")]
-/// Dispatch a scalar same-spin rank-`K` RDM and excitation-rank tuple.
-macro_rules! dispatch_rdm_scalar_ranks {
-    (
-        @operator $k_value:literal,
-        $ranks:expr,
-        |$k:ident, $rx:ident, $rw:ident, $l:ident, $d:ident, $dd:ident| $kernel:expr,
-        $fallback:expr
-    ) => {{
-        match $ranks {
-            (0, 0) => {
-                const $k: usize = $k_value;
-                const $rx: usize = 0;
-                const $rw: usize = 0;
-                const $l: usize = 0;
-                const $d: usize = $k;
-                const $dd: usize = $d * $d;
-                $kernel
-            }
-            ranks => dispatch_overlap_scalar_ranks!(
-                ranks,
-                |$rx, $rw, $l| {
-                    const $k: usize = $k_value;
-                    const $d: usize = $k + $l;
-                    const $dd: usize = $d * $d;
-                    $kernel
-                },
-                $fallback,
-            ),
-        }
-    }};
-    (
-        $k_value:expr,
-        $ranks:expr,
-        |$k:ident, $rx:ident, $rw:ident, $l:ident, $d:ident, $dd:ident| $kernel:expr,
-        $fallback:expr $(,)?
-    ) => {{
-        match $k_value {
-            0 => dispatch_rdm_scalar_ranks!(
-                @operator 0, $ranks, |$k, $rx, $rw, $l, $d, $dd| $kernel, $fallback
-            ),
-            1 => dispatch_rdm_scalar_ranks!(
-                @operator 1, $ranks, |$k, $rx, $rw, $l, $d, $dd| $kernel, $fallback
-            ),
-            2 => dispatch_rdm_scalar_ranks!(
-                @operator 2, $ranks, |$k, $rx, $rw, $l, $d, $dd| $kernel, $fallback
-            ),
-            3 => dispatch_rdm_scalar_ranks!(
-                @operator 3, $ranks, |$k, $rx, $rw, $l, $d, $dd| $kernel, $fallback
-            ),
-            4 => dispatch_rdm_scalar_ranks!(
-                @operator 4, $ranks, |$k, $rx, $rw, $l, $d, $dd| $kernel, $fallback
-            ),
-            _ => $fallback,
-        }
-    }};
-}
-
-#[cfg(feature = "gnocc")]
-/// Dispatch a SIMD same-spin rank-`K` RDM and excitation-rank tuple.
+/// Dispatch a same-spin rank-`K` RDM and excitation-rank tuple, for scalar and SIMD evaluation.
 macro_rules! dispatch_rdm_ranks {
     (
         @operator $k_value:literal,
@@ -195,7 +137,7 @@ macro_rules! dispatch_rdm_ranks {
                 const $dd: usize = $d * $d;
                 $kernel
             }
-            ranks => dispatch_overlap_ranks!(
+            ranks => dispatch_spin_ranks!(
                 ranks,
                 |$rx, $rw, $l| {
                     const $k: usize = $k_value;
@@ -236,13 +178,7 @@ macro_rules! dispatch_rdm_ranks {
 
 pub(super) use dispatch_hamiltonian_ranks;
 pub(super) use dispatch_hamiltonian_ranks_inner;
-pub(super) use dispatch_hamiltonian_scalar_ranks;
-pub(super) use dispatch_onebody_ranks;
-pub(super) use dispatch_onebody_scalar_ranks;
-pub(super) use dispatch_overlap_ranks;
-pub(super) use dispatch_overlap_scalar_ranks;
 pub(super) use dispatch_pair_ranks;
 #[cfg(feature = "gnocc")]
 pub(super) use dispatch_rdm_ranks;
-#[cfg(feature = "gnocc")]
-pub(super) use dispatch_rdm_scalar_ranks;
+pub(super) use dispatch_spin_ranks;

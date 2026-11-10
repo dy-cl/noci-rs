@@ -13,7 +13,7 @@ pub(crate) use overlap::{OverlapFactors, OverlapScratch};
 use crate::NOCIScalar;
 use crate::determinant::{ExcitedSpinState, NOCISpace, SpinDeterminantState};
 use crate::elements::NOCIData;
-use crate::elements::nonorthogonalwicks::SpinEvaluationOrder;
+use crate::elements::nonorthogonalwicks::SpinSources;
 
 /// Actual determinant entry in a parent-local spin factorisation.
 #[derive(Clone, Copy)]
@@ -31,12 +31,12 @@ pub(crate) struct FactorEntry {
 pub(super) struct ParentSpinSpace {
     /// Prepared representative for each parent-local alpha component.
     pub(super) areps: Vec<ExcitedSpinState>,
-    /// Fixed-rank Wick evaluation order of the alpha representatives.
-    pub(super) a_order: SpinEvaluationOrder,
+    /// Alpha representatives in packed Wick evaluation order.
+    pub(super) a_sources: SpinSources,
     /// Prepared representative for each parent-local beta component.
     pub(super) breps: Vec<ExcitedSpinState>,
-    /// Fixed-rank Wick evaluation order of the beta representatives.
-    pub(super) b_order: SpinEvaluationOrder,
+    /// Beta representatives in packed Wick evaluation order.
+    pub(super) b_sources: SpinSources,
     /// Actual determinants belonging to this parent as `(I,a_I,b_I)`.
     pub(super) entries: Vec<FactorEntry>,
     /// Determinant indices grouped by parent-local alpha component.
@@ -186,7 +186,7 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
         parent.entries_by_b[bid].push(det);
     }
 
-    // Materialise the prepared representatives and their fixed-rank evaluation orders.
+    // Materialise the prepared representatives and their packed evaluation orders.
     for (parent_id, parent) in parents.iter_mut().enumerate() {
         let components = space.parent_components(parent_id);
         parent.areps = components
@@ -199,8 +199,8 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
             .iter()
             .map(SpinDeterminantState::excited)
             .collect();
-        parent.a_order = SpinEvaluationOrder::new(&parent.areps);
-        parent.b_order = SpinEvaluationOrder::new(&parent.breps);
+        parent.a_sources = SpinSources::new(&parent.areps);
+        parent.b_sources = SpinSources::new(&parent.breps);
     }
 
     parents

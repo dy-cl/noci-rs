@@ -7,7 +7,7 @@
 //! `F_{xw} = F^\alpha_{xw} S^\beta_{xw} + S^\alpha_{xw} F^\beta_{xw}`, so a batch of pairs of one
 //! ordered reference pair is evaluated from its distinct same-spin factors. Each distinct pair of
 //! spin components is evaluated once, and the distinct ket components of each bra component form
-//! one row for the batched same-spin kernels.
+//! one same-spin factor row.
 
 // Standard library imports.
 use std::ops::Range;
@@ -22,19 +22,18 @@ use crate::hash::FastMap;
 use super::scratch::WickScratch;
 use super::view::SameSpinView;
 use super::{
-    SameSpinOneBodyBatch, SameSpinOverlapBatch, SpinEvaluationOrder, WickScratchSpin,
-    WicksPairView, xw_f_overlap_prepared, xw_f_overlap_prepared_batched, xw_overlap_prepared,
-    xw_overlap_prepared_batched,
+    OneBodyFactor, OverlapFactor, SpinFactor, SpinFactorRow, SpinSources, WickScratchSpin,
+    WicksPairView, xw_spin_factor_row,
 };
 
 /// Distinct same-spin component pairs of a batch of determinant pairs, arranged as rows of one bra
 /// component against its distinct ket components.
 struct SpinPairRows {
-    /// Bra component of each row and the range of its ket components in `sources`.
-    rows: Vec<(ExcitedSpinState, Range<usize>)>,
-    /// Distinct ket components of every row, row by row.
-    sources: Vec<ExcitedSpinState>,
-    /// Position in `sources` of the component pair of each request.
+    /// Bra component of each row, the slots of its factors and its distinct ket components.
+    rows: Vec<(ExcitedSpinState, Range<usize>, SpinSources)>,
+    /// Number of distinct component pairs over every row.
+    nslot: usize,
+    /// Slot of the component pair of each request.
     slots: Vec<usize>,
 }
 
@@ -45,7 +44,7 @@ impl SpinPairRows {
     /// - `requests`: Output positions with their determinant pairs.
     /// - `occupations`: Same-spin bra and ket occupations of each request.
     /// - `alpha`: Whether to group the alpha rather than the beta components.
-    /// # Returns:
+    /// # Returns
     /// - `Self`: Rows of distinct component pairs and the slot of every request.
     fn new<T, D>(
         space: &NOCISpace<T>,
@@ -85,24 +84,19 @@ impl SpinPairRows {
             positions.push((row, column));
         }
 
-        // Lay the rows out contiguously so each row's ket components form one slice.
+        // Lay the factor slots of the rows out contiguously, so each row writes one slice.
         let mut rows = Vec::with_capacity(row_sources.len());
-        let mut sources = Vec::new();
+        let mut nslot = 0;
         for (bra, kets) in row_sources {
-            let start = sources.len();
-            sources.extend(kets);
-            rows.push((bra, start..sources.len()));
+            rows.push((bra, nslot..nslot + kets.len(), SpinSources::new(&kets)));
+            nslot += kets.len();
         }
         let slots = positions
             .iter()
             .map(|&(row, column)| rows[row].1.start + column)
             .collect();
 
-        Self {
-            rows,
-            sources,
-            slots,
-        }
+        Self { rows, nslot, slots }
     }
 
     /// Group the alpha and beta component pairs of a batch, reading each request's occupations
@@ -110,7 +104,7 @@ impl SpinPairRows {
     /// # Arguments:
     /// - `space`: Determinant space holding the parent frames.
     /// - `requests`: Output positions with their determinant pairs.
-    /// # Returns:
+    /// # Returns
     /// - `(Self, Self)`: Alpha and beta rows of distinct component pairs.
     fn spins<T, D>(
         space: &NOCISpace<T>,
@@ -135,68 +129,58 @@ impl SpinPairRows {
     }
 }
 
-/// Evaluate the distinct same-spin overlap factors of a batch, including the excitation phases.
+/// Evaluate the factors of one same-spin component pair, including the excitation phases.
 /// # Arguments:
+/// - `factor`: Same-spin factor family.
 /// - `w`: Same-spin Wick intermediates of the ordered reference pair.
-/// - `pairs`: Distinct same-spin component pairs of the batch.
+/// - `pair`: Bra and ket spin components.
 /// - `scratch`: Same-spin Wick scratch space.
 /// # Returns:
-/// - `Vec<T>`: Overlap factor of each distinct component pair, aligned with `pairs.sources`.
-fn spin_overlaps<T: NOCIScalar>(
+/// - `[T; K]`: Factors of the component pair.
+fn spin_factor<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
+    factor: &F,
     w: &SameSpinView<'_, T>,
-    pairs: &SpinPairRows,
+    pair: (ExcitedSpinState, ExcitedSpinState),
     scratch: &mut WickScratch<T>,
-) -> Vec<T> {
-    let mut overlap = vec![T::from_real(0.0); pairs.sources.len()];
-    for (target, range) in &pairs.rows {
-        let batch = SameSpinOverlapBatch {
-            target: *target,
-            sources: &pairs.sources[range.clone()],
-            target_left: true,
-            out: &mut overlap[range.clone()],
-        };
-        xw_overlap_prepared_batched(w, batch, scratch);
-    }
-    overlap
+) -> [T; K] {
+    let (bra, ket) = pair;
+    let phase = T::from_real(bra.state.phase * ket.state.phase);
+    factor
+        .values(w, (&bra, &ket), scratch)
+        .map(|value| phase * value)
 }
 
-/// Evaluate the distinct same-spin overlap and Fock factors of a batch, including the excitation
-/// phases.
+/// Evaluate the distinct same-spin factors of a batch, including the excitation phases, one row
+/// per distinct bra component.
 /// # Arguments:
+/// - `factor`: Same-spin factor family.
 /// - `w`: Same-spin Wick intermediates of the ordered reference pair.
 /// - `pairs`: Distinct same-spin component pairs of the batch.
 /// - `scratch`: Same-spin Wick scratch space.
-/// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
-/// - `(Vec<T>, Vec<T>)`: Overlap and Fock factors of each distinct component pair, aligned with
-///   `pairs.sources`.
-fn spin_one_body<T: NOCIScalar>(
+/// - `[Vec<T>; K]`: Factors of each distinct component pair, aligned with the slots of `pairs`.
+fn spin_factors<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
+    factor: &F,
     w: &SameSpinView<'_, T>,
     pairs: &SpinPairRows,
     scratch: &mut WickScratch<T>,
-    tol: f64,
-) -> (Vec<T>, Vec<T>) {
-    let mut overlap = vec![T::from_real(0.0); pairs.sources.len()];
-    let mut fock = vec![T::from_real(0.0); pairs.sources.len()];
-    for (target, range) in &pairs.rows {
-        let sources = &pairs.sources[range.clone()];
-        let order = SpinEvaluationOrder::new(sources);
-        let batch = SameSpinOneBodyBatch {
+) -> [Vec<T>; K] {
+    let mut out: [Vec<T>; K] = std::array::from_fn(|_| vec![T::from_real(0.0); pairs.nslot]);
+    for (target, slots, sources) in &pairs.rows {
+        let row = SpinFactorRow {
             target: *target,
             sources,
-            order: &order,
             target_left: true,
-            overlap: &mut overlap[range.clone()],
-            fock: &mut fock[range.clone()],
+            out: out.each_mut().map(|factors| &mut factors[slots.clone()]),
         };
-        xw_f_overlap_prepared_batched(w, batch, scratch, tol);
+        xw_spin_factor_row(factor, w, row, scratch);
     }
-    (overlap, fock)
+    out
 }
 
 /// Calculate the overlap matrix elements `S_{xw} = S^\alpha_{xw} S^\beta_{xw}` of a batch of
 /// determinant pairs of one ordered reference pair. A single pair is evaluated directly; larger
-/// batches evaluate each distinct same-spin factor once in batched rows.
+/// batches evaluate each distinct same-spin factor once in factor rows.
 /// # Arguments:
 /// - `w`: Wick intermediates of the ordered parent pair of every determinant pair.
 /// - `space`: Determinant space holding the parent frames.
@@ -216,18 +200,17 @@ where
 {
     // A single pair shares no factors with other requests, so evaluate both spins directly.
     if let [(_, pair)] = requests {
-        let spin = |alpha: bool, w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>| {
-            let (bra, ket) = (pair.ldet.spin(space, alpha), pair.gdet.spin(space, alpha));
-            T::from_real(bra.state.phase * ket.state.phase)
-                * xw_overlap_prepared(w, &bra.excitation, &ket.excitation, scratch)
-        };
-        return vec![spin(true, &w.aa, &mut scratch.aa) * spin(false, &w.bb, &mut scratch.bb)];
+        let alpha = (pair.ldet.spin(space, true), pair.gdet.spin(space, true));
+        let beta = (pair.ldet.spin(space, false), pair.gdet.spin(space, false));
+        let [sa] = spin_factor(&OverlapFactor, &w.aa, alpha, &mut scratch.aa);
+        let [sb] = spin_factor(&OverlapFactor, &w.bb, beta, &mut scratch.bb);
+        return vec![sa * sb];
     }
 
     // Evaluate every distinct same-spin factor once, then combine them for each request.
     let (alpha, beta) = SpinPairRows::spins(space, requests);
-    let sa = spin_overlaps(&w.aa, &alpha, &mut scratch.aa);
-    let sb = spin_overlaps(&w.bb, &beta, &mut scratch.bb);
+    let [sa] = spin_factors(&OverlapFactor, &w.aa, &alpha, &mut scratch.aa);
+    let [sb] = spin_factors(&OverlapFactor, &w.bb, &beta, &mut scratch.bb);
 
     (0..requests.len())
         .map(|k| sa[alpha.slots[k]] * sb[beta.slots[k]])
@@ -238,7 +221,7 @@ where
 /// `F_{xw} = F^\alpha_{xw} S^\beta_{xw} + S^\alpha_{xw} F^\beta_{xw}` and
 /// `S_{xw} = S^\alpha_{xw} S^\beta_{xw}` of a batch of determinant pairs of one ordered reference
 /// pair. A single pair is evaluated directly; larger batches evaluate each distinct same-spin
-/// factor once in batched rows.
+/// factor once in factor rows.
 /// # Arguments:
 /// - `w`: Wick intermediates of the ordered parent pair of every determinant pair.
 /// - `space`: Determinant space holding the parent frames.
@@ -259,22 +242,19 @@ where
     D: PairDeterminant<T>,
 {
     // A single pair shares no factors with other requests, so evaluate both spins directly.
+    let factor = OneBodyFactor { tol };
     if let [(_, pair)] = requests {
-        let spin = |alpha: bool, w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>| {
-            let (bra, ket) = (pair.ldet.spin(space, alpha), pair.gdet.spin(space, alpha));
-            let phase = T::from_real(bra.state.phase * ket.state.phase);
-            let (s, f) = xw_f_overlap_prepared(w, &bra.excitation, &ket.excitation, scratch, tol);
-            (phase * s, phase * f)
-        };
-        let (sa, fa) = spin(true, &w.aa, &mut scratch.aa);
-        let (sb, fb) = spin(false, &w.bb, &mut scratch.bb);
+        let alpha = (pair.ldet.spin(space, true), pair.gdet.spin(space, true));
+        let beta = (pair.ldet.spin(space, false), pair.gdet.spin(space, false));
+        let [sa, fa] = spin_factor(&factor, &w.aa, alpha, &mut scratch.aa);
+        let [sb, fb] = spin_factor(&factor, &w.bb, beta, &mut scratch.bb);
         return vec![(fa * sb + fb * sa, sa * sb)];
     }
 
     // Evaluate every distinct same-spin factor once, then combine them for each request.
     let (alpha, beta) = SpinPairRows::spins(space, requests);
-    let (sa, fa) = spin_one_body(&w.aa, &alpha, &mut scratch.aa, tol);
-    let (sb, fb) = spin_one_body(&w.bb, &beta, &mut scratch.bb, tol);
+    let [sa, fa] = spin_factors(&factor, &w.aa, &alpha, &mut scratch.aa);
+    let [sb, fb] = spin_factors(&factor, &w.bb, &beta, &mut scratch.bb);
 
     (0..requests.len())
         .map(|k| {

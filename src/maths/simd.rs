@@ -2,6 +2,7 @@
 //! Packed real and complex arithmetic for numerical and Wick kernels.
 
 // Standard library imports.
+use std::arch::is_x86_feature_detected;
 use std::arch::x86_64::{
     __m256d, __m512d, _mm256_add_pd, _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_fnmadd_pd,
     _mm256_i64gather_pd, _mm256_loadu_pd, _mm256_mul_pd, _mm256_set_epi64x, _mm256_set_pd,
@@ -185,6 +186,51 @@ pub(crate) trait Simd<const N: usize>: Copy {
         lhs: Self,
         rhs: Self::Real,
     ) -> Self;
+}
+
+/// Scalar types with four- and eight-lane packed counterparts, so generic kernels can name the
+/// packed type of their scalar type.
+pub(crate) trait Packed: Sized {
+    /// Four-lane AVX2 packed type.
+    type X4: Simd<4, Scalar = Self>;
+
+    /// Eight-lane AVX-512 packed type.
+    type X8: Simd<8, Scalar = Self>;
+}
+
+impl Packed for f64 {
+    type X4 = F64x4;
+    type X8 = F64x8;
+}
+
+impl Packed for Complex64 {
+    type X4 = C64x4;
+    type X8 = C64x8;
+}
+
+/// Packet width of the packed kernels the current CPU supports.
+#[derive(Clone, Copy)]
+pub(crate) enum Lanes {
+    /// Four lanes with AVX2 and FMA.
+    Four,
+    /// Eight lanes with AVX-512F.
+    Eight,
+}
+
+/// Return the widest packet width supported by the current CPU, preferring eight AVX-512F lanes
+/// over four AVX2/FMA lanes.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `Option<Lanes>`: Widest supported packet width, or `None` without AVX2 and FMA.
+pub(crate) fn lanes() -> Option<Lanes> {
+    if is_x86_feature_detected!("avx512f") {
+        Some(Lanes::Eight)
+    } else if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        Some(Lanes::Four)
+    } else {
+        None
+    }
 }
 
 /// Four packed `f64` values in one AVX2 register.

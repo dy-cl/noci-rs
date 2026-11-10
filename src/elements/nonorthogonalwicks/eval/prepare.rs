@@ -9,7 +9,7 @@ use crate::time_call;
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-use super::dispatch::{dispatch_overlap_scalar_ranks, dispatch_pair_ranks};
+use super::dispatch::{dispatch_pair_ranks, dispatch_spin_ranks};
 
 /// Prepare the contraction-determinant quantities shared by the same-spin overlap and Hamiltonian evaluators.
 /// `For total excitation rank L = L_x + L_w, the contraction determinant has elements:`
@@ -76,7 +76,7 @@ fn prepare_same_m0<T: NOCIScalar>(
 
         // Generated ranks use a compile-time determinant fill; larger ranks preserve the same
         // `X^{(0)}`-lower/`Y^{(0)}`-upper convention with runtime storage.
-        dispatch_overlap_scalar_ranks!(
+        dispatch_spin_ranks!(
             (rx, rw),
             |_RX, _RW, L, _D| {
                 prepare_same_m0_const::<T, L>(w, l_ex, g_ex, scratch);

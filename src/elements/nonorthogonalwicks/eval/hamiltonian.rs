@@ -1,21 +1,18 @@
-// elements/nonorthogonalwicks/eval/preparehamiltonianoverlap.rs
+// elements/nonorthogonalwicks/eval/hamiltonian.rs
 
 // Standard library imports.
 #[cfg(target_arch = "x86_64")]
 use std::any::TypeId;
-#[cfg(target_arch = "x86_64")]
-use std::arch::is_x86_feature_detected;
 
 // External crate imports.
+#[cfg(target_arch = "x86_64")]
 use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::NOCIScalar;
 use crate::determinant::ExcitedState;
 #[cfg(target_arch = "x86_64")]
-use crate::maths::{
-    C64x4, C64x8, F64x4, F64x8, Simd, adjugate_transpose_simd_const, det_simd_const,
-};
+use crate::maths::{Lanes, Packed, Simd, adjugate_transpose_simd_const, det_simd_const, lanes};
 use crate::maths::{
     adjugate_transpose_const, adjugate_transpose_dynamic, det_const, det_dynamic,
     second_minor_const, second_minor_dynamic,
@@ -28,7 +25,7 @@ use super::super::scratch::WickScratchSpin;
 use super::super::view::WicksPairView;
 use super::dispatch::{
     HAMNRANKS, HAMRADIX, HAMRANKS, HAMSPACE, dispatch_hamiltonian_ranks,
-    dispatch_hamiltonian_ranks_inner, dispatch_hamiltonian_scalar_ranks,
+    dispatch_hamiltonian_ranks_inner,
 };
 use super::helpers::{DetBranches, DetIndex, Minor, ReplacementLayout};
 use super::helpers::{
@@ -185,78 +182,35 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                 return;
             }
 
+            // Fixed-rank `m = 0` requests can be packetised by the four excitation ranks and
+            // dispatched to the widest supported real or complex SIMD kernel.
             #[cfg(target_arch = "x86_64")]
             if w.aa.m == 0 && w.bb.m == 0 {
-                // Fixed-rank `m=0` requests can be packetised by the four excitation ranks and
-                // dispatched to the widest supported real or complex SIMD kernel.
-                unsafe {
+                // SAFETY: each call names the packed type that the `TypeId` check proves equal to
+                // `T`.
+                let packed = unsafe {
                     if TypeId::of::<T>() == TypeId::of::<f64>() {
-                        let w_f64 = &*std::ptr::from_ref(w).cast::<WicksPairView<'_, f64>>();
-                        let scratch_f64 =
-                            &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<f64>>();
-                        let out_f64 = std::slice::from_raw_parts_mut(
-                            out.as_mut_ptr().cast::<(f64, f64)>(),
-                            out.len(),
-                        );
-
-                        if is_x86_feature_detected!("avx512f") {
-                            xw_hamiltonian_overlap_prepared_simd(
-                                w_f64,
-                                requests,
-                                (enuc, tol),
-                                scratch_f64,
-                                out_f64,
-                                xw_hamiltonian_overlap_m0_prepared_f64x8,
-                            );
-                            return;
-                        }
-
-                        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-                            xw_hamiltonian_overlap_prepared_simd(
-                                w_f64,
-                                requests,
-                                (enuc, tol),
-                                scratch_f64,
-                                out_f64,
-                                xw_hamiltonian_overlap_m0_prepared_f64x4,
-                            );
-                            return;
-                        }
+                        xw_hamiltonian_overlap_prepared_packed::<T, f64>(
+                            w,
+                            requests,
+                            (enuc, tol),
+                            scratch,
+                            out,
+                        )
+                    } else if TypeId::of::<T>() == TypeId::of::<Complex64>() {
+                        xw_hamiltonian_overlap_prepared_packed::<T, Complex64>(
+                            w,
+                            requests,
+                            (enuc, tol),
+                            scratch,
+                            out,
+                        )
+                    } else {
+                        false
                     }
-
-                    if TypeId::of::<T>() == TypeId::of::<Complex64>() {
-                        let w_c64 = &*std::ptr::from_ref(w).cast::<WicksPairView<'_, Complex64>>();
-                        let scratch_c64 =
-                            &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<Complex64>>();
-                        let out_c64 = std::slice::from_raw_parts_mut(
-                            out.as_mut_ptr().cast::<(Complex64, Complex64)>(),
-                            out.len(),
-                        );
-
-                        if is_x86_feature_detected!("avx512f") {
-                            xw_hamiltonian_overlap_prepared_simd(
-                                w_c64,
-                                requests,
-                                (enuc, tol),
-                                scratch_c64,
-                                out_c64,
-                                xw_hamiltonian_overlap_m0_prepared_c64x8,
-                            );
-                            return;
-                        }
-
-                        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-                            xw_hamiltonian_overlap_prepared_simd(
-                                w_c64,
-                                requests,
-                                (enuc, tol),
-                                scratch_c64,
-                                out_c64,
-                                xw_hamiltonian_overlap_m0_prepared_c64x4,
-                            );
-                            return;
-                        }
-                    }
+                };
+                if packed {
+                    return;
                 }
             }
 
@@ -267,6 +221,59 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
             }
         }
     )
+}
+
+/// Evaluate batched Hamiltonian and overlap requests with the packed kernels of scalar type `U`,
+/// the scalar type `T` of the requests.
+/// # Arguments:
+/// - `w`: Wick intermediates for one ordered nonorthogonal reference pair with `m = 0`.
+/// - `requests`: Output positions with their prepared bra and ket determinants.
+/// - `parameters`: Nuclear repulsion energy and scalar-fallback numerical tolerance.
+/// - `scratch`: Reusable scalar fallback workspace.
+/// - `out`: Hamiltonian and overlap results aligned with the original request order.
+/// # Returns:
+/// - `bool`: Whether the CPU supports a packed kernel and every request was written.
+/// # Safety:
+/// - `T` and `U` must be the same type.
+#[cfg(target_arch = "x86_64")]
+unsafe fn xw_hamiltonian_overlap_prepared_packed<T: NOCIScalar, U: NOCIScalar + Packed>(
+    w: &WicksPairView<'_, T>,
+    requests: &[(usize, ExcitedState, ExcitedState)],
+    parameters: (f64, f64),
+    scratch: &mut WickScratchSpin<T>,
+    out: &mut [(T, T)],
+) -> bool {
+    let Some(lanes) = lanes() else {
+        return false;
+    };
+
+    // SAFETY: `T` and `U` are the same type, so every reference is reinterpreted as itself.
+    let w = unsafe { &*std::ptr::from_ref(w).cast::<WicksPairView<'_, U>>() };
+    let scratch = unsafe { &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<U>>() };
+    let out =
+        unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<(U, U)>(), out.len()) };
+
+    unsafe {
+        match lanes {
+            Lanes::Four => xw_hamiltonian_overlap_prepared_simd(
+                w,
+                requests,
+                parameters,
+                scratch,
+                out,
+                xw_hamiltonian_overlap_m0_prepared_x4::<U>,
+            ),
+            Lanes::Eight => xw_hamiltonian_overlap_prepared_simd(
+                w,
+                requests,
+                parameters,
+                scratch,
+                out,
+                xw_hamiltonian_overlap_m0_prepared_x8::<U>,
+            ),
+        }
+    }
+    true
 }
 
 /// Evaluate one real or complex SIMD Hamiltonian/overlap request group.
@@ -432,7 +439,7 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared,
         {
-            dispatch_hamiltonian_scalar_ranks!(
+            dispatch_hamiltonian_ranks!(
                 ranks,
                 |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| {
                     Some(xw_hamiltonian_overlap_m0_prepared_const::<
@@ -1079,9 +1086,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
     V::store(V::mul(pref, det_ab), s);
 }
 
-/// Dispatch four real Hamiltonian/overlap values to one fixed-rank AVX2/FMA kernel.
+/// Dispatch four Hamiltonian/overlap values to one fixed-rank AVX2/FMA kernel.
 /// # Arguments:
-/// - `w`: Real Wick intermediates.
+/// - `w`: Wick intermediates.
 /// - `ranks`: Reference-resolved excitation ranks.
 /// - `ex`: Bra and ket excitation caches.
 /// - `excitation_phase`: Excitation phases.
@@ -1090,23 +1097,24 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
 /// # Returns
 /// - `()`: Writes four matrix-element pairs.
 /// # Safety
-/// - The current CPU must support AVX2 and FMA; cached ranks must match `ranks`.
+/// - The current CPU must support AVX2/FMA; cached ranks must match `ranks`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4(
-    w: &WicksPairView<'_, f64>,
+unsafe fn xw_hamiltonian_overlap_m0_prepared_x4<T: NOCIScalar + Packed>(
+    w: &WicksPairView<'_, T>,
     ranks: (usize, usize, usize, usize),
     ex: (&[ExcitationCache; 4], &[ExcitationCache; 4]),
     excitation_phase: &[f64; 4],
     enuc: f64,
-    out: (&mut [f64; 4], &mut [f64; 4]),
+    out: (&mut [T; 4], &mut [T; 4]),
 ) {
     let (x_ex, w_ex) = ex;
     let (h, s) = out;
     dispatch_hamiltonian_ranks!(
         ranks,
         |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
-            xw_hamiltonian_overlap_m0_prepared_f64x4_const::<
+            xw_hamiltonian_overlap_m0_prepared_x4_const::<
+                T,
                 RXA,
                 RWA,
                 LA,
@@ -1125,55 +1133,9 @@ pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4(
     )
 }
 
-/// Dispatch four complex Hamiltonian/overlap values to one fixed-rank AVX2/FMA kernel.
+/// Dispatch eight Hamiltonian/overlap values to one fixed-rank AVX-512F kernel.
 /// # Arguments:
-/// - `w`: Complex Wick intermediates.
-/// - `ranks`: Reference-resolved excitation ranks.
-/// - `ex`: Bra and ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `out`: Hamiltonian and overlap outputs.
-/// # Returns
-/// - `()`: Writes four matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA; cached ranks must match `ranks`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4(
-    w: &WicksPairView<'_, Complex64>,
-    ranks: (usize, usize, usize, usize),
-    ex: (&[ExcitationCache; 4], &[ExcitationCache; 4]),
-    excitation_phase: &[f64; 4],
-    enuc: f64,
-    out: (&mut [Complex64; 4], &mut [Complex64; 4]),
-) {
-    let (x_ex, w_ex) = ex;
-    let (h, s) = out;
-    dispatch_hamiltonian_ranks!(
-        ranks,
-        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
-            xw_hamiltonian_overlap_m0_prepared_c64x4_const::<
-                RXA,
-                RWA,
-                LA,
-                DA,
-                MA,
-                MDA,
-                RXB,
-                RWB,
-                LB,
-                DB,
-                MB,
-                MDB,
-            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-        },
-        (),
-    )
-}
-
-/// Dispatch eight real Hamiltonian/overlap values to one fixed-rank AVX-512F kernel.
-/// # Arguments:
-/// - `w`: Real Wick intermediates.
+/// - `w`: Wick intermediates.
 /// - `ranks`: Reference-resolved excitation ranks.
 /// - `ex`: Bra and ket excitation caches.
 /// - `excitation_phase`: Excitation phases.
@@ -1185,20 +1147,21 @@ pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4(
 /// - The current CPU must support AVX-512F; cached ranks must match `ranks`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8(
-    w: &WicksPairView<'_, f64>,
+unsafe fn xw_hamiltonian_overlap_m0_prepared_x8<T: NOCIScalar + Packed>(
+    w: &WicksPairView<'_, T>,
     ranks: (usize, usize, usize, usize),
     ex: (&[ExcitationCache; 8], &[ExcitationCache; 8]),
     excitation_phase: &[f64; 8],
     enuc: f64,
-    out: (&mut [f64; 8], &mut [f64; 8]),
+    out: (&mut [T; 8], &mut [T; 8]),
 ) {
     let (x_ex, w_ex) = ex;
     let (h, s) = out;
     dispatch_hamiltonian_ranks!(
         ranks,
         |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
-            xw_hamiltonian_overlap_m0_prepared_f64x8_const::<
+            xw_hamiltonian_overlap_m0_prepared_x8_const::<
+                T,
                 RXA,
                 RWA,
                 LA,
@@ -1217,55 +1180,9 @@ pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8(
     )
 }
 
-/// Dispatch eight complex Hamiltonian/overlap values to one fixed-rank AVX-512F kernel.
+/// Evaluate four fixed-rank Hamiltonian/overlap values with AVX2/FMA.
 /// # Arguments:
-/// - `w`: Complex Wick intermediates.
-/// - `ranks`: Reference-resolved excitation ranks.
-/// - `ex`: Bra and ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `out`: Hamiltonian and overlap outputs.
-/// # Returns
-/// - `()`: Writes eight matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX-512F; cached ranks must match `ranks`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8(
-    w: &WicksPairView<'_, Complex64>,
-    ranks: (usize, usize, usize, usize),
-    ex: (&[ExcitationCache; 8], &[ExcitationCache; 8]),
-    excitation_phase: &[f64; 8],
-    enuc: f64,
-    out: (&mut [Complex64; 8], &mut [Complex64; 8]),
-) {
-    let (x_ex, w_ex) = ex;
-    let (h, s) = out;
-    dispatch_hamiltonian_ranks!(
-        ranks,
-        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
-            xw_hamiltonian_overlap_m0_prepared_c64x8_const::<
-                RXA,
-                RWA,
-                LA,
-                DA,
-                MA,
-                MDA,
-                RXB,
-                RWB,
-                LB,
-                DB,
-                MB,
-                MDB,
-            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-        },
-        (),
-    )
-}
-
-/// Evaluate four real fixed-rank Hamiltonian/overlap values with AVX2/FMA.
-/// # Arguments:
-/// - `w`: Real Wick intermediates.
+/// - `w`: Wick intermediates.
 /// - `x_ex`: Bra excitation caches.
 /// - `w_ex`: Ket excitation caches.
 /// - `excitation_phase`: Excitation phases.
@@ -1275,10 +1192,11 @@ pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8(
 /// # Returns
 /// - `()`: Writes four matrix-element pairs.
 /// # Safety
-/// - The current CPU must support AVX2 and FMA; cached labels must match fixed ranks.
+/// - The current CPU must support AVX2/FMA; cached labels must match fixed ranks.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
+unsafe fn xw_hamiltonian_overlap_m0_prepared_x4_const<
+    T: NOCIScalar + Packed,
     const RXA: usize,
     const RWA: usize,
     const LA: usize,
@@ -1292,18 +1210,18 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
     const MB: usize,
     const MDB: usize,
 >(
-    w: &WicksPairView<'_, f64>,
+    w: &WicksPairView<'_, T>,
     x_ex: &[ExcitationCache; 4],
     w_ex: &[ExcitationCache; 4],
     excitation_phase: &[f64; 4],
     enuc: f64,
-    h: &mut [f64; 4],
-    s: &mut [f64; 4],
+    h: &mut [T; 4],
+    s: &mut [T; 4],
 ) {
     unsafe {
         xw_hamiltonian_overlap_m0_prepared_simd_const::<
-            f64,
-            F64x4,
+            T,
+            T::X4,
             4,
             RXA,
             RWA,
@@ -1321,67 +1239,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
     }
 }
 
-/// Evaluate four complex fixed-rank Hamiltonian/overlap values with AVX2/FMA.
+/// Evaluate eight fixed-rank Hamiltonian/overlap values with AVX-512F.
 /// # Arguments:
-/// - `w`: Complex Wick intermediates.
-/// - `x_ex`: Bra excitation caches.
-/// - `w_ex`: Ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian outputs.
-/// - `s`: Overlap outputs.
-/// # Returns
-/// - `()`: Writes four matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA; cached labels must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
-    const RXA: usize,
-    const RWA: usize,
-    const LA: usize,
-    const DA: usize,
-    const MA: usize,
-    const MDA: usize,
-    const RXB: usize,
-    const RWB: usize,
-    const LB: usize,
-    const DB: usize,
-    const MB: usize,
-    const MDB: usize,
->(
-    w: &WicksPairView<'_, Complex64>,
-    x_ex: &[ExcitationCache; 4],
-    w_ex: &[ExcitationCache; 4],
-    excitation_phase: &[f64; 4],
-    enuc: f64,
-    h: &mut [Complex64; 4],
-    s: &mut [Complex64; 4],
-) {
-    unsafe {
-        xw_hamiltonian_overlap_m0_prepared_simd_const::<
-            Complex64,
-            C64x4,
-            4,
-            RXA,
-            RWA,
-            LA,
-            DA,
-            MA,
-            MDA,
-            RXB,
-            RWB,
-            LB,
-            DB,
-            MB,
-            MDB,
-        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
-    }
-}
-
-/// Evaluate eight real fixed-rank Hamiltonian/overlap values with AVX-512F.
-/// # Arguments:
-/// - `w`: Real Wick intermediates.
+/// - `w`: Wick intermediates.
 /// - `x_ex`: Bra excitation caches.
 /// - `w_ex`: Ket excitation caches.
 /// - `excitation_phase`: Excitation phases.
@@ -1394,7 +1254,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
 /// - The current CPU must support AVX-512F; cached labels must match fixed ranks.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
+unsafe fn xw_hamiltonian_overlap_m0_prepared_x8_const<
+    T: NOCIScalar + Packed,
     const RXA: usize,
     const RWA: usize,
     const LA: usize,
@@ -1408,76 +1269,18 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
     const MB: usize,
     const MDB: usize,
 >(
-    w: &WicksPairView<'_, f64>,
+    w: &WicksPairView<'_, T>,
     x_ex: &[ExcitationCache; 8],
     w_ex: &[ExcitationCache; 8],
     excitation_phase: &[f64; 8],
     enuc: f64,
-    h: &mut [f64; 8],
-    s: &mut [f64; 8],
+    h: &mut [T; 8],
+    s: &mut [T; 8],
 ) {
     unsafe {
         xw_hamiltonian_overlap_m0_prepared_simd_const::<
-            f64,
-            F64x8,
-            8,
-            RXA,
-            RWA,
-            LA,
-            DA,
-            MA,
-            MDA,
-            RXB,
-            RWB,
-            LB,
-            DB,
-            MB,
-            MDB,
-        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
-    }
-}
-
-/// Evaluate eight complex fixed-rank Hamiltonian/overlap values with AVX-512F.
-/// # Arguments:
-/// - `w`: Complex Wick intermediates.
-/// - `x_ex`: Bra excitation caches.
-/// - `w_ex`: Ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian outputs.
-/// - `s`: Overlap outputs.
-/// # Returns
-/// - `()`: Writes eight matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX-512F; cached labels must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
-    const RXA: usize,
-    const RWA: usize,
-    const LA: usize,
-    const DA: usize,
-    const MA: usize,
-    const MDA: usize,
-    const RXB: usize,
-    const RWB: usize,
-    const LB: usize,
-    const DB: usize,
-    const MB: usize,
-    const MDB: usize,
->(
-    w: &WicksPairView<'_, Complex64>,
-    x_ex: &[ExcitationCache; 8],
-    w_ex: &[ExcitationCache; 8],
-    excitation_phase: &[f64; 8],
-    enuc: f64,
-    h: &mut [Complex64; 8],
-    s: &mut [Complex64; 8],
-) {
-    unsafe {
-        xw_hamiltonian_overlap_m0_prepared_simd_const::<
-            Complex64,
-            C64x8,
+            T,
+            T::X8,
             8,
             RXA,
             RWA,

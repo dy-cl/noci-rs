@@ -16,8 +16,7 @@ use crate::determinant::{ExcitedSpinState, NOCIIndex, NOCISpace, NOCISpinIndex};
 use crate::elements::calculate_f_pair_orthogonal;
 use crate::elements::calculate_s_pair_orthogonal;
 use crate::elements::nonorthogonalwicks::{
-    SameSpinOneBodyBatch, SpinEvaluationOrder, WickScratchSpin, WicksPairView,
-    xw_f_overlap_prepared_batched,
+    OneBodyFactor, SpinFactorRow, SpinSources, WickScratchSpin, WicksPairView, xw_spin_factor_row,
 };
 use crate::elements::{FockData, FockMOCache, NOCIData};
 use crate::input::SNOCIStorage;
@@ -757,10 +756,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &pair,
                         data,
                         target.areps[ta],
-                        SpinOneBodySources {
-                            reps: source.areps.as_slice(),
-                            order: &source.a_order,
-                        },
+                        &source.a_sources,
                         (target_left, true),
                         wick,
                         (srow.as_mut_slice(), frow.as_mut_slice()),
@@ -798,10 +794,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &pair,
                         data,
                         target.breps[tb],
-                        SpinOneBodySources {
-                            reps: source.breps.as_slice(),
-                            order: &source.b_order,
-                        },
+                        &source.b_sources,
                         (target_left, false),
                         wick,
                         (srow.as_mut_slice(), frow.as_mut_slice()),
@@ -928,10 +921,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &pair,
                         data,
                         target.breps[tb],
-                        SpinOneBodySources {
-                            reps: source.breps.as_slice(),
-                            order: &source.b_order,
-                        },
+                        &source.b_sources,
                         (target_left, false),
                         wick,
                         (srow.as_mut_slice(), frow.as_mut_slice()),
@@ -968,10 +958,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &pair,
                         data,
                         target.areps[ta],
-                        SpinOneBodySources {
-                            reps: source.areps.as_slice(),
-                            order: &source.a_order,
-                        },
+                        &source.a_sources,
                         (target_left, true),
                         wick,
                         (srow.as_mut_slice(), frow.as_mut_slice()),
@@ -1064,10 +1051,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
             &pair,
             data,
             target.areps.as_slice(),
-            SpinOneBodySources {
-                reps: source.areps.as_slice(),
-                order: &source.a_order,
-            },
+            &source.a_sources,
             0..nta,
             (target_left, true),
             out,
@@ -1082,10 +1066,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
             &pair,
             data,
             target.breps.as_slice(),
-            SpinOneBodySources {
-                reps: source.breps.as_slice(),
-                order: &source.b_order,
-            },
+            &source.b_sources,
             0..ntb,
             (target_left, false),
             out,
@@ -1335,22 +1316,13 @@ fn apply_orthogonal_beta_singles<T, R>(
     }
 }
 
-/// Source representatives and their fixed-rank Wick evaluation metadata.
-#[derive(Clone, Copy)]
-struct SpinOneBodySources<'a> {
-    /// Prepared source spin representatives in output-column order.
-    reps: &'a [ExcitedSpinState],
-    /// Fixed-rank Wick evaluation order of `reps`.
-    order: &'a SpinEvaluationOrder,
-}
-
 /// Build same-spin `S` and `F` factor rows from prepared Wick pair batches.
 /// Independent source components are evaluated together so the widest fixed-rank SIMD kernel can be used.
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
 /// - `data`: Shared NOCI determinant data.
 /// - `target_reps`: Reduced target spin representatives.
-/// - `sources`: Reduced source representatives and their evaluation metadata.
+/// - `sources`: Source representatives in packed evaluation order.
 /// - `rows`: Target-row range to fill.
 /// - `flags`: Whether targets are left determinants and whether to build alpha factors.
 /// - `out`: Mutable row-major overlap and Fock factor tables.
@@ -1360,12 +1332,12 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
     target_reps: &[ExcitedSpinState],
-    sources: SpinOneBodySources<'_>,
+    sources: &SpinSources,
     rows: Range<usize>,
     flags: (bool, bool),
     out: (&mut [T], &mut [T]),
 ) {
-    let nsource = sources.reps.len();
+    let nsource = sources.len();
     let row0 = rows.start;
     let row1 = rows.end;
 
@@ -1390,12 +1362,11 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 }
 
 /// Build one same-spin `S` and `F` factor row from prepared Wick pair batches.
-/// Fixed-rank paths read precomputed phase and excitation metadata in evaluation order.
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
 /// - `data`: Shared NOCI determinant data used by the generic fallback.
 /// - `target`: Reduced target spin representative.
-/// - `sources`: Reduced source representatives and their evaluation metadata.
+/// - `sources`: Source representatives in packed evaluation order.
 /// - `flags`: Whether target is left determinant and whether to evaluate alpha factors.
 /// - `scratch`: Reusable spin-resolved Wick evaluator workspace.
 /// - `out`: Output same-spin overlap and generalised-Fock factor rows.
@@ -1405,7 +1376,7 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
     target: ExcitedSpinState,
-    sources: SpinOneBodySources<'_>,
+    sources: &SpinSources,
     flags: (bool, bool),
     scratch: &mut WickScratchSpin<T>,
     out: (&mut [T], &mut [T]),
@@ -1419,19 +1390,13 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
         (&pair.bb, &mut scratch.bb)
     };
 
-    xw_f_overlap_prepared_batched(
-        w,
-        SameSpinOneBodyBatch {
-            target,
-            sources: sources.reps,
-            order: sources.order,
-            target_left,
-            overlap,
-            fock,
-        },
-        scratch,
-        data.tol,
-    );
+    let row = SpinFactorRow {
+        target,
+        sources,
+        target_left,
+        out: [overlap, fock],
+    };
+    xw_spin_factor_row(&OneBodyFactor { tol: data.tol }, w, row, scratch);
 }
 
 /// Select alpha-first or beta-first contraction from dense structural costs.

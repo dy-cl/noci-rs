@@ -36,4 +36,8 @@ pub use wick::*;
 
 // Restricted type re-exports.
 #[cfg(target_arch = "x86_64")]
-pub(crate) use simd::{C64x4, C64x8, F64x4, F64x8, Simd};
+pub(crate) use simd::{C64x4, C64x8, F64x4, F64x8, Lanes, Packed, Simd};
+
+// Restricted function re-exports.
+#[cfg(target_arch = "x86_64")]
+pub(crate) use simd::lanes;
