@@ -1,4 +1,5 @@
-// qmc/hash.rs
+// hash.rs
+//! Fast deterministic hashing for integer keys, shared by every layer that needs a hash map.
 
 // Standard library imports.
 use std::collections::HashMap;

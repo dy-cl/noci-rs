@@ -53,6 +53,7 @@ pub mod utils;
 pub mod write;
 
 mod config;
+mod hash;
 
 // External crate imports.
 use ndarray::{Array1, Array2, Array4};

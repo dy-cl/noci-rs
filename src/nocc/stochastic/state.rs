@@ -4,7 +4,7 @@
 use crate::determinant::{ExcitedDeterminant, ExcitedState};
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{DetPair, HamiltonianOverlap, NOCIData, Overlap, calculate_pairs};
-use crate::qmc::FastMap;
+use crate::hash::FastMap;
 
 // Parent/sibling imports.
 use super::coupling::Projections;

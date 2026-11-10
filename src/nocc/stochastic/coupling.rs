@@ -21,7 +21,8 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::determinant::{ExcitedDeterminant, ExcitedState};
-use crate::qmc::{FastMap, QmcRng};
+use crate::hash::FastMap;
+use crate::qmc::QmcRng;
 
 // Parent/sibling imports.
 use super::population::{Block, Excitor, ExcitorKey, rank};

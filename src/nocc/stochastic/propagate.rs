@@ -10,11 +10,12 @@ use rayon::prelude::*;
 use crate::determinant::ExcitedDeterminant;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{DetPair, HamiltonianOverlap, NOCIData, calculate_pairs};
+use crate::hash::FastMap;
 use crate::input::JMNOCCMCOptions;
 use crate::mpiutils::all_reduce_array1;
 use crate::nocc::Effective;
 use crate::qmc::{
-    AliasTable, ExchangeScratch, FastMap, QmcRng, coalesce, compress_sparse, exchange_to_owners,
+    AliasTable, ExchangeScratch, QmcRng, coalesce, compress_sparse, exchange_to_owners,
     gather_updates, owner_words, print_table_header, print_table_row, rank_seed, stop_requested,
     stream, update_shift,
 };
