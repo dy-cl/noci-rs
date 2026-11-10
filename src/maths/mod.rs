@@ -12,7 +12,8 @@
 //! `gemm`. The `eri` submodule transforms and contracts two-electron
 //! integrals. The `gmres` submodule solves general linear systems by restarted GMRES. The
 //! `linalg` submodule provides determinant, adjugate, eigensolver and matrix-
-//! vector utilities. The `wick` submodule contains the low-level contraction-determinant
+//! vector utilities. The `simd` submodule provides packed real and complex arithmetic for the
+//! SIMD kernels. The `wick` submodule contains the low-level contraction-determinant
 //! construction and column-mixing operations used by the nonorthogonal Wick evaluators.
 //!
 //! Numerical kernels support real or complex scalar types where required by their callers.
@@ -23,10 +24,9 @@ pub mod eri;
 pub mod gemm;
 pub mod gmres;
 pub mod linalg;
-pub mod wick;
-
 #[cfg(target_arch = "x86_64")]
-pub(crate) mod simd;
+pub mod simd;
+pub mod wick;
 
 // Public mixed re-exports.
 pub use einsum::*;
@@ -36,7 +36,7 @@ pub use wick::*;
 
 // Restricted type re-exports.
 #[cfg(target_arch = "x86_64")]
-pub(crate) use simd::{C64x4, C64x8, F64x4, F64x8, Lanes, Packed, Simd};
+pub(crate) use simd::{C64x4, C64x8, F64x4, F64x8, Lanes, Simd};
 
 // Restricted function re-exports.
 #[cfg(target_arch = "x86_64")]

@@ -1,18 +1,10 @@
 // elements/nonorthogonalwicks/eval/hamiltonian.rs
 
-// Standard library imports.
-#[cfg(target_arch = "x86_64")]
-use std::any::TypeId;
-
-// External crate imports.
-#[cfg(target_arch = "x86_64")]
-use num_complex::Complex64;
-
 // Crate-root imports.
 use crate::NOCIScalar;
 use crate::determinant::ExcitedState;
 #[cfg(target_arch = "x86_64")]
-use crate::maths::{Lanes, Packed, Simd, adjugate_transpose_simd_const, det_simd_const, lanes};
+use crate::maths::{Lanes, Simd, adjugate_transpose_simd_const, det_simd_const, lanes};
 use crate::maths::{
     adjugate_transpose_const, adjugate_transpose_dynamic, det_const, det_dynamic,
     second_minor_const, second_minor_dynamic,
@@ -183,35 +175,33 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
             }
 
             // Fixed-rank `m = 0` requests can be packetised by the four excitation ranks and
-            // dispatched to the widest supported real or complex SIMD kernel.
+            // dispatched to the widest supported SIMD kernel.
             #[cfg(target_arch = "x86_64")]
-            if w.aa.m == 0 && w.bb.m == 0 {
-                // SAFETY: each call names the packed type that the `TypeId` check proves equal to
-                // `T`.
-                let packed = unsafe {
-                    if TypeId::of::<T>() == TypeId::of::<f64>() {
-                        xw_hamiltonian_overlap_prepared_packed::<T, f64>(
+            if w.aa.m == 0
+                && w.bb.m == 0
+                && let Some(lanes) = lanes()
+            {
+                unsafe {
+                    match lanes {
+                        Lanes::Four => xw_hamiltonian_overlap_prepared_simd(
                             w,
                             requests,
                             (enuc, tol),
                             scratch,
                             out,
-                        )
-                    } else if TypeId::of::<T>() == TypeId::of::<Complex64>() {
-                        xw_hamiltonian_overlap_prepared_packed::<T, Complex64>(
+                            xw_hamiltonian_overlap_m0_prepared_x4::<T>,
+                        ),
+                        Lanes::Eight => xw_hamiltonian_overlap_prepared_simd(
                             w,
                             requests,
                             (enuc, tol),
                             scratch,
                             out,
-                        )
-                    } else {
-                        false
+                            xw_hamiltonian_overlap_m0_prepared_x8::<T>,
+                        ),
                     }
-                };
-                if packed {
-                    return;
                 }
+                return;
             }
 
             // Without a SIMD kernel every request uses the prepared scalar evaluator; `output`
@@ -221,59 +211,6 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
             }
         }
     )
-}
-
-/// Evaluate batched Hamiltonian and overlap requests with the packed kernels of scalar type `U`,
-/// the scalar type `T` of the requests.
-/// # Arguments:
-/// - `w`: Wick intermediates for one ordered nonorthogonal reference pair with `m = 0`.
-/// - `requests`: Output positions with their prepared bra and ket determinants.
-/// - `parameters`: Nuclear repulsion energy and scalar-fallback numerical tolerance.
-/// - `scratch`: Reusable scalar fallback workspace.
-/// - `out`: Hamiltonian and overlap results aligned with the original request order.
-/// # Returns:
-/// - `bool`: Whether the CPU supports a packed kernel and every request was written.
-/// # Safety:
-/// - `T` and `U` must be the same type.
-#[cfg(target_arch = "x86_64")]
-unsafe fn xw_hamiltonian_overlap_prepared_packed<T: NOCIScalar, U: NOCIScalar + Packed>(
-    w: &WicksPairView<'_, T>,
-    requests: &[(usize, ExcitedState, ExcitedState)],
-    parameters: (f64, f64),
-    scratch: &mut WickScratchSpin<T>,
-    out: &mut [(T, T)],
-) -> bool {
-    let Some(lanes) = lanes() else {
-        return false;
-    };
-
-    // SAFETY: `T` and `U` are the same type, so every reference is reinterpreted as itself.
-    let w = unsafe { &*std::ptr::from_ref(w).cast::<WicksPairView<'_, U>>() };
-    let scratch = unsafe { &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<U>>() };
-    let out =
-        unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<(U, U)>(), out.len()) };
-
-    unsafe {
-        match lanes {
-            Lanes::Four => xw_hamiltonian_overlap_prepared_simd(
-                w,
-                requests,
-                parameters,
-                scratch,
-                out,
-                xw_hamiltonian_overlap_m0_prepared_x4::<U>,
-            ),
-            Lanes::Eight => xw_hamiltonian_overlap_prepared_simd(
-                w,
-                requests,
-                parameters,
-                scratch,
-                out,
-                xw_hamiltonian_overlap_m0_prepared_x8::<U>,
-            ),
-        }
-    }
-    true
 }
 
 /// Evaluate one real or complex SIMD Hamiltonian/overlap request group.
@@ -1100,7 +1037,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
 /// - The current CPU must support AVX2/FMA; cached ranks must match `ranks`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_x4<T: NOCIScalar + Packed>(
+unsafe fn xw_hamiltonian_overlap_m0_prepared_x4<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     ranks: (usize, usize, usize, usize),
     ex: (&[ExcitationCache; 4], &[ExcitationCache; 4]),
@@ -1147,7 +1084,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_x4<T: NOCIScalar + Packed>(
 /// - The current CPU must support AVX-512F; cached ranks must match `ranks`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_x8<T: NOCIScalar + Packed>(
+unsafe fn xw_hamiltonian_overlap_m0_prepared_x8<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     ranks: (usize, usize, usize, usize),
     ex: (&[ExcitationCache; 8], &[ExcitationCache; 8]),
@@ -1196,7 +1133,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_x8<T: NOCIScalar + Packed>(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_hamiltonian_overlap_m0_prepared_x4_const<
-    T: NOCIScalar + Packed,
+    T: NOCIScalar,
     const RXA: usize,
     const RWA: usize,
     const LA: usize,
@@ -1221,7 +1158,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_x4_const<
     unsafe {
         xw_hamiltonian_overlap_m0_prepared_simd_const::<
             T,
-            T::X4,
+            T::Packed4,
             4,
             RXA,
             RWA,
@@ -1255,7 +1192,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_x4_const<
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_hamiltonian_overlap_m0_prepared_x8_const<
-    T: NOCIScalar + Packed,
+    T: NOCIScalar,
     const RXA: usize,
     const RWA: usize,
     const LA: usize,
@@ -1280,7 +1217,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_x8_const<
     unsafe {
         xw_hamiltonian_overlap_m0_prepared_simd_const::<
             T,
-            T::X8,
+            T::Packed8,
             8,
             RXA,
             RWA,

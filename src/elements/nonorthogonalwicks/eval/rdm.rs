@@ -1,20 +1,14 @@
 // elements/nonorthogonalwicks/eval/rdm.rs
 
-// Standard library imports.
-#[cfg(target_arch = "x86_64")]
-use std::any::TypeId;
-
 // External crate imports.
 use ndarray::Array2;
-#[cfg(target_arch = "x86_64")]
-use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::ExcitationSpin;
 use crate::NOCIScalar;
 use crate::config::MAXEXCIT;
 #[cfg(target_arch = "x86_64")]
-use crate::maths::{Lanes, Packed, Simd, det_simd_const, lanes};
+use crate::maths::{Lanes, Simd, det_simd_const, lanes};
 use crate::maths::{det_const, det_dynamic, mix_columns_dynamic};
 use crate::time_call;
 
@@ -105,30 +99,39 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
     let x0p = extend_rdm_d(w, &x0, &x0rdm, l_c, g_c).into_raw_vec();
     let y0p = extend_rdm_d(w, &y0, &y0rdm, l_c, g_c).into_raw_vec();
 
-    // Packed kernels exist for real and complex scalars with `m = 0`.
+    // Generated packets cover `m = 0`, external rank `K <= 4` and cached excitation ranks up to
+    // `MAXEXCIT`, on CPUs with AVX2 and FMA.
     #[cfg(target_arch = "x86_64")]
-    if w.m == 0 {
-        // SAFETY: each call names the packed type that the `TypeId` check proves equal to `T`.
+    if w.m == 0
+        && K <= 4
+        && ex.0.holes.count_ones() as usize <= MAXEXCIT
+        && ex.1.holes.count_ones() as usize <= MAXEXCIT
+        && let Some(lanes) = lanes()
+    {
         let fundamental = (x0p.as_slice(), y0p.as_slice(), ext_n);
-        let packed = unsafe {
-            if TypeId::of::<T>() == TypeId::of::<f64>() {
-                xw_rdmk_same_prepared_packed::<T, f64, K>(w, ex, fundamental, requests, tol, out)
-            } else if TypeId::of::<T>() == TypeId::of::<Complex64>() {
-                xw_rdmk_same_prepared_packed::<T, Complex64, K>(
+        unsafe {
+            match lanes {
+                Lanes::Four => xw_rdmk_same_prepared_simd_batch::<T, K, 4>(
                     w,
                     ex,
                     fundamental,
                     requests,
                     tol,
                     out,
-                )
-            } else {
-                false
+                    xw_rdmk_same_m0_prepared_x4::<T, K>,
+                ),
+                Lanes::Eight => xw_rdmk_same_prepared_simd_batch::<T, K, 8>(
+                    w,
+                    ex,
+                    fundamental,
+                    requests,
+                    tol,
+                    out,
+                    xw_rdmk_same_m0_prepared_x8::<T, K>,
+                ),
             }
-        };
-        if packed {
-            return;
         }
+        return;
     }
 
     // If no fixed-width kernel accepts the batch, construct the optional `m_i = 1` contractions
@@ -165,72 +168,6 @@ type RdmSimdPacket<T, const K: usize, const N: usize> = unsafe fn(
     f64,
     &mut [T; N],
 );
-
-/// Evaluate a same-spin rank-`K` RDM batch with the packed kernels of scalar type `U`, the scalar
-/// type `T` of the batch.
-/// # Arguments:
-/// - `w`: Same-spin Wick intermediates with `m = 0`.
-/// - `ex`: Bra and ket excitations.
-/// - `fundamental`: Extended contractions and row dimension.
-/// - `requests`: External RDM indices.
-/// - `tol`: Numerical threshold.
-/// - `out`: RDM outputs.
-/// # Returns
-/// - `bool`: Whether a packed kernel covers the batch and every request was written.
-/// # Safety
-/// - `T` and `U` must be the same type.
-#[cfg(target_arch = "x86_64")]
-unsafe fn xw_rdmk_same_prepared_packed<T: NOCIScalar, U: NOCIScalar + Packed, const K: usize>(
-    w: &SameSpinView<'_, T>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], usize),
-    requests: &[([usize; K], [usize; K])],
-    tol: f64,
-    out: &mut [T],
-) -> bool {
-    // Generated packets cover external rank `K <= 4` and cached excitation ranks up to
-    // `MAXEXCIT`; preserve scalar evaluation outside that region.
-    let rx = ex.0.holes.count_ones() as usize;
-    let rw = ex.1.holes.count_ones() as usize;
-    if K > 4 || rx > MAXEXCIT || rw > MAXEXCIT {
-        return false;
-    }
-    let Some(lanes) = lanes() else {
-        return false;
-    };
-
-    // SAFETY: `T` and `U` are the same type, so every reference is reinterpreted as itself.
-    let (x0, y0, ext_n) = fundamental;
-    let w = unsafe { &*std::ptr::from_ref(w).cast::<SameSpinView<'_, U>>() };
-    let x0 = unsafe { std::slice::from_raw_parts(x0.as_ptr().cast::<U>(), x0.len()) };
-    let y0 = unsafe { std::slice::from_raw_parts(y0.as_ptr().cast::<U>(), y0.len()) };
-    let out = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<U>(), out.len()) };
-
-    // Prefer the widest supported packet for the augmented `D_{RDM}` determinant.
-    unsafe {
-        match lanes {
-            Lanes::Four => xw_rdmk_same_prepared_simd_batch::<U, K, 4>(
-                w,
-                ex,
-                (x0, y0, ext_n),
-                requests,
-                tol,
-                out,
-                xw_rdmk_same_m0_prepared_x4::<U, K>,
-            ),
-            Lanes::Eight => xw_rdmk_same_prepared_simd_batch::<U, K, 8>(
-                w,
-                ex,
-                (x0, y0, ext_n),
-                requests,
-                tol,
-                out,
-                xw_rdmk_same_m0_prepared_x8::<U, K>,
-            ),
-        }
-    }
-    true
-}
 
 /// Evaluate a same-spin RDM batch with fixed-width packed packets.
 /// # Arguments:
@@ -396,7 +333,7 @@ unsafe fn xw_rdmk_same_m0_prepared_simd_const<
 /// - The current CPU must support AVX2/FMA.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn xw_rdmk_same_m0_prepared_x4<T: NOCIScalar + Packed, const K: usize>(
+unsafe fn xw_rdmk_same_m0_prepared_x4<T: NOCIScalar, const K: usize>(
     w: &SameSpinView<'_, T>,
     ex: (&ExcitationSpin, &ExcitationSpin),
     fundamental: (&[T], &[T], usize),
@@ -437,7 +374,7 @@ unsafe fn xw_rdmk_same_m0_prepared_x4<T: NOCIScalar + Packed, const K: usize>(
 /// - The current CPU must support AVX-512F.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_rdmk_same_m0_prepared_x8<T: NOCIScalar + Packed, const K: usize>(
+unsafe fn xw_rdmk_same_m0_prepared_x8<T: NOCIScalar, const K: usize>(
     w: &SameSpinView<'_, T>,
     ex: (&ExcitationSpin, &ExcitationSpin),
     fundamental: (&[T], &[T], usize),
@@ -479,7 +416,7 @@ unsafe fn xw_rdmk_same_m0_prepared_x8<T: NOCIScalar + Packed, const K: usize>(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_rdmk_same_m0_prepared_x4_const<
-    T: NOCIScalar + Packed,
+    T: NOCIScalar,
     const K: usize,
     const RX: usize,
     const RW: usize,
@@ -495,7 +432,7 @@ unsafe fn xw_rdmk_same_m0_prepared_x4_const<
     out: &mut [T; 4],
 ) {
     unsafe {
-        xw_rdmk_same_m0_prepared_simd_const::<T, T::X4, 4, K, RX, RW, L, D, DD>(
+        xw_rdmk_same_m0_prepared_simd_const::<T, T::Packed4, 4, K, RX, RW, L, D, DD>(
             w,
             ex,
             fundamental,
@@ -521,7 +458,7 @@ unsafe fn xw_rdmk_same_m0_prepared_x4_const<
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_rdmk_same_m0_prepared_x8_const<
-    T: NOCIScalar + Packed,
+    T: NOCIScalar,
     const K: usize,
     const RX: usize,
     const RW: usize,
@@ -537,7 +474,7 @@ unsafe fn xw_rdmk_same_m0_prepared_x8_const<
     out: &mut [T; 8],
 ) {
     unsafe {
-        xw_rdmk_same_m0_prepared_simd_const::<T, T::X8, 8, K, RX, RW, L, D, DD>(
+        xw_rdmk_same_m0_prepared_simd_const::<T, T::Packed8, 8, K, RX, RW, L, D, DD>(
             w,
             ex,
             fundamental,

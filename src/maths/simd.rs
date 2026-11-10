@@ -15,13 +15,14 @@ use std::arch::x86_64::{
 // External crate imports.
 use num_complex::Complex64;
 
-/// Packed arithmetic used by SIMD numerical and Wick kernels.
+/// Packed arithmetic used by SIMD numerical and matrix-element kernels. Public so that
+/// `NOCIScalar` can name the packed type of each scalar type.
 /// `N` is the number of independent scalar lanes represented by one packed value.
 /// # Arguments:
 /// - None.
 /// # Returns
 /// - Implementations provide packed construction, arithmetic, loading, and storage operations.
-pub(crate) trait Simd<const N: usize>: Copy {
+pub trait Simd<const N: usize>: Copy {
     /// Scalar value stored independently in each SIMD lane.
     type Scalar: Copy;
 
@@ -188,26 +189,6 @@ pub(crate) trait Simd<const N: usize>: Copy {
     ) -> Self;
 }
 
-/// Scalar types with four- and eight-lane packed counterparts, so generic kernels can name the
-/// packed type of their scalar type.
-pub(crate) trait Packed: Sized {
-    /// Four-lane AVX2 packed type.
-    type X4: Simd<4, Scalar = Self>;
-
-    /// Eight-lane AVX-512 packed type.
-    type X8: Simd<8, Scalar = Self>;
-}
-
-impl Packed for f64 {
-    type X4 = F64x4;
-    type X8 = F64x8;
-}
-
-impl Packed for Complex64 {
-    type X4 = C64x4;
-    type X8 = C64x8;
-}
-
 /// Packet width of the packed kernels the current CPU supports.
 #[derive(Clone, Copy)]
 pub(crate) enum Lanes {
@@ -235,22 +216,22 @@ pub(crate) fn lanes() -> Option<Lanes> {
 
 /// Four packed `f64` values in one AVX2 register.
 #[derive(Clone, Copy)]
-pub(crate) struct F64x4(__m256d);
+pub struct F64x4(__m256d);
 
 /// Four packed complex values in split real/imaginary AVX2 registers.
 #[derive(Clone, Copy)]
-pub(crate) struct C64x4 {
+pub struct C64x4 {
     re: __m256d,
     im: __m256d,
 }
 
 /// Eight packed `f64` values in one AVX-512 register.
 #[derive(Clone, Copy)]
-pub(crate) struct F64x8(__m512d);
+pub struct F64x8(__m512d);
 
 /// Eight packed complex values in split real/imaginary AVX-512 registers.
 #[derive(Clone, Copy)]
-pub(crate) struct C64x8 {
+pub struct C64x8 {
     re: __m512d,
     im: __m512d,
 }

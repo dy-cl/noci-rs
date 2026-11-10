@@ -7,14 +7,6 @@
 //! packed kernel the CPU supports, groups sources into packets of one fixed-rank kernel and
 //! restores the excitation phases.
 
-// Standard library imports.
-#[cfg(target_arch = "x86_64")]
-use std::any::TypeId;
-
-// External crate imports.
-#[cfg(target_arch = "x86_64")]
-use num_complex::Complex64;
-
 // Crate-root imports.
 use crate::ExcitationSpinCache;
 use crate::NOCIScalar;
@@ -22,7 +14,7 @@ use crate::NOCIScalar;
 use crate::config::MAXEXCIT;
 use crate::determinant::ExcitedSpinState;
 #[cfg(target_arch = "x86_64")]
-use crate::maths::{Lanes, Packed, Simd, lanes};
+use crate::maths::{Lanes, Simd, lanes};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
@@ -274,11 +266,16 @@ impl<'a, const LANES: usize> Packet<'a, LANES> {
 
 /// Packed fixed-rank kernel of one factor family behind a target-feature boundary.
 #[cfg(target_arch = "x86_64")]
-type PacketKernel<T, const K: usize, const N: usize> = for<'a> unsafe fn(
+type SpinFactorPacket<T, const K: usize, const N: usize> = for<'a> unsafe fn(
     &SameSpinView<'a, T>,
     &ExcitationSpinCache,
     &[ExcitationSpinCache; N],
 ) -> [[T; N]; K];
+
+/// Selector of the packed fixed-rank kernel of one packet width, by excitation ranks and fixed side.
+#[cfg(target_arch = "x86_64")]
+type SpinFactorSelect<T, const K: usize, const N: usize> =
+    fn((usize, usize), bool) -> Option<SpinFactorPacket<T, K, N>>;
 
 /// Evaluate one row of same-spin factors for one ordered reference pair. Every output is
 /// `p_x p_w {}^{xw}\tilde S\sum_{m_1+\cdots+m_L = m}` of the family's determinant expression.
@@ -323,22 +320,18 @@ pub(crate) fn xw_spin_factor_row<F: SpinFactor<K>, T: NOCIScalar, const K: usize
         return;
     }
 
-    // Packed kernels exist for real and complex scalars with `m = 0`.
+    // Packed kernels exist for `m = 0` on CPUs with AVX2 and FMA.
     #[cfg(target_arch = "x86_64")]
-    if w.m == 0 {
-        // SAFETY: each call names the packed type that the `TypeId` check proves equal to `T`.
-        let packed = unsafe {
-            if TypeId::of::<T>() == TypeId::of::<f64>() {
-                xw_spin_factor_row_packed::<F, T, f64, K>(factor, w, &mut row, scratch)
-            } else if TypeId::of::<T>() == TypeId::of::<Complex64>() {
-                xw_spin_factor_row_packed::<F, T, Complex64, K>(factor, w, &mut row, scratch)
-            } else {
-                false
+    if w.m == 0
+        && let Some(lanes) = lanes()
+    {
+        unsafe {
+            match lanes {
+                Lanes::Four => xw_spin_factor_row_x4(factor, w, &mut row, scratch),
+                Lanes::Eight => xw_spin_factor_row_x8(factor, w, &mut row, scratch),
             }
-        };
-        if packed {
-            return;
         }
+        return;
     }
 
     // Without a packed kernel every source uses the scalar evaluator.
@@ -395,53 +388,6 @@ fn write_spin_factors<T: NOCIScalar, const K: usize>(
     }
 }
 
-/// Evaluate one row with the packed kernels of scalar type `U`, the scalar type `T` of the row.
-/// # Arguments:
-/// - `factor`: Factor family and its evaluation parameters.
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `row`: Target, sources and outputs of the row.
-/// - `scratch`: Reusable same-spin Wick workspace for scalar evaluation.
-/// # Returns
-/// - `bool`: Whether the CPU supports a packed kernel and the complete row was written.
-/// # Safety
-/// - `T` and `U` must be the same type.
-#[cfg(target_arch = "x86_64")]
-unsafe fn xw_spin_factor_row_packed<
-    F: SpinFactor<K>,
-    T: NOCIScalar,
-    U: NOCIScalar + Packed,
-    const K: usize,
->(
-    factor: &F,
-    w: &SameSpinView<'_, T>,
-    row: &mut SpinFactorRow<'_, T, K>,
-    scratch: &mut WickScratch<T>,
-) -> bool {
-    let Some(lanes) = lanes() else {
-        return false;
-    };
-
-    // SAFETY: `T` and `U` are the same type, so every reference is reinterpreted as itself.
-    let w = unsafe { &*std::ptr::from_ref(w).cast::<SameSpinView<'_, U>>() };
-    let scratch = unsafe { &mut *std::ptr::from_mut(scratch).cast::<WickScratch<U>>() };
-    let mut row = SpinFactorRow {
-        target: row.target,
-        sources: row.sources,
-        target_left: row.target_left,
-        out: row.out.each_mut().map(|out| unsafe {
-            std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<U>(), out.len())
-        }),
-    };
-
-    unsafe {
-        match lanes {
-            Lanes::Four => xw_spin_factor_row_x4::<F, U, K>(factor, w, &mut row, scratch),
-            Lanes::Eight => xw_spin_factor_row_x8::<F, U, K>(factor, w, &mut row, scratch),
-        }
-    }
-    true
-}
-
 /// Evaluate one row with four-lane AVX2/FMA packets.
 /// # Arguments:
 /// - `factor`: Factor family and its evaluation parameters.
@@ -454,7 +400,7 @@ unsafe fn xw_spin_factor_row_packed<
 /// - The current CPU must support AVX2 and FMA.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn xw_spin_factor_row_x4<F: SpinFactor<K>, T: NOCIScalar + Packed, const K: usize>(
+unsafe fn xw_spin_factor_row_x4<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
     factor: &F,
     w: &SameSpinView<'_, T>,
     row: &mut SpinFactorRow<'_, T, K>,
@@ -475,7 +421,7 @@ unsafe fn xw_spin_factor_row_x4<F: SpinFactor<K>, T: NOCIScalar + Packed, const 
 /// - The current CPU must support AVX-512F.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_spin_factor_row_x8<F: SpinFactor<K>, T: NOCIScalar + Packed, const K: usize>(
+unsafe fn xw_spin_factor_row_x8<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
     factor: &F,
     w: &SameSpinView<'_, T>,
     row: &mut SpinFactorRow<'_, T, K>,
@@ -502,7 +448,7 @@ fn xw_spin_factor_row_lanes<F: SpinFactor<K>, T: NOCIScalar, const K: usize, con
     w: &SameSpinView<'_, T>,
     row: &mut SpinFactorRow<'_, T, K>,
     scratch: &mut WickScratch<T>,
-    select: fn((usize, usize), bool) -> Option<PacketKernel<T, K, N>>,
+    select: SpinFactorSelect<T, K, N>,
 ) {
     let target = row.target.state.excitation_cache;
     let target_rank = usize::from(target.rank);
@@ -565,22 +511,26 @@ fn xw_spin_factor_row_lanes<F: SpinFactor<K>, T: NOCIScalar, const K: usize, con
 /// - `ranks`: Bra and ket excitation ranks.
 /// - `x_fixed`: Whether the shared excitation belongs to the bra.
 /// # Returns
-/// - `Option<PacketKernel<T, K, 4>>`: Kernel of the ranks, or `None` outside the generated table.
+/// - `Option<SpinFactorPacket<T, K, 4>>`: Kernel of the ranks, or `None` outside the generated table.
 #[cfg(target_arch = "x86_64")]
-fn select_packet_x4<F: SpinFactor<K>, T: NOCIScalar + Packed, const K: usize>(
+fn select_packet_x4<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
     ranks: (usize, usize),
     x_fixed: bool,
-) -> Option<PacketKernel<T, K, 4>> {
+) -> Option<SpinFactorPacket<T, K, 4>> {
     if x_fixed {
         dispatch_spin_ranks!(
             ranks,
-            |RX, RW, L, D| Some(packet_x4::<F, T, K, RX, RW, L, D, true> as PacketKernel<T, K, 4>),
+            |RX, RW, L, D| Some(
+                packet_x4::<F, T, K, RX, RW, L, D, true> as SpinFactorPacket<T, K, 4>
+            ),
             None,
         )
     } else {
         dispatch_spin_ranks!(
             ranks,
-            |RX, RW, L, D| Some(packet_x4::<F, T, K, RX, RW, L, D, false> as PacketKernel<T, K, 4>),
+            |RX, RW, L, D| Some(
+                packet_x4::<F, T, K, RX, RW, L, D, false> as SpinFactorPacket<T, K, 4>
+            ),
             None,
         )
     }
@@ -591,22 +541,26 @@ fn select_packet_x4<F: SpinFactor<K>, T: NOCIScalar + Packed, const K: usize>(
 /// - `ranks`: Bra and ket excitation ranks.
 /// - `x_fixed`: Whether the shared excitation belongs to the bra.
 /// # Returns
-/// - `Option<PacketKernel<T, K, 8>>`: Kernel of the ranks, or `None` outside the generated table.
+/// - `Option<SpinFactorPacket<T, K, 8>>`: Kernel of the ranks, or `None` outside the generated table.
 #[cfg(target_arch = "x86_64")]
-fn select_packet_x8<F: SpinFactor<K>, T: NOCIScalar + Packed, const K: usize>(
+fn select_packet_x8<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
     ranks: (usize, usize),
     x_fixed: bool,
-) -> Option<PacketKernel<T, K, 8>> {
+) -> Option<SpinFactorPacket<T, K, 8>> {
     if x_fixed {
         dispatch_spin_ranks!(
             ranks,
-            |RX, RW, L, D| Some(packet_x8::<F, T, K, RX, RW, L, D, true> as PacketKernel<T, K, 8>),
+            |RX, RW, L, D| Some(
+                packet_x8::<F, T, K, RX, RW, L, D, true> as SpinFactorPacket<T, K, 8>
+            ),
             None,
         )
     } else {
         dispatch_spin_ranks!(
             ranks,
-            |RX, RW, L, D| Some(packet_x8::<F, T, K, RX, RW, L, D, false> as PacketKernel<T, K, 8>),
+            |RX, RW, L, D| Some(
+                packet_x8::<F, T, K, RX, RW, L, D, false> as SpinFactorPacket<T, K, 8>
+            ),
             None,
         )
     }
@@ -625,7 +579,7 @@ fn select_packet_x8<F: SpinFactor<K>, T: NOCIScalar + Packed, const K: usize>(
 #[target_feature(enable = "avx2,fma")]
 unsafe fn packet_x4<
     F: SpinFactor<K>,
-    T: NOCIScalar + Packed,
+    T: NOCIScalar,
     const K: usize,
     const RX: usize,
     const RW: usize,
@@ -638,7 +592,7 @@ unsafe fn packet_x4<
     varying: &[ExcitationSpinCache; 4],
 ) -> [[T; 4]; K] {
     let packet = Packet::new(w, fixed, varying);
-    unsafe { F::packed::<T, T::X4, 4, RX, RW, L, D, XFIX>(w, &packet) }
+    unsafe { F::packed::<T, T::Packed4, 4, RX, RW, L, D, XFIX>(w, &packet) }
 }
 
 /// Evaluate one eight-lane packet of a factor family with AVX-512F.
@@ -654,7 +608,7 @@ unsafe fn packet_x4<
 #[target_feature(enable = "avx512f")]
 unsafe fn packet_x8<
     F: SpinFactor<K>,
-    T: NOCIScalar + Packed,
+    T: NOCIScalar,
     const K: usize,
     const RX: usize,
     const RW: usize,
@@ -667,5 +621,5 @@ unsafe fn packet_x8<
     varying: &[ExcitationSpinCache; 8],
 ) -> [[T; 8]; K] {
     let packet = Packet::new(w, fixed, varying);
-    unsafe { F::packed::<T, T::X8, 8, RX, RW, L, D, XFIX>(w, &packet) }
+    unsafe { F::packed::<T, T::Packed8, 8, RX, RW, L, D, XFIX>(w, &packet) }
 }
