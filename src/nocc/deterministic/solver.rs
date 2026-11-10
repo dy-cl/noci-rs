@@ -33,7 +33,7 @@ use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::input::{NOCCMCOptions, NOCCNewton, NOCCPreconditioner};
+use crate::input::{GNOCCMCOptions, NOCCNewton, NOCCPreconditioner};
 use crate::maths::gmres::{GMRESPrint, gmres};
 use crate::maths::parallel_matvec;
 use crate::nocc::equations::{
@@ -96,7 +96,7 @@ pub(crate) fn solve_amplitudes(
     evaluator: &TermEvaluator,
     fois: &FoisBasis,
     start: (f64, Option<&Array1<Complex64>>),
-    options: &NOCCMCOptions,
+    options: &GNOCCMCOptions,
 ) -> AmplitudeSolution {
     if options.holomorphic {
         iterate_amplitudes::<Complex64>(
@@ -145,7 +145,7 @@ fn iterate_amplitudes<T: NOCIScalar + Into<Complex64>>(
     evaluator: &TermEvaluator,
     fois: &FoisBasis,
     start: (f64, Option<&Array1<Complex64>>),
-    options: &NOCCMCOptions,
+    options: &GNOCCMCOptions,
 ) -> AmplitudeSolution {
     let (e0, guess) = start;
     let y = &fois.y;
@@ -376,7 +376,7 @@ fn newton_step<T: NOCIScalar + Into<Complex64>>(
     rfois: &Array1<T>,
     jacobian: &impl Fn(&Array1<T>) -> Array1<T>,
     precondition: &impl Fn(&Array1<T>) -> Array1<T>,
-    options: &NOCCMCOptions,
+    options: &GNOCCMCOptions,
 ) -> (Array1<T>, usize, f64) {
     // GMRES measures the residual RMS, so the relative tolerance is scaled by `\sqrt{n}`.
     let rms = (rfois.len() as f64).sqrt();

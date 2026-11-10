@@ -32,7 +32,7 @@ use crate::nocc::{
 /// # Returns:
 /// - `Option<AmplitudeGuess>`: Converged amplitudes for the next geometry, on the root rank.
 /// # Panics
-/// - Panics if the NOCCMC options are absent.
+/// - Panics if the GNOCCMC options are absent.
 pub(crate) fn run_gnocc(
     post: &PostSCFData<'_, f64>,
     input: &Input,
@@ -49,7 +49,7 @@ pub(crate) fn run_gnocc(
         let data =
             NOCIData::new(post.ao, post.space, input, post.tol, view).withmocache(post.mocache);
 
-        let tol = input.noccmc.as_ref().map_or(1e-6, |n| n.active_space_tol);
+        let tol = input.gnoccmc.as_ref().map_or(1e-6, |n| n.active_space_tol);
         noci_natural_orbitals(&data, &coeffs, tol, tol)
     };
     wicks.take();
@@ -95,7 +95,10 @@ pub(crate) fn run_gnocc(
     let lambdas = cumulants(&gamma1, &gamma2, &gamma3, &gamma4, &no.active);
 
     // Orbital spaces, excitation manifold, normal-ordered reference and FOIS.
-    let options = input.noccmc.as_ref().expect("NOCCMC options are required");
+    let options = input
+        .gnoccmc
+        .as_ref()
+        .expect("GNOCCMC options are required");
     let tol = options.active_space_tol;
     let spaces = build_spaces(gamma1.n, &no.active, &gamma1, tol, tol);
     let excitations = build_excitations(&spaces);

@@ -269,8 +269,8 @@ pub fn print_input(input: &Input) {
     println!();
 
     // Print the NOCC Monte Carlo enablement state.
-    println!("NOCCMC");
-    match &input.noccmc {
+    println!("GNOCCMC");
+    match &input.gnoccmc {
         Some(n) => {
             println!("ENABLED: true");
             println!("ACTIVE_SPACE_TOL: {:e}", n.active_space_tol);
@@ -304,15 +304,27 @@ pub fn print_input(input: &Input) {
                 None => println!("EXPANSION_RANK: all"),
             }
             println!("DT: {}", j.dt);
-            println!("MAX_STEPS: {}", j.max_steps);
-            println!("RESIDUAL_TOL: {:e}", j.residual_tol);
-            println!("E_TOL: {:e}", j.e_tol);
-            println!("DYNAMIC_SHIFT: {}", j.dynamic_shift);
-            println!("DYNAMIC_SHIFT_ALPHA: {}", j.dynamic_shift_alpha);
-            println!("DIAGNOSTICS: {}", j.diagnostics);
-            println!("NULL_EPS: {:e}", j.null_eps);
-            println!("NULL_N: {}", j.null_n);
-            println!("MEMORY_EFFECTIVE: {}", j.memory_effective);
+            match &j.det {
+                Some(d) => {
+                    println!("DET:");
+                    println!("  MAX_STEPS: {}", d.max_steps);
+                    println!("  RESIDUAL_TOL: {:e}", d.residual_tol);
+                    println!("  E_TOL: {:e}", d.e_tol);
+                    println!("  DYNAMIC_SHIFT: {}", d.dynamic_shift);
+                    println!("  DYNAMIC_SHIFT_ALPHA: {}", d.dynamic_shift_alpha);
+                    println!("  DIAGNOSTICS: {}", d.diagnostics);
+                    println!("  NULL_EPS: {:e}", d.null_eps);
+                    println!("  NULL_N: {}", d.null_n);
+                }
+                None => println!("DET: none"),
+            }
+            match &j.qmc {
+                Some(_) => {
+                    println!("QMC:");
+                    println!("  MEMORY_EFFECTIVE: {}", j.memory_effective);
+                }
+                None => println!("QMC: none"),
+            }
         }
         None => {
             println!("ENABLED: false");

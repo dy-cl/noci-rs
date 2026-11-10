@@ -14,16 +14,27 @@ pub struct JMNOCCMCOptions {
     pub expansion_rank: Option<usize>,
     /// Imaginary-time step of the deterministic and stochastic propagations.
     pub dt: f64,
+    /// Deterministic propagation options. When present the populations are propagated exactly.
+    pub det: Option<JMDeterministicOptions>,
+    /// Stochastic propagation options. When present the populations are sampled by coupled
+    /// cluster Monte Carlo with time step `dt`.
+    pub qmc: Option<QMCOptions>,
+    /// Memory, in report blocks, of the running effective overlap and Hamiltonian from which
+    /// stochastic propagation takes `G`; each block is forgotten by `\lambda = 1 - 1/\text{memory}`.
+    pub memory_effective: f64,
+}
+
+pub struct JMDeterministicOptions {
     /// Maximum number of deterministic propagation steps.
     pub max_steps: usize,
-    /// Deterministic convergence threshold on the largest residual `\max |R_{x\mu}|`.
+    /// Convergence threshold on the largest residual `\max |R_{x\mu}|`.
     pub residual_tol: f64,
-    /// Deterministic convergence threshold on the change in projected energy per step.
+    /// Convergence threshold on the change in projected energy per step.
     pub e_tol: f64,
-    /// Whether the deterministic shift follows the population,
+    /// Whether the shift follows the population,
     /// `E_s \leftarrow E_s - (\alpha/\Delta\tau)\Delta\ln N_w`.
     pub dynamic_shift: bool,
-    /// Damping `\alpha` of the deterministic dynamic shift.
+    /// Damping `\alpha` of the dynamic shift.
     pub dynamic_shift_alpha: f64,
     /// Whether to diagnose the Jacobian at the initial and final amplitudes and write the history
     /// of the amplitude error along its right singular vectors. Builds the overlap between every
@@ -34,23 +45,30 @@ pub struct JMNOCCMCOptions {
     pub null_eps: f64,
     /// Number of lowest Jacobian singular values printed with their external fractions.
     pub null_n: usize,
-    /// Stochastic propagation options. When present the populations are sampled by coupled
-    /// cluster Monte Carlo with time step `dt` instead of being propagated deterministically.
-    pub qmc: Option<QMCOptions>,
-    /// Memory, in report blocks, of the running effective overlap and Hamiltonian from which
-    /// stochastic propagation takes `G`; each block is forgotten by `\lambda = 1 - 1/\text{memory}`.
-    pub memory_effective: f64,
 }
 
 impl Default for JMNOCCMCOptions {
     /// Return default JM-NOCCMC options.
     /// # Returns:
-    /// - `Self`: JM-NOCCMC options with CCSD clusters.
+    /// - `Self`: JM-NOCCMC options with CCSD clusters and no propagation selected.
     fn default() -> Self {
         Self {
             cluster_rank: 2,
             expansion_rank: None,
             dt: 0.1,
+            det: None,
+            qmc: None,
+            memory_effective: 100.0,
+        }
+    }
+}
+
+impl Default for JMDeterministicOptions {
+    /// Return default deterministic JM-NOCCMC options.
+    /// # Returns:
+    /// - `Self`: Deterministic JM-NOCCMC options with a dynamic shift and no diagnostics.
+    fn default() -> Self {
+        Self {
             max_steps: 10000,
             residual_tol: 1e-9,
             e_tol: 1e-10,
@@ -59,8 +77,6 @@ impl Default for JMNOCCMCOptions {
             diagnostics: false,
             null_eps: 1e-8,
             null_n: 10,
-            qmc: None,
-            memory_effective: 100.0,
         }
     }
 }

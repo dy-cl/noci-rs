@@ -3,8 +3,8 @@
 //!
 //! The input submodules define the user options associated with molecular geometry, SCF
 //! convergence, reference-state generation, excitation spaces, deterministic and stochastic
-//! propagation, NOCI-PT2 and SNOCI, experimental NOCCMC and JM-NOCCMC, nonorthogonal Wick intermediates,
-//! output and restart handling.
+//! propagation, NOCI-PT2 and SNOCI, experimental GNOCCMC and JM-NOCCMC, nonorthogonal Wick
+//! intermediates, output and restart handling.
 //!
 //! [`Input`] contains the complete calculation specification after parsing. Propagation
 //! options shared by deterministic and stochastic NOCIQMC calculations are represented by
@@ -36,9 +36,9 @@ mod write;
 pub use det::DeterministicOptions;
 pub use excit::ExcitationOptions;
 pub use gmres::GMRESOptions;
-pub use jmnocc::JMNOCCMCOptions;
+pub use jmnocc::{JMDeterministicOptions, JMNOCCMCOptions};
 pub use mol::MolOptions;
-pub use nocc::{NOCCMCOptions, NOCCNewton, NOCCPreconditioner};
+pub use nocc::{GNOCCMCOptions, NOCCNewton, NOCCPreconditioner};
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, FriOptions, InitialShift, QMCOptions};
 pub use reshf::ResHFOptions;
@@ -66,8 +66,8 @@ pub struct Input {
     pub qmc: Option<QMCOptions>,
     /// SNOCI adaptive-space options.
     pub snoci: Option<SNOCIOptions>,
-    /// NOCCMC options.
-    pub noccmc: Option<NOCCMCOptions>,
+    /// GNOCCMC options.
+    pub gnoccmc: Option<GNOCCMCOptions>,
     /// Deterministic JM-NOCCMC options.
     pub jmnoccmc: Option<JMNOCCMCOptions>,
     /// Excitation generation options.
@@ -123,7 +123,7 @@ impl Default for Input {
             det: None,
             qmc: None,
             snoci: None,
-            noccmc: None,
+            gnoccmc: None,
             jmnoccmc: None,
             excit: ExcitationOptions::default(),
             prop: None,

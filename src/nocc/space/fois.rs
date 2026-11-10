@@ -5,7 +5,7 @@
 use ndarray::Array2;
 
 // Crate-root imports.
-use crate::input::NOCCMCOptions;
+use crate::input::GNOCCMCOptions;
 use crate::maths::linalg::{block_loewdin_x, symmetric_blocks};
 use crate::nocc::equations::metric_matrix;
 use crate::nocc::setup::ReferenceState;
@@ -40,7 +40,7 @@ pub(crate) fn build_fois_basis(
     spaces: &Spaces,
     excitations: &[Excitation],
     evaluator: &TermEvaluator,
-    options: &NOCCMCOptions,
+    options: &GNOCCMCOptions,
 ) -> FoisBasis {
     // Raw FOIS metric `S_{\mu\nu} = \langle E_\mu^\dagger E_\nu\rangle` from its class-pair blocks.
     let s = metric_matrix(reference, spaces, excitations, evaluator);

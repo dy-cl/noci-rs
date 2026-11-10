@@ -73,7 +73,7 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::basis::apply_excitation;
 use crate::determinant::{NOCIIndex, NOCISpace};
-use crate::input::JMNOCCMCOptions;
+use crate::input::{JMDeterministicOptions, JMNOCCMCOptions};
 use crate::maths::parallel_matvec;
 use crate::nocc::{Effective, jm_energies, reference_determinants};
 
@@ -715,7 +715,7 @@ impl JMEquations {
     /// # Arguments:
     /// - `self`: Propagation data.
     /// - `t`: Amplitudes of every reference.
-    /// - `options`: JM-NOCCMC options.
+    /// - `det`: Deterministic JM-NOCCMC options.
     /// - `label`: Where in the propagation the diagnostics are taken.
     /// # Returns:
     /// - `(Array1<f64>, Array2<f64>)`: Singular values in descending order and the right
@@ -723,7 +723,7 @@ impl JMEquations {
     fn null_diagnostics(
         &self,
         t: &[Array1<f64>],
-        options: &JMNOCCMCOptions,
+        det: &JMDeterministicOptions,
         label: &str,
     ) -> (Array1<f64>, Array2<f64>) {
         // `|\Phi_x\rangle`, `S^e`, `H^e`, `G = (S^e)^{-1}H^e` and
@@ -750,7 +750,7 @@ impl JMEquations {
 
         // Lowest singular values with the external fractions of their right singular vectors.
         let n = sigma.len();
-        let lowest = (0..options.null_n.min(n))
+        let lowest = (0..det.null_n.min(n))
             .map(|k| {
                 let i = n - 1 - k;
                 (
@@ -761,7 +761,7 @@ impl JMEquations {
             .collect::<Vec<_>>();
 
         print_jm_stability(label, &w, sse[0] / sse[sse.len() - 1]);
-        print_jm_null_space(options.null_eps, &sigma, &lowest);
+        print_jm_null_space(det.null_eps, &sigma, &lowest);
         (sigma, vt)
     }
 }
@@ -795,7 +795,8 @@ pub struct JMPopulations {
 /// initial amplitudes is diagnosed and the amplitudes of every step are kept.
 /// # Arguments:
 /// - `jm`: Propagation data.
-/// - `options`: JM-NOCCMC options.
+/// - `dt`: Imaginary-time step.
+/// - `det`: Deterministic JM-NOCCMC options.
 /// - `reference`: Reference NOCI coefficients and energy, giving the initial reference
 ///   populations, the trial and the initial shift.
 /// - `history`: Storage for the flattened amplitudes of every step when `diagnostics` is set.
@@ -804,13 +805,13 @@ pub struct JMPopulations {
 ///   not converge.
 pub fn propagate_populations(
     jm: &JMEquations,
-    options: &JMNOCCMCOptions,
+    dt: f64,
+    det: &JMDeterministicOptions,
     reference: (&[f64], f64),
     history: &mut Vec<Array1<f64>>,
 ) -> Option<JMPopulations> {
     let (c0, mut shift) = reference;
     let m = jm.blocks.len();
-    let dt = options.dt;
 
     // Trial and initial reference populations from the normalised NOCI coefficients.
     let norm = c0.iter().map(|c| c.abs()).sum::<f64>();
@@ -830,7 +831,7 @@ pub fn propagate_populations(
     let mut logpop = 0.0_f64;
     let mut previous = f64::NAN;
 
-    for iter in 0..options.max_steps {
+    for iter in 0..det.max_steps {
         let t = n
             .iter()
             .zip(&nref)
@@ -854,9 +855,9 @@ pub fn propagate_populations(
             .iter()
             .flatten()
             .fold(0.0_f64, |m, r| m.max(r.abs()));
-        if options.diagnostics {
+        if det.diagnostics {
             if iter == 0 {
-                jm.null_diagnostics(&t, options, "initial");
+                jm.null_diagnostics(&t, det, "initial");
             }
             history.push(t.iter().flatten().copied().collect());
         }
@@ -882,7 +883,7 @@ pub fn propagate_populations(
             rmax,
         );
         previous = e;
-        if rmax < options.residual_tol && de < options.e_tol {
+        if rmax < det.residual_tol && de < det.e_tol {
             println!("JM-NOCCMC converged after {} steps.", iter);
             let nref = nref / nrefabs;
             return Some(JMPopulations { t, nref });
@@ -912,16 +913,13 @@ pub fn propagate_populations(
         for nx in n.iter_mut() {
             *nx /= total;
         }
-        if options.dynamic_shift {
-            shift -= options.dynamic_shift_alpha / dt * total.ln();
+        if det.dynamic_shift {
+            shift -= det.dynamic_shift_alpha / dt * total.ln();
         }
         logpop += total.ln();
     }
 
-    println!(
-        "JM-NOCCMC did not converge after {} steps.",
-        options.max_steps
-    );
+    println!("JM-NOCCMC did not converge after {} steps.", det.max_steps);
     None
 }
 
@@ -934,7 +932,7 @@ pub fn propagate_populations(
 /// - `jm`: Propagation data.
 /// - `populations`: Final populations.
 /// - `history`: Flattened amplitudes of every step.
-/// - `options`: JM-NOCCMC options.
+/// - `det`: Deterministic JM-NOCCMC options.
 /// - `dir`: Directory receiving the `jacobian_history` file.
 /// # Returns:
 /// - `f64`: Ground-state energy, the lowest real part of the eigenvalues of `G`.
@@ -942,7 +940,7 @@ pub fn report_converged(
     jm: &JMEquations,
     populations: &JMPopulations,
     history: &[Array1<f64>],
-    options: &JMNOCCMCOptions,
+    det: &JMDeterministicOptions,
     dir: &str,
 ) -> f64 {
     let JMPopulations { t, nref } = populations;
@@ -951,13 +949,13 @@ pub fn report_converged(
     let norms = t.iter().map(|tx| tx.dot(tx).sqrt()).collect::<Vec<_>>();
     print_jm_energies(&energies, &effective.se, nref, &norms);
 
-    if options.diagnostics {
-        let (sigma, vt) = jm.null_diagnostics(t, options, "final");
+    if det.diagnostics {
+        let (sigma, vt) = jm.null_diagnostics(t, det, "final");
         let tfinal = t.iter().flatten().copied().collect::<Array1<f64>>();
         create_dir_all(dir).unwrap();
         let path = format!("{}/{}", dir, "jacobian_history");
         println!("Writing Jacobian history to {}...", path);
-        write_jm_null_history(&path, history, &tfinal, (&sigma, &vt), options.null_eps);
+        write_jm_null_history(&path, history, &tfinal, (&sigma, &vt), det.null_eps);
     }
 
     energies[0].re
