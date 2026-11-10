@@ -24,7 +24,7 @@ pub(in crate::noci::stochastic) fn print_header(
 ) {
     let populations = match propagator {
         Propagator::SApply | Propagator::BApply => ["NRange", "NRangeRef", "NSample", "NSampleOcc"],
-        _ => ["NWalk", "NRef", "-", "-"],
+        Propagator::Unshifted => ["NWalk", "NRef", "-", "-"],
     };
     print_table_header(irank, populations);
 }
@@ -51,7 +51,7 @@ fn print_stats_row(
     let shift = if state.reached { shift } else { 0.0 };
     let sampled = match propagator {
         Propagator::SApply | Propagator::BApply => Some((stats.nsampled, stats.nsampledo)),
-        _ => None,
+        Propagator::Unshifted => None,
     };
     print_table_row(
         irank,

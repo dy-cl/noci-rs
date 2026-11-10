@@ -63,7 +63,7 @@ pub(in crate::noci::stochastic) fn population_representation(
 ) -> PopulationRepresentation {
     match propagator {
         Propagator::SApply | Propagator::BApply => PopulationRepresentation::Range,
-        _ => PopulationRepresentation::Coefficient,
+        Propagator::Unshifted => PopulationRepresentation::Coefficient,
     }
 }
 

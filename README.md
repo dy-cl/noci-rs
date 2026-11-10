@@ -74,7 +74,7 @@ Shoulder population $N_w$ against hydrogen chain length $N_H$ for NOCISD(3)QMC a
 
 <div align="center">
 
-Typical evolution of the projected energy $E_{\mathrm{Proj}}(\tau)$ and shift $E_s^S(\tau)$ for the H<sub>20</sub> linear chain at 1.5 Å in the STO-3G basis using the `b-apply` propagator. The same trajectories can also be seen for `s-apply`.
+Typical evolution of the projected energy $E_{\mathrm{Proj}}(\tau)$ and shift $E_s(\tau)$ for the H<sub>20</sub> linear chain at 1.5 Å in the STO-3G basis using the `b-apply` propagator. The same trajectories can also be seen for `s-apply`.
 
 </div>
 
@@ -258,14 +258,14 @@ RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs h2.lua > output.out
 
 - Deterministic imaginary-time propagation with an optional dynamic shift.
 - Stochastic propagation with real-valued population amplitudes.
-- SApply and BApply propagators for nonorthogonal and overcomplete spaces, using range populations.
+- SApply and BApply propagators for nonorthogonal and overcomplete spaces, using range populations, and an unshifted propagator on sparse coefficients for full-rank spaces.
 - Pivotal Fast Randomized Iteration compression of persistent populations and sampled updates [7].
 - Range-population shift control with optional target restoring and BApply momentum.
 - Uniform and overlap-weighted excitation generators; exact heat-bath sampling where supported [6]; precomputed heat-bath (PCHB) generation for BApply [6, 25].
 - Precomputed nonorthogonal Wick intermediates, held in memory or a disk-backed cache, for on-demand matrix elements [5, 12].
 - Deterministic propagation also supports holomorphic SCF states; stochastic propagation currently supports real SCF states only.
 
-The SApply and BApply propagators store the overlap-transformed population $N_w=S_{wx}c_x$ and begin from $N_w(0)=S_{wx}c_x(0)$. A sparse sample $\widetilde N_y$ supplies each stochastic update.
+The SApply and BApply propagators store the range population $N_w=S_{wx}c_x$ and begin from $N_w(0)=S_{wx}c_x(0)$. A sparse sample $\widetilde N_y$ supplies each stochastic update.
 
 For SApply, the sampled residual and persistent update are
 
@@ -284,6 +284,8 @@ N_w' = N_w+B_{pw}^*\chi_p.
 $$
 
 Both updates keep $N_w$ in $\text{range}(S_{wx})$, avoiding population in the overlap null space. SApply uses the NOCI basis directly and supports overlap-weighted generation, but its outer $S_{wx}$ action slows small range directions in an ill-conditioned basis. BApply avoids that extra overlap action by sampling an auxiliary NOCI basis.
+
+The unshifted propagator samples the same residual on the coefficients themselves, $c_x' = c_x-\Delta\tau[H_{xy}-E_{\mathrm s}S_{xy}]c_y$, and never applies $S_{wx}$ exactly, so its populations stay sparse. The shift cannot control population in the overlap null space, so it is valid only when the overlap of the determinant space has full rank.
 
 ### NOCC and NOCCMC
 
@@ -492,13 +494,7 @@ prop = {
 }
 ```
 
-The range propagators are `s-apply` (deterministic or stochastic) and `b-apply` (stochastic only). Legacy coefficient-population propagators remain available for reproducing older calculations [17]:
-
-- `unshifted`
-- `shifted`
-- `doubly-shifted`
-- `difference-doubly-shifted-u1`
-- `difference-doubly-shifted-u2`
+The propagators are `s-apply`, `b-apply` and `unshifted`, each deterministic or stochastic [17]. `unshifted` requires a full-rank overlap; the range propagators also handle overcomplete spaces.
 
 ### Deterministic Propagation
 
@@ -523,7 +519,7 @@ These options control the maximum number of propagation steps, convergence thres
 
 ### Stochastic Propagation
 
-The `qmc` table enables stochastic NOCIQMC. SApply and BApply store real-valued range populations and support pivotal FRI compression [7]. Their equations are given in the [NOCIQMC methods section](#nociqmc). BApply requires auxiliary factor tables and supports uniform or PCHB generation. Legacy propagators use coefficient populations.
+The `qmc` table enables stochastic NOCIQMC. SApply and BApply store real-valued range populations and support pivotal FRI compression [7]. Their equations are given in the [NOCIQMC methods section](#nociqmc). BApply requires auxiliary factor tables and supports uniform or PCHB generation. The unshifted propagator stores sparse coefficient populations.
 
 `n_projected` sets projected-energy trial dimension. Enlarged trials select residual-important
 determinants and rediagonalise the projected state. Trial overlap `EProjDen/NRange` is a useful
@@ -595,8 +591,8 @@ sizes. Pivotal FRI preserves conditional expectation; variance reduction is not 
 
 `sapply_factor_tables` and `bapply_factor_tables` select factor-table storage. Range output columns
 are `NRange`, `NRangeRef`, `NSample`, and `NSampleOcc`. SApply/BApply restarts are compatible through
-shared range representation. Legacy propagators remain for reproducibility; coefficient population
-can accumulate meaningless $\text{null}(S_{wx})$ population in overcomplete spaces.
+shared range representation. Unshifted coefficient populations grow without control in
+$\text{null}(S_{wx})$, so use it only for full-rank spaces.
 
 ### Selected NOCI and NOCI-PT2
 

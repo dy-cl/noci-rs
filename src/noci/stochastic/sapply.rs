@@ -33,7 +33,7 @@ use super::report::{check_stop, print_header, print_initial_row, print_row, writ
 use super::shift::update_shift_tangent;
 use super::state::{
     NOCIMPIScratch, NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation,
-    OverlapDerivativeSums, QMCRunInfo, ShiftSpec, ShiftTangent, TangentWorker,
+    OverlapDerivativeSums, QMCRunInfo, ShiftTangent, TangentWorker,
 };
 
 /// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
@@ -68,7 +68,7 @@ fn apply_population_changes_local<I>(
     );
 }
 
-/// Apply the global overlap-transformed population change.
+/// Apply the overlap to the global range-population change, `N \leftarrow N + S\Delta`.
 /// Each rank initially owns a subset of the accumulated changes
 /// `\Delta_\Omega`. The changes are gathered across MPI ranks and each
 /// rank updates its locally owned persistent populations according to
@@ -84,7 +84,7 @@ fn apply_population_changes_local<I>(
 /// - `mpi`: MPI communicator and reusable MPI scratch storage.
 /// - `scratch`: `Reusable overlap allocation storage for grouped S\Delta application.`
 /// # Returns
-/// - `()`: Applies the global overlap-transformed population change.
+/// - `()`: Applies the overlap to the global range-population change.
 pub(in crate::noci::stochastic) fn apply_overlap_population_changes(
     changes: (&mut [f64], &[NOCIPopulationUpdate]),
     data: &NOCIData<'_, f64>,
@@ -402,7 +402,7 @@ pub fn qmc_step(
                 (iter, &state.mc.sampled),
                 data,
                 &run,
-                ShiftSpec::s_apply(*es),
+                *es,
                 (
                     Some(&overlap_factors),
                     overlap_generator.as_ref(),

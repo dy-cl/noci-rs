@@ -5,26 +5,9 @@ use std::str::FromStr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Propagator {
-    /// Unshifted propagator
-    /// `U^{\mathrm{U}}_{wx} = \delta_{wx} - \Delta\tau[H_{wx} - E_s^S S_{wx}].`
+    /// Unshifted propagator on the sparse coefficient vector `c`:
+    /// `U_{wx} = \delta_{wx} - \Delta\tau[H_{wx} - E_s S_{wx}]`, valid only when `S` has full rank.
     Unshifted,
-    /// Shifted propagator
-    /// `U^{\mathrm{S}}_{wx} = [1 + \Delta\tau E_s^S]\delta_{wx}`
-    /// `- \Delta\tau[H_{wx} - E_s^S S_{wx}].`
-    Shifted,
-    /// Doubly-shifted propagator
-    /// `U^{\mathrm{DS}}_{wx} = [1 + \Delta\tau E_s]\delta_{wx}`
-    /// `- \Delta\tau[H_{wx} - E_s^S S_{wx}].`
-    DoublyShifted,
-    /// Difference doubly-shifted propagator using
-    /// `\bar{E}_s = \frac{1}{2}[E_s + E_s^S]:`
-    /// `U^{\mathrm{DDS},1}_{wx} = [1 + \Delta\tau(E_s - E_s^S)]\delta_{wx}`
-    /// `- \Delta\tau[H_{wx} - \bar{E}_s S_{wx}].`
-    DifferenceDoublyShiftedU1,
-    /// Difference doubly-shifted propagator
-    /// `U^{\mathrm{DDS},2}_{wx} = [1 + \Delta\tau(E_s - E_s^S)]\delta_{wx}`
-    /// `- \Delta\tau[H_{wx} - E_s^S S_{wx}].`
-    DifferenceDoublyShiftedU2,
     /// S-apply propagator with persistent range population `N = Sc`:
     /// `\Delta \simeq -dt(H-E_sS)N`, followed by `N' = N + S\Delta`.
     SApply,
@@ -42,10 +25,6 @@ impl Propagator {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Unshifted => "unshifted",
-            Self::Shifted => "shifted",
-            Self::DoublyShifted => "doubly-shifted",
-            Self::DifferenceDoublyShiftedU1 => "difference-doubly-shifted-u1",
-            Self::DifferenceDoublyShiftedU2 => "difference-doubly-shifted-u2",
             Self::SApply => "s-apply",
             Self::BApply => "b-apply",
         }
@@ -65,10 +44,6 @@ impl FromStr for Propagator {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "unshifted" => Ok(Self::Unshifted),
-            "shifted" => Ok(Self::Shifted),
-            "doubly-shifted" => Ok(Self::DoublyShifted),
-            "difference-doubly-shifted-u1" => Ok(Self::DifferenceDoublyShiftedU1),
-            "difference-doubly-shifted-u2" => Ok(Self::DifferenceDoublyShiftedU2),
             "s-apply" => Ok(Self::SApply),
             "b-apply" => Ok(Self::BApply),
             _ => Err(format!("invalid propagator: {s}")),

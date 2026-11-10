@@ -13,7 +13,7 @@ use crate::qmc::update_shift as qmc_update_shift;
 // Parent/sibling imports.
 use super::state::{PopulationStats, PropagationState, QMCRunInfo};
 
-/// Update the ordinary-walker population-control shift.
+/// Update the unshifted propagator's population-control shift.
 /// # Arguments:
 /// - `stats`: Current population statistics.
 /// - `state`: Current propagation state.

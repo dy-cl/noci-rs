@@ -10,7 +10,7 @@ use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{
     DetPair, NOCIData, OrthogonalHamiltonianScratch, calculate_h_pairs_orthogonal_batched,
 };
-use crate::input::{ExcitationGen, Propagator};
+use crate::input::ExcitationGen;
 use crate::noci::OverlapFactors;
 use crate::qmc::excitgen::{ExcitationHist, PchbScratch};
 use crate::qmc::{ExchangeScratch, FriAmplitude, KeyedUpdate, QmcRng, compress_sparse, owner};
@@ -60,7 +60,7 @@ pub struct QMCTimings {
     pub unpack_population_changes: f64,
     /// Time spent draining the change accumulator into a sparse list.
     pub drain_population_changes: f64,
-    /// `Time spent applying the overlap-transformed change N \leftarrow N + S\Delta.`
+    /// `Time spent applying the overlap to the range-population change, N \leftarrow N + S\Delta.`
     pub apply_overlap_changes: f64,
     /// Time spent computing persistent and sampled population statistics.
     pub compute_population_stats: f64,
@@ -104,92 +104,6 @@ pub(in crate::noci::stochastic) struct ScratchSize {
     pub(in crate::noci::stochastic) maxla: usize,
     /// Largest beta-spin excitation scratch dimension needed across the basis.
     pub(in crate::noci::stochastic) maxlb: usize,
-}
-
-/// Storage for the shifts used in one stochastic propagation cycle.
-#[derive(Clone, Copy)]
-pub(in crate::noci::stochastic) struct ShiftSpec {
-    /// Current non-overlap-transformed shift.
-    pub(in crate::noci::stochastic) es: f64,
-    /// Current overlap-transformed shift.
-    pub(in crate::noci::stochastic) es_s: f64,
-    /// Propagator approximation.
-    pub(in crate::noci::stochastic) propagator: Propagator,
-}
-
-impl ShiftSpec {
-    /// Construct the S-apply shift specification.
-    /// # Arguments:
-    /// - `es`: Population-control shift `E_s`.
-    /// # Returns:
-    /// - `ShiftSpec`: Shift specification for `H - E_s S`.
-    pub(in crate::noci::stochastic) fn s_apply(es: f64) -> Self {
-        Self {
-            es,
-            es_s: es,
-            propagator: Propagator::SApply,
-        }
-    }
-
-    /// Return the shift multiplying the overlap matrix.
-    /// # Arguments:
-    /// - `self`: Shift specification.
-    /// # Returns:
-    /// - `f64`: Shift `E_s^S` in `H - E_s^S S`.
-    pub(in crate::noci::stochastic) fn overlap_shift(&self) -> f64 {
-        match self.propagator {
-            Propagator::Unshifted => self.es_s,
-            Propagator::Shifted => self.es_s,
-            Propagator::DoublyShifted => self.es_s,
-            Propagator::DifferenceDoublyShiftedU1 => 0.5 * (self.es + self.es_s),
-            Propagator::DifferenceDoublyShiftedU2 => self.es_s,
-            Propagator::SApply | Propagator::BApply => self.es,
-        }
-    }
-
-    /// Return the shift multiplying the identity.
-    /// # Arguments:
-    /// - `self`: Shift specification.
-    /// # Returns:
-    /// - `f64`: Shift `E_s^I` in `H - E_s^S S - E_s^I I`.
-    pub(in crate::noci::stochastic) fn identity_shift(&self) -> f64 {
-        match self.propagator {
-            Propagator::Unshifted => 0.0,
-            Propagator::Shifted => self.es_s,
-            Propagator::DoublyShifted => self.es,
-            Propagator::DifferenceDoublyShiftedU1 => self.es - self.es_s,
-            Propagator::DifferenceDoublyShiftedU2 => self.es - self.es_s,
-            Propagator::SApply | Propagator::BApply => 0.0,
-        }
-    }
-
-    /// Evaluate the off-diagonal shifted coupling.
-    /// # Arguments:
-    /// - `h`: Hamiltonian matrix element `H_{xw}`.
-    /// - `s`: Overlap matrix element `S_{xw}`.
-    /// # Returns:
-    /// - `f64`: `H_{xw} - E_s^S S_{xw}`.
-    pub(in crate::noci::stochastic) fn coupling(
-        &self,
-        h: f64,
-        s: f64,
-    ) -> f64 {
-        h - self.overlap_shift() * s
-    }
-
-    /// Evaluate the diagonal residual.
-    /// # Arguments:
-    /// - `h`: Hamiltonian matrix element `H_{ww}`.
-    /// - `s`: Overlap matrix element `S_{ww}`.
-    /// # Returns:
-    /// - `f64`: `H_{ww} - E_s^S S_{ww} - E_s^I`.
-    pub(in crate::noci::stochastic) fn diagonal_residual(
-        &self,
-        h: f64,
-        s: f64,
-    ) -> f64 {
-        h - self.overlap_shift() * s - self.identity_shift()
-    }
 }
 
 /// Storage for a sparse real population vector.
@@ -571,7 +485,7 @@ impl ShiftTangent {
         &mut self,
         ndets: usize,
     ) {
-        // Ordinary walkers do not allocate this storage; both range propagators prepare it.
+        // The unshifted propagator does not allocate this storage; both range propagators prepare it.
         if self.values.len() < ndets {
             self.values.resize(ndets, 0.0);
         }
@@ -725,7 +639,7 @@ impl NOCIThreadPropagation {
         maxla: usize,
         maxlb: usize,
     ) -> Self {
-        // Initialise B at zero length so ordinary walker propagators never allocate dense N_det
+        // Initialise B at zero length so the unshifted propagator never allocates dense N_det
         // storage. SApply expands it on first propagation and retains allocation thereafter.
         Self {
             local: Vec::new(),
@@ -774,7 +688,7 @@ impl NOCIThreadPropagation {
     /// - `()`: Appends resolved local and remote population changes.
     pub(in crate::noci::stochastic) fn resolve_batched_spawning(
         &mut self,
-        shift: ShiftSpec,
+        shift: f64,
         accumulate_shift_tangent: bool,
         data: &NOCIData<'_, f64>,
         run: &QMCRunInfo,
@@ -844,13 +758,11 @@ impl NOCIThreadPropagation {
                     ));
                 }
 
-                let coupling = shift.coupling(h, s);
-                -coupling * scale
+                -(h - shift * s) * scale
             } else {
-                // Ordinary walker propagation has no shift tangent, so evaluate only its sampled
+                // Unshifted propagation has no shift tangent, so evaluate only its sampled
                 // physical update.
-                let coupling = shift.coupling(h, s);
-                -dt * coupling * request.parent_population / request.pgen
+                -dt * (h - shift * s) * request.parent_population / request.pgen
             };
 
             if optimise_overlap_weight {
@@ -929,13 +841,12 @@ impl NOCIThreadPropagation {
         &mut self,
         gamma: usize,
         population: f64,
-        shift: ShiftSpec,
+        shift: f64,
         data: &NOCIData<'_, f64>,
         diagonal_hs: &[(f64, f64)],
     ) {
         let (hgg, sgg) = diagonal_hs[gamma];
-        let coupling = shift.diagonal_residual(hgg, sgg);
-        let dn = -data.input.prop_ref().dt * coupling * population;
+        let dn = -data.input.prop_ref().dt * (hgg - shift * sgg) * population;
 
         if dn != 0.0 {
             self.local.push((gamma, dn));
@@ -958,7 +869,7 @@ impl NOCIThreadPropagation {
         &mut self,
         gamma: usize,
         population: f64,
-        shift: ShiftSpec,
+        shift: f64,
         data: &NOCIData<'_, f64>,
         overlap: (
             Option<&OverlapFactors>,
@@ -1058,7 +969,7 @@ impl NOCIThreadPropagation {
         let heat_bath = if let ExcitationGen::HeatBath = qmc.excitation_gen {
             Some(init_heat_bath(
                 gamma,
-                shift.overlap_shift(),
+                shift,
                 data,
                 self.wick_scratch.as_mut(),
             ))
@@ -1071,7 +982,7 @@ impl NOCIThreadPropagation {
             let (pgen, k, lambda) = match qmc.excitation_gen {
                 ExcitationGen::HeatBath => pgen_heat_bath(
                     gamma,
-                    shift.overlap_shift(),
+                    shift,
                     data,
                     &mut self.rng,
                     heat_bath.as_ref().unwrap(),
