@@ -269,8 +269,8 @@ pub fn print_input(input: &Input) {
     println!();
 
     // Print the NOCC Monte Carlo enablement state.
-    println!("NOCCMC");
-    match &input.noccmc {
+    println!("GNOCCMC");
+    match &input.gnoccmc {
         Some(n) => {
             println!("ENABLED: true");
             println!("ACTIVE_SPACE_TOL: {:e}", n.active_space_tol);

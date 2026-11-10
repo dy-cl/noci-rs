@@ -121,7 +121,7 @@ pub fn run_real_post_reference(
     }
 
     #[cfg(feature = "gnocc")]
-    if input.noccmc.is_some() {
+    if input.gnoccmc.is_some() {
         out.guess.nocc = run_gnocc(
             &post,
             input,

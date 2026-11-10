@@ -13,7 +13,7 @@ use crate::{Error, Result};
 // Parent/sibling imports.
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
-    InitialShift, Input, JMNOCCMCOptions, MatrixFormat, Metadynamics, MolOptions, NOCCMCOptions,
+    GNOCCMCOptions, InitialShift, Input, JMNOCCMCOptions, MatrixFormat, Metadynamics, MolOptions,
     NOCCNewton, NOCCPreconditioner, PropagationOptions, Propagator, QMCOptions, ResHFOptions,
     SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin,
     SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
@@ -906,14 +906,14 @@ fn read_reshf(reshf_tbl: Option<Table>) -> Option<ResHFOptions> {
     })
 }
 
-/// Read NOCCMC options from optional Lua table.
+/// Read GNOCCMC options from optional Lua table.
 /// # Arguments:
-/// - `noccmc_tbl`: Optional Lua noccmc table.
+/// - `gnoccmc_tbl`: Optional Lua gnoccmc table.
 /// # Returns:
-/// - `Option<NOCCMCOptions>`: Parsed NOCCMC options.
-fn read_noccmc(noccmc_tbl: Option<Table>) -> Option<NOCCMCOptions> {
-    noccmc_tbl.map(|t| {
-        let defaults = NOCCMCOptions::default();
+/// - `Option<GNOCCMCOptions>`: Parsed GNOCCMC options.
+fn read_gnoccmc(gnoccmc_tbl: Option<Table>) -> Option<GNOCCMCOptions> {
+    gnoccmc_tbl.map(|t| {
+        let defaults = GNOCCMCOptions::default();
 
         // Validate the Newton solver and preconditioner names before assembling the options.
         let newton_str: String = t
@@ -931,7 +931,7 @@ fn read_noccmc(noccmc_tbl: Option<Table>) -> Option<NOCCMCOptions> {
             std::process::exit(1);
         });
 
-        NOCCMCOptions {
+        GNOCCMCOptions {
             active_space_tol: t
                 .get("active_space_tol")
                 .unwrap_or(defaults.active_space_tol),
@@ -1190,7 +1190,7 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
     let qmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("qmc").unwrap_or(None);
     let snoci_tbl: Option<Table> = globals.get::<_, Option<Table>>("snoci").unwrap_or(None);
     let reshf_tbl: Option<Table> = globals.get::<_, Option<Table>>("reshf").unwrap_or(None);
-    let noccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("noccmc").unwrap_or(None);
+    let gnoccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("gnoccmc").unwrap_or(None);
     let jmnoccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("jmnoccmc").unwrap_or(None);
 
     // QMC defaults depend on the propagator, so parse `prop -> qmc` rather than constructing the
@@ -1216,7 +1216,7 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
         det: read_det(det_tbl),
         qmc,
         snoci: read_snoci(snoci_tbl),
-        noccmc: read_noccmc(noccmc_tbl),
+        gnoccmc: read_gnoccmc(gnoccmc_tbl),
         jmnoccmc: read_jmnoccmc(jmnoccmc_tbl),
         excit: read_excit(excit_tbl),
         prop,

@@ -5,7 +5,7 @@
 //! may be constructed from independently optimised and therefore mutually nonorthogonal
 //! orbital sets. The crate provides real and holomorphic self-consistent field calculations,
 //! reference nonorthogonal configuration interaction, deterministic and stochastic propagation
-//! in extended NOCI spaces, NOCI-PT2, selected NOCI and feature-gated experimental NOCCMC
+//! in extended NOCI spaces, NOCI-PT2, selected NOCI and feature-gated experimental GNOCCMC
 //! support.
 //!
 //! A calculation proceeds from user-defined Lua input and libcint atomic-orbital data through
