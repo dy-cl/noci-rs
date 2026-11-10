@@ -36,7 +36,7 @@ mod write;
 pub use det::DeterministicOptions;
 pub use excit::ExcitationOptions;
 pub use gmres::GMRESOptions;
-pub use jmnocc::JMNOCCMCOptions;
+pub use jmnocc::{JMDeterministicOptions, JMNOCCMCOptions};
 pub use mol::MolOptions;
 pub use nocc::{GNOCCMCOptions, NOCCNewton, NOCCPreconditioner};
 pub use prop::{PropagationOptions, Propagator};

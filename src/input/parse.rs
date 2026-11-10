@@ -13,10 +13,11 @@ use crate::{Error, Result};
 // Parent/sibling imports.
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
-    GNOCCMCOptions, InitialShift, Input, JMNOCCMCOptions, MatrixFormat, Metadynamics, MolOptions,
-    NOCCNewton, NOCCPreconditioner, PropagationOptions, Propagator, QMCOptions, ResHFOptions,
-    SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin,
-    SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
+    GNOCCMCOptions, InitialShift, Input, JMDeterministicOptions, JMNOCCMCOptions, MatrixFormat,
+    Metadynamics, MolOptions, NOCCNewton, NOCCPreconditioner, PropagationOptions, Propagator,
+    QMCOptions, ResHFOptions, SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner,
+    SNOCIStorage, SpatialBias, Spin, SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage,
+    WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -956,7 +957,8 @@ fn read_gnoccmc(gnoccmc_tbl: Option<Table>) -> Option<GNOCCMCOptions> {
     })
 }
 
-/// Read JM-NOCCMC options from optional Lua table.
+/// Read JM-NOCCMC options from optional Lua table. As for NOCIQMC, nested `det` and `qmc` tables
+/// select deterministic and stochastic propagation, and both may be present.
 /// # Arguments:
 /// - `jmnoccmc_tbl`: Optional Lua jmnoccmc table.
 /// # Returns:
@@ -978,8 +980,20 @@ fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
             std::process::exit(1);
         }
 
-        // A nested qmc table selects stochastic propagation, which samples connections uniformly.
-        let qmc = read_qmc(t.get::<_, Option<Table>>("qmc").ok().flatten(), None);
+        // Stochastic propagation samples connections uniformly.
+        let qmc_tbl = t.get::<_, Option<Table>>("qmc").ok().flatten();
+        let memory_effective = qmc_tbl
+            .as_ref()
+            .and_then(|q| q.get("memory_effective").ok())
+            .unwrap_or(defaults.memory_effective);
+        if memory_effective < 1.0 {
+            eprintln!(
+                "jmnoccmc.qmc.memory_effective = {memory_effective} must be at least one report \
+                 block"
+            );
+            std::process::exit(1);
+        }
+        let qmc = read_qmc(qmc_tbl, None);
         if let Some(qmc) = qmc.as_ref()
             && qmc.excitation_gen != ExcitationGen::Uniform
         {
@@ -994,20 +1008,26 @@ fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
             std::process::exit(1);
         }
 
-        let memory_effective = t
-            .get("memory_effective")
-            .unwrap_or(defaults.memory_effective);
-        if memory_effective < 1.0 {
-            eprintln!(
-                "jmnoccmc.memory_effective = {memory_effective} must be at least one report block"
-            );
-            std::process::exit(1);
-        }
-
         JMNOCCMCOptions {
             cluster_rank,
             expansion_rank,
             dt: t.get("dt").unwrap_or(defaults.dt),
+            det: read_jm_det(t.get::<_, Option<Table>>("det").ok().flatten()),
+            qmc,
+            memory_effective,
+        }
+    })
+}
+
+/// Read deterministic JM-NOCCMC options from the optional nested `jmnoccmc.det` table.
+/// # Arguments:
+/// - `det_tbl`: Optional Lua jmnoccmc.det table.
+/// # Returns:
+/// - `Option<JMDeterministicOptions>`: Parsed deterministic JM-NOCCMC options.
+fn read_jm_det(det_tbl: Option<Table>) -> Option<JMDeterministicOptions> {
+    det_tbl.map(|t| {
+        let defaults = JMDeterministicOptions::default();
+        JMDeterministicOptions {
             max_steps: t.get("max_steps").unwrap_or(defaults.max_steps),
             residual_tol: t.get("residual_tol").unwrap_or(defaults.residual_tol),
             e_tol: t.get("e_tol").unwrap_or(defaults.e_tol),
@@ -1026,8 +1046,6 @@ fn read_jmnoccmc(jmnoccmc_tbl: Option<Table>) -> Option<JMNOCCMCOptions> {
                 .unwrap_or(defaults.diagnostics),
             null_eps: t.get("null_eps").unwrap_or(defaults.null_eps),
             null_n: t.get("null_n").unwrap_or(defaults.null_n),
-            qmc,
-            memory_effective,
         }
     })
 }

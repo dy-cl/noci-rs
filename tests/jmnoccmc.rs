@@ -70,10 +70,16 @@ fn run_jmnoccmc_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
 
     let jm = JMEquations::new(space, h, s, None);
     let mut history = Vec::new();
-    let populations =
-        propagate_populations(&jm, options, (c0.as_slice().unwrap(), e_ref), &mut history)
-            .expect("deterministic JM-NOCCMC propagation failed");
-    let e_jm = report_converged(&jm, &populations, &history, options, &input.write.write_dir);
+    let det = options.det.as_ref().unwrap();
+    let populations = propagate_populations(
+        &jm,
+        options.dt,
+        det,
+        (c0.as_slice().unwrap(), e_ref),
+        &mut history,
+    )
+    .expect("deterministic JM-NOCCMC propagation failed");
+    let e_jm = report_converged(&jm, &populations, &history, det, &input.write.write_dir);
 
     (scf_energies, e_ref, e_jm)
 }

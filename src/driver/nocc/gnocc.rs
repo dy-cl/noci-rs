@@ -95,7 +95,10 @@ pub(crate) fn run_gnocc(
     let lambdas = cumulants(&gamma1, &gamma2, &gamma3, &gamma4, &no.active);
 
     // Orbital spaces, excitation manifold, normal-ordered reference and FOIS.
-    let options = input.gnoccmc.as_ref().expect("GNOCCMC options are required");
+    let options = input
+        .gnoccmc
+        .as_ref()
+        .expect("GNOCCMC options are required");
     let tol = options.active_space_tol;
     let spaces = build_spaces(gamma1.n, &no.active, &gamma1, tol, tol);
     let excitations = build_excitations(&spaces);
