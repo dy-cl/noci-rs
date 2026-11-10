@@ -21,7 +21,7 @@ pub(crate) struct ExcitedDeterminant {
 
 /// An `ExcitedDeterminant` with its parent-relative excitation and numerical payload, prepared
 /// once for repeated matrix-element evaluation.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub(crate) struct ExcitedState {
     /// Determinant in its parent frame.
     pub(crate) det: ExcitedDeterminant,

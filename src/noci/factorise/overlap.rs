@@ -17,8 +17,7 @@ use crate::elements::nonorthogonalwicks::{
     SameSpinOrthogonalOverlapBatch, SameSpinOverlapBatch, WickScratchSpin, WicksPairView,
     xw_overlap_orthogonal_prepared_batched, xw_overlap_prepared_batched,
 };
-use crate::elements::{DetPair, NOCIData};
-use crate::elements::{calculate_s_pair, calculate_s_pair_naive};
+use crate::elements::{DetPair, NOCIData, Overlap, calculate_pairs};
 use crate::input::SNOCIStorage;
 use crate::maths::dot_f64;
 
@@ -1815,13 +1814,7 @@ impl SpinFactorisation {
                     }));
                     values.clear();
                     values.resize(pairs.len(), 0.0);
-                    if data.input.wicks.enabled && data.wicks.is_none() {
-                        for (pair, s) in pairs.iter().zip(values.iter_mut()) {
-                            *s = calculate_s_pair_naive(data, pair.ldet, pair.gdet);
-                        }
-                    } else {
-                        calculate_s_pair(data, pairs, Some(wick_scratch), values);
-                    }
+                    calculate_pairs(data, &Overlap, pairs, Some(wick_scratch), values);
 
                     let mut dp = 0.0;
                     for (s, entry) in values.iter().zip(source.entries.iter()) {

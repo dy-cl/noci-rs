@@ -9,7 +9,7 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::determinant::ExcitedDeterminant;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
-use crate::elements::{NOCIData, calculate_hs_excited};
+use crate::elements::{DetPair, HamiltonianOverlap, NOCIData, calculate_pairs};
 use crate::input::JMNOCCMCOptions;
 use crate::mpiutils::all_reduce_array1;
 use crate::nocc::Effective;
@@ -280,12 +280,18 @@ fn uncorrelated_effective(
     // `\langle{}^z\Psi|\hat H|{}^x\Psi\rangle` and `\langle{}^z\Psi|{}^x\Psi\rangle` for every
     // ordered pair of references, row by row.
     let pairs = spaces
-        .references
+        .states
         .iter()
-        .flat_map(|bra| spaces.references.iter().map(|ket| (*bra, *ket)))
+        .flat_map(|bra| spaces.states.iter().map(move |ket| DetPair::new(bra, ket)))
         .collect::<Vec<_>>();
     let mut hs = vec![(0.0, 0.0); pairs.len()];
-    calculate_hs_excited(data, &pairs, &mut scratch, &mut hs);
+    calculate_pairs(
+        data,
+        &HamiltonianOverlap,
+        &pairs,
+        Some(&mut scratch),
+        &mut hs,
+    );
 
     // At zero amplitudes `|\Phi_x\rangle = |{}^x\Psi\rangle`, so these are `S^e` and `H^e`.
     let mut effective = Effective::new(m);

@@ -9,11 +9,11 @@ use itertools::Itertools;
 // Crate-root imports.
 use crate::basis::{excitation_between, undo_excitation};
 use crate::determinant::{
-    DeterminantState, ParentComponents, ParentDeterminant, ReducedOneSpinDeterminantState,
-    ReducedTwoSpinDeterminantState, SpinDeterminantIndex, SpinDeterminantState,
+    DeterminantState, ExcitedDeterminant, ExcitedState, ParentComponents, ParentDeterminant,
+    ReducedOneSpinDeterminantState, SpinDeterminantIndex, SpinDeterminantState,
 };
 use crate::input::Input;
-use crate::{ExcitationSpin, ReducedTwoSpinState, SCFState, StateScalar};
+use crate::{Excitation, ExcitationSpin, ReducedTwoSpinState, SCFState, StateScalar};
 
 macro_rules! determinant_index {
     ($name:ident, $trait_name:ident) => {
@@ -100,8 +100,6 @@ impl DeterminantState for NOCIDeterminantState {
 
 /// Parent-local retained one-spin identity and reduced kernel payload.
 pub(crate) type ReducedOneSpinNOCIDeterminantState = ReducedOneSpinDeterminantState<NOCISpinIndex>;
-/// Retained determinant identity and reduced two-spin kernel payload.
-pub(crate) type ReducedTwoSpinNOCIDeterminantState = ReducedTwoSpinDeterminantState<NOCIIndex>;
 
 /// Authoritative ordered NOCI determinant topology and identity registry.
 /// Active retained, selected or candidate subspaces are represented by ordered
@@ -494,22 +492,6 @@ impl<T: StateScalar> NOCISpace<T> {
         self.components[state.parent].beta(state.bid)
     }
 
-    /// Return an ordered retained determinant's numerical payload.
-    /// # Arguments:
-    /// - `self`: Retained NOCI space.
-    /// - `index`: Global retained determinant index.
-    /// # Returns:
-    /// - `ReducedTwoSpinNOCIDeterminantState`: Derived identity-bearing numerical view.
-    pub(crate) fn reduced(
-        &self,
-        index: NOCIIndex,
-    ) -> ReducedTwoSpinNOCIDeterminantState {
-        ReducedTwoSpinNOCIDeterminantState {
-            det: index,
-            state: self.reduced[index.0],
-        }
-    }
-
     /// Return the physical alpha and beta occupations of one retained determinant.
     /// # Arguments:
     /// - `self`: Retained NOCI space.
@@ -546,6 +528,37 @@ impl<T: StateScalar> NOCISpace<T> {
         &self,
         index: NOCIIndex,
     ) -> f64 {
-        self.reduced(index).state.phase
+        self.reduced[index.0].phase
+    }
+
+    /// Return one retained determinant in its prepared form, the parent-relative excitation,
+    /// spin phases and fixed-rank payload used by the nonorthogonal matrix-element engines.
+    /// # Arguments:
+    /// - `self`: Retained NOCI space.
+    /// - `index`: Global retained determinant index.
+    /// # Returns:
+    /// - `ExcitedState`: Determinant with its stored excitation, phases and payload.
+    pub(crate) fn excited_state(
+        &self,
+        index: NOCIIndex,
+    ) -> ExcitedState {
+        let parent = self.state(index).parent;
+        let alpha = self.alpha(index);
+        let beta = self.beta(index);
+
+        ExcitedState {
+            det: ExcitedDeterminant {
+                parent,
+                alpha: alpha.occupation,
+                beta: beta.occupation,
+            },
+            excitation: Excitation {
+                alpha: alpha.excitation,
+                beta: beta.excitation,
+            },
+            phase_a: alpha.reduced.phase,
+            phase_b: beta.reduced.phase,
+            reduced: self.reduced[index.0],
+        }
     }
 }

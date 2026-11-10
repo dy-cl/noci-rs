@@ -91,7 +91,7 @@ pub struct AoData {
     pub labels: Vec<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct Excitation {
     /// Excitation information for spin alpha.
     pub alpha: ExcitationSpin,

@@ -15,8 +15,7 @@ use rayon::prelude::*;
 use crate::NOCIScalar;
 use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::elements::nonorthogonalwicks::{WickScratchSpin, WicksShared};
-use crate::elements::{DetPair, FockData, MOCache, NOCIData};
-use crate::elements::{calculate_m_pair, calculate_s_pair};
+use crate::elements::{DetPair, Fock, FockData, MOCache, NOCIData, Overlap, calculate_pairs};
 use crate::maths::{adjoint, general_evp};
 use crate::mpiutils::all_reduce_array1;
 use crate::noci::{OneBodyFactorisation, OneBodyScratch};
@@ -308,11 +307,13 @@ fn fill_candidate_m<T: NOCIScalar>(
                     .iter()
                     .map(|&gdet| DetPair::new(ldet, gdet)),
             );
-            calculate_m_pair(
+            calculate_pairs(
                 op.data,
-                op.fock,
+                &Fock {
+                    fock: op.fock,
+                    shift: op.projection.e0,
+                },
                 pairs,
-                op.projection.e0,
                 Some(scratch),
                 row,
             );
@@ -356,11 +357,13 @@ pub(in crate::noci::selected) fn build_candidate_m_diag<T: NOCIScalar>(
                 |(scratch, pairs), (diag, dets)| {
                     pairs.clear();
                     pairs.extend(dets.iter().map(|&det| DetPair::new(det, det)));
-                    calculate_m_pair(
+                    calculate_pairs(
                         op.data,
-                        op.fock,
+                        &Fock {
+                            fock: op.fock,
+                            shift: op.projection.e0,
+                        },
                         pairs,
-                        op.projection.e0,
                         Some(scratch),
                         diag,
                     );
@@ -388,7 +391,7 @@ pub(in crate::noci::selected) fn build_candidate_s_diag<T: NOCIScalar>(
             |(scratch, pairs), (diag, dets)| {
                 pairs.clear();
                 pairs.extend(dets.iter().map(|&det| DetPair::new(det, det)));
-                calculate_s_pair(op.data, pairs, Some(scratch), diag);
+                calculate_pairs(op.data, &Overlap, pairs, Some(scratch), diag);
             },
         );
 
@@ -508,11 +511,13 @@ where
                     }
                     values.clear();
                     values.resize(pairs.len(), T::from_real(0.0));
-                    calculate_m_pair(
+                    calculate_pairs(
                         op.data,
-                        op.fock,
+                        &Fock {
+                            fock: op.fock,
+                            shift: op.projection.e0,
+                        },
                         &pairs,
-                        op.projection.e0,
                         Some(&mut scratch),
                         &mut values,
                     );
@@ -624,11 +629,13 @@ where
             }
             values.clear();
             values.resize(pairs.len(), T::from_real(0.0));
-            calculate_m_pair(
+            calculate_pairs(
                 op.data,
-                op.fock,
+                &Fock {
+                    fock: op.fock,
+                    shift: op.projection.e0,
+                },
                 &pairs,
-                op.projection.e0,
                 Some(&mut scratch),
                 &mut values,
             );
@@ -704,7 +711,7 @@ where
                 }
                 values.clear();
                 values.resize(pairs.len(), T::from_real(0.0));
-                calculate_s_pair(op.data, &pairs, Some(&mut scratch), &mut values);
+                calculate_pairs(op.data, &Overlap, &pairs, Some(&mut scratch), &mut values);
 
                 let cols = (a..n).filter(|&b| xa != zero || xs[b] != zero);
                 for (b, &s_ab) in cols.zip(&values) {
@@ -784,7 +791,7 @@ where
         }
         values.clear();
         values.resize(pairs.len(), T::from_real(0.0));
-        calculate_s_pair(op.data, &pairs, Some(&mut scratch), &mut values);
+        calculate_pairs(op.data, &Overlap, &pairs, Some(&mut scratch), &mut values);
 
         let cols = (a..n).filter(|&b| xa != zero || xs[b] != zero);
         for (b, &s_ab) in cols.zip(&values) {

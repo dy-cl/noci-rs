@@ -21,7 +21,7 @@ pub(crate) use auxiliary::{
 };
 pub(crate) use connection::OrthogonalConnection;
 pub(crate) use excited::{ExcitedDeterminant, ExcitedState};
-pub(crate) use reduced::{ReducedOneSpinDeterminantState, ReducedTwoSpinDeterminantState};
+pub(crate) use reduced::ReducedOneSpinDeterminantState;
 pub(crate) use space::{NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
 pub(crate) use state::{
     DeterminantState, ParentComponents, SpinDeterminantIndex, SpinDeterminantState,

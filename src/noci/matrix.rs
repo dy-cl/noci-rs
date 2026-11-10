@@ -11,11 +11,9 @@ use rayon::prelude::*;
 use crate::AoData;
 use crate::NOCIScalar;
 use crate::determinant::{NOCIIndex, NOCISpace};
-use crate::elements::compare_f_pair_wicks_naive;
-use crate::elements::compare_hs_pair_wicks_naive;
 use crate::elements::nonorthogonalwicks::{WickScratchSpin, WicksView};
-use crate::elements::{DetPair, FockData, MOCache, NOCIData};
-use crate::elements::{calculate_f_pair, calculate_hs_pair_dense, calculate_s_pair};
+use crate::elements::{DetPair, Fock, FockData, HamiltonianOverlap, MOCache, NOCIData, Overlap};
+use crate::elements::{calculate_pairs, calculate_pairs_dense, compare_pairs_wicks_naive};
 use crate::input::Input;
 use crate::maths::general_evp;
 use crate::time_call;
@@ -125,7 +123,7 @@ where
 
 /// Dense counterpart of `calculate_matrix_elements` for Hamiltonian and overlap matrices. The
 /// ket determinants are sorted into runs sharing a parent once, and each row is evaluated with
-/// `calculate_hs_pair_dense` directly into its row of H and S.
+/// `calculate_pairs_dense` directly into its row of H and S.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `left`: First set of determinants.
@@ -177,7 +175,15 @@ fn calculate_matrix_elements_dense<T: NOCIScalar>(
             },
             |(scratch, row), (i, (mut hrow, mut srow))| {
                 let first = if symmetric { i } else { 0 };
-                calculate_hs_pair_dense(data, left[i], right, &runs, first, scratch.as_mut(), row);
+                calculate_pairs_dense(
+                    data,
+                    &HamiltonianOverlap,
+                    left[i],
+                    (right, &runs),
+                    first,
+                    scratch.as_mut(),
+                    row,
+                );
                 for j in first..nr {
                     hrow[j] = row[j].0;
                     srow[j] = row[j].1;
@@ -234,6 +240,7 @@ pub(crate) fn build_noci_fock<T: NOCIScalar>(
     time_call!(crate::timers::noci::add_build_full_fock, {
         let nl = left.len();
         let nr = right.len();
+        let op = Fock { fock, shift: 0.0 };
 
         // In comparison mode, build with Wick's theorem while accumulating
         // discrepancies against the generalised Slater-Condon elements.
@@ -248,7 +255,7 @@ pub(crate) fn build_noci_fock<T: NOCIScalar>(
                 |pairs, scratch, out| {
                     let scratch = scratch.unwrap();
                     for (&pair, value) in pairs.iter().zip(out) {
-                        *value = compare_f_pair_wicks_naive(data, fock, pair, scratch);
+                        *value = compare_pairs_wicks_naive(data, &op, pair, scratch);
                     }
                 },
             );
@@ -278,7 +285,7 @@ pub(crate) fn build_noci_fock<T: NOCIScalar>(
             data.input,
             symmetric,
             zero,
-            |pairs, scratch, out| calculate_f_pair(data, fock, pairs, scratch, out),
+            |pairs, scratch, out| calculate_pairs(data, &op, pairs, scratch, out),
         );
 
         let f = scatter_matrix_elements(vals, nl, nr, symmetric);
@@ -312,7 +319,7 @@ pub(crate) fn build_noci_s<T: NOCIScalar>(
             data.input,
             symmetric,
             zero,
-            |pairs, scratch, out| calculate_s_pair(data, pairs, scratch, out),
+            |pairs, scratch, out| calculate_pairs(data, &Overlap, pairs, scratch, out),
         );
 
         let s = scatter_matrix_elements(vals, nl, nr, symmetric);
@@ -352,7 +359,8 @@ pub fn build_noci_hs<T: NOCIScalar>(
                 |pairs, scratch, out| {
                     let scratch = scratch.unwrap();
                     for (&pair, value) in pairs.iter().zip(out) {
-                        *value = compare_hs_pair_wicks_naive(data, pair, scratch);
+                        *value =
+                            compare_pairs_wicks_naive(data, &HamiltonianOverlap, pair, scratch);
                     }
                 },
             );

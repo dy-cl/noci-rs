@@ -3,7 +3,7 @@
 // Crate-root imports.
 use crate::determinant::{ExcitedDeterminant, ExcitedState};
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
-use crate::elements::{NOCIData, calculate_hs_excited, calculate_hs_states, calculate_s_states};
+use crate::elements::{DetPair, HamiltonianOverlap, NOCIData, Overlap, calculate_pairs};
 use crate::qmc::FastMap;
 
 // Parent/sibling imports.
@@ -66,7 +66,7 @@ pub(super) struct JMTaskPropagation {
     /// Queued coupling requests.
     pub(super) coupling_requests: Vec<CouplingBatchedRequest>,
     /// Determinant pairs of the queued same-reference requests.
-    linked_pairs: Vec<(ExcitedDeterminant, ExcitedDeterminant)>,
+    linked_pairs: Vec<DetPair<ExcitedDeterminant>>,
     /// Hamiltonian and overlap elements aligned with `linked_pairs`.
     linked_hs: Vec<(f64, f64)>,
     /// Hamiltonian and overlap elements of the reference-row coupling requests.
@@ -128,14 +128,18 @@ impl JMTaskPropagation {
             return;
         }
         self.linked_pairs.clear();
-        self.linked_pairs
-            .extend(self.linked_requests.iter().map(|r| (r.bra, r.ket)));
+        self.linked_pairs.extend(
+            self.linked_requests
+                .iter()
+                .map(|r| DetPair::new(r.bra, r.ket)),
+        );
         self.linked_hs.clear();
         self.linked_hs.resize(self.linked_pairs.len(), (0.0, 0.0));
-        calculate_hs_excited(
+        calculate_pairs(
             data,
+            &HamiltonianOverlap,
             &self.linked_pairs,
-            &mut self.wick_scratch,
+            Some(&mut self.wick_scratch),
             &mut self.linked_hs,
         );
 
@@ -173,21 +177,28 @@ impl JMTaskPropagation {
         for request in &self.coupling_requests {
             let ket = &clusters[request.cluster];
             match request.row {
-                None => hs_pairs.push((&spaces.states[request.y], ket)),
-                Some(r) => s_pairs.push((&spaces.rows[request.y][r], ket)),
+                None => hs_pairs.push(DetPair::new(&spaces.states[request.y], ket)),
+                Some(r) => s_pairs.push(DetPair::new(&spaces.rows[request.y][r], ket)),
             }
         }
         self.coupling_hs.clear();
         self.coupling_hs.resize(hs_pairs.len(), (0.0, 0.0));
-        calculate_hs_states(
+        calculate_pairs(
             data,
+            &HamiltonianOverlap,
             &hs_pairs,
-            &mut self.wick_scratch,
+            Some(&mut self.wick_scratch),
             &mut self.coupling_hs,
         );
         self.coupling_s.clear();
         self.coupling_s.resize(s_pairs.len(), 0.0);
-        calculate_s_states(data, &s_pairs, &mut self.wick_scratch, &mut self.coupling_s);
+        calculate_pairs(
+            data,
+            &Overlap,
+            &s_pairs,
+            Some(&mut self.wick_scratch),
+            &mut self.coupling_s,
+        );
 
         let (mut ihs, mut is) = (0, 0);
         let out = &mut self.projections;

@@ -24,10 +24,4 @@ pub(crate) use pairs::{
 };
 
 // Restricted function re-exports.
-pub(in crate::elements) use pairs::{
-    calculate_f_pairs_orthogonal_batched, calculate_h_pair_orthogonal,
-    calculate_hs_pair_orthogonal, calculate_hs_pairs_orthogonal_batched,
-    calculate_hs_pairs_orthogonal_dense, calculate_m_pair_orthogonal,
-    calculate_m_pairs_orthogonal_batched, calculate_s_pairs_orthogonal_batched,
-    prepare_orthogonal_state,
-};
+pub(in crate::elements) use pairs::{calculate_pairs_orthogonal_batched, prepare_orthogonal_state};

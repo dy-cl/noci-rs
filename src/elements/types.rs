@@ -4,7 +4,7 @@
 use ndarray::{Array2, Array4};
 
 // Crate-root imports.
-use crate::determinant::{NOCIIndex, NOCISpace};
+use crate::determinant::{ExcitedDeterminant, ExcitedState, NOCIIndex, NOCISpace};
 use crate::input::Input;
 use crate::{AoData, NOCIScalar};
 
@@ -101,25 +101,186 @@ impl<'a, T: NOCIScalar> FockData<'a, T> {
 
 /// Stores the pair of determinants whose matrix element is being evaluated.
 #[derive(Clone, Copy)]
-pub(crate) struct DetPair {
+pub(crate) struct DetPair<D = NOCIIndex> {
     /// Left determinant in the matrix element.
-    pub(crate) ldet: NOCIIndex,
+    pub(crate) ldet: D,
     /// Right determinant in the matrix element.
-    pub(crate) gdet: NOCIIndex,
+    pub(crate) gdet: D,
 }
 
-impl DetPair {
+impl<D> DetPair<D> {
     /// Construct the pair of determinants whose matrix element is to be evaluated.
     /// # Arguments:
     /// - `ldet`: Left determinant in the matrix element.
     /// - `gdet`: Right determinant in the matrix element.
     /// # Returns:
-    /// - `DetPair<'a, T>`: Pair of determinants to be passed to matrix-element routines.
+    /// - `DetPair<D>`: Pair of determinants to be passed to matrix-element routines.
     pub(crate) fn new(
-        ldet: NOCIIndex,
-        gdet: NOCIIndex,
+        ldet: D,
+        gdet: D,
     ) -> Self {
         Self { ldet, gdet }
+    }
+}
+
+/// A determinant that can enter a matrix element. The dispatch needs only its parent frame and
+/// occupations, and prepares the parent-relative excitation, spin phases and fixed-rank payload
+/// only for pairs evaluated by the nonorthogonal engines.
+pub(crate) trait PairDeterminant<T: NOCIScalar>: Copy {
+    /// Return the parent orbital frame of the determinant.
+    /// # Arguments:
+    /// - `self`: Determinant.
+    /// - `space`: Determinant space holding the parent frames.
+    /// # Returns:
+    /// - `usize`: Parent frame index.
+    fn parent(
+        self,
+        space: &NOCISpace<T>,
+    ) -> usize;
+
+    /// Return the alpha and beta occupations of the determinant in its parent frame.
+    /// # Arguments:
+    /// - `self`: Determinant.
+    /// - `space`: Determinant space holding the parent frames.
+    /// # Returns:
+    /// - `(u128, u128)`: Alpha and beta occupation bitstrings.
+    fn occupations(
+        self,
+        space: &NOCISpace<T>,
+    ) -> (u128, u128);
+
+    /// Return the determinant in its prepared form.
+    /// # Arguments:
+    /// - `self`: Determinant.
+    /// - `space`: Determinant space holding the parent frames.
+    /// # Returns:
+    /// - `ExcitedState`: Parent-relative excitation, spin phases and fixed-rank payload.
+    fn state(
+        self,
+        space: &NOCISpace<T>,
+    ) -> ExcitedState;
+}
+
+impl<T: NOCIScalar> PairDeterminant<T> for NOCIIndex {
+    /// Return the parent frame of a retained determinant.
+    /// # Arguments:
+    /// - `self`: Retained determinant index.
+    /// - `space`: Determinant space containing the determinant.
+    /// # Returns:
+    /// - `usize`: Parent frame index.
+    fn parent(
+        self,
+        space: &NOCISpace<T>,
+    ) -> usize {
+        space.state(self).parent
+    }
+
+    /// Return the occupations of a retained determinant.
+    /// # Arguments:
+    /// - `self`: Retained determinant index.
+    /// - `space`: Determinant space containing the determinant.
+    /// # Returns:
+    /// - `(u128, u128)`: Alpha and beta occupation bitstrings.
+    fn occupations(
+        self,
+        space: &NOCISpace<T>,
+    ) -> (u128, u128) {
+        space.occupations(self)
+    }
+
+    /// Assemble the prepared form of a retained determinant from the stored payload.
+    /// # Arguments:
+    /// - `self`: Retained determinant index.
+    /// - `space`: Determinant space containing the determinant.
+    /// # Returns:
+    /// - `ExcitedState`: Stored excitation, spin phases and fixed-rank payload.
+    fn state(
+        self,
+        space: &NOCISpace<T>,
+    ) -> ExcitedState {
+        space.excited_state(self)
+    }
+}
+
+impl<T: NOCIScalar> PairDeterminant<T> for &ExcitedState {
+    /// Return the parent frame of a prepared determinant.
+    /// # Arguments:
+    /// - `self`: Prepared determinant.
+    /// - `space`: Unused, as the determinant carries its parent.
+    /// # Returns:
+    /// - `usize`: Parent frame index.
+    fn parent(
+        self,
+        _space: &NOCISpace<T>,
+    ) -> usize {
+        self.det.parent
+    }
+
+    /// Return the occupations of a prepared determinant.
+    /// # Arguments:
+    /// - `self`: Prepared determinant.
+    /// - `space`: Unused, as the determinant carries its occupations.
+    /// # Returns:
+    /// - `(u128, u128)`: Alpha and beta occupation bitstrings.
+    fn occupations(
+        self,
+        _space: &NOCISpace<T>,
+    ) -> (u128, u128) {
+        (self.det.alpha, self.det.beta)
+    }
+
+    /// Return a copy of the prepared determinant.
+    /// # Arguments:
+    /// - `self`: Prepared determinant.
+    /// - `space`: Unused, as the determinant is already prepared.
+    /// # Returns:
+    /// - `ExcitedState`: The prepared determinant.
+    fn state(
+        self,
+        _space: &NOCISpace<T>,
+    ) -> ExcitedState {
+        *self
+    }
+}
+
+impl<T: NOCIScalar> PairDeterminant<T> for ExcitedDeterminant {
+    /// Return the parent frame of an occupation-identified determinant.
+    /// # Arguments:
+    /// - `self`: Occupation-identified determinant.
+    /// - `space`: Unused, as the determinant carries its parent.
+    /// # Returns:
+    /// - `usize`: Parent frame index.
+    fn parent(
+        self,
+        _space: &NOCISpace<T>,
+    ) -> usize {
+        self.parent
+    }
+
+    /// Return the occupations of an occupation-identified determinant.
+    /// # Arguments:
+    /// - `self`: Occupation-identified determinant.
+    /// - `space`: Unused, as the determinant carries its occupations.
+    /// # Returns:
+    /// - `(u128, u128)`: Alpha and beta occupation bitstrings.
+    fn occupations(
+        self,
+        _space: &NOCISpace<T>,
+    ) -> (u128, u128) {
+        (self.alpha, self.beta)
+    }
+
+    /// Prepare an occupation-identified determinant relative to its parent.
+    /// # Arguments:
+    /// - `self`: Occupation-identified determinant.
+    /// - `space`: Determinant space holding the parent frames.
+    /// # Returns:
+    /// - `ExcitedState`: Derived excitation, spin phases and fixed-rank payload.
+    fn state(
+        self,
+        space: &NOCISpace<T>,
+    ) -> ExcitedState {
+        ExcitedDeterminant::state(&self, space.parents())
     }
 }
 

@@ -11,7 +11,7 @@ use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::determinant::{NOCIIndex, NOCISpace};
+use crate::determinant::ExcitedState;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::{
     C64x4, C64x8, F64x4, F64x8, Simd, adjugate_transpose_simd_const, det_simd_const,
@@ -21,7 +21,7 @@ use crate::maths::{
     second_minor_const, second_minor_dynamic,
 };
 use crate::time_call;
-use crate::{Excitation, ExcitationCache, ExcitationSpinCache, ReducedTwoSpinState};
+use crate::{Excitation, ExcitationCache, ExcitationSpinCache};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratchSpin;
@@ -48,9 +48,7 @@ use super::prepare::prepare_same;
 /// `H_{2,\alpha\beta}` together so determinants, cofactors and second minors are reused.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `ex`: Bra and ket excitations used by the generic fallback.
-/// - `cache`: Cached bra and ket excitation ranks and orbital labels per spin.
-/// - `excitation_phase`: Product of the alpha- and beta-spin excitation phases.
+/// - `states`: Prepared bra and ket determinants.
 /// - `enuc`: Nuclear repulsion energy.
 /// - `scratch`: Reusable Wick workspace for generic-rank and nonzero-`m` evaluation.
 /// - `tol`: Numerical tolerance used by generic determinant and adjugate evaluation.
@@ -59,9 +57,7 @@ use super::prepare::prepare_same;
 #[inline(always)]
 pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    ex: (&Excitation, &Excitation),
-    cache: (&ExcitationCache, &ExcitationCache),
-    excitation_phase: f64,
+    states: (&ExcitedState, &ExcitedState),
     enuc: f64,
     scratch: &mut WickScratchSpin<T>,
     tol: f64,
@@ -76,9 +72,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
                 return (0..w.ncombinations()).fold((zero, zero), |(h, s), k| {
                     let (hk, sk) = xw_hamiltonian_overlap_prepared(
                         &w.combination(k),
-                        ex,
-                        cache,
-                        excitation_phase,
+                        states,
                         enuc,
                         scratch,
                         tol,
@@ -87,8 +81,10 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
                 });
             }
 
-            let (x_ex, w_ex) = ex;
-            let (x_cache, w_cache) = cache;
+            let (x, wdet) = states;
+            let (x_ex, w_ex) = (&x.excitation, &wdet.excitation);
+            let (x_cache, w_cache) = (&x.reduced.excitation_cache, &wdet.reduced.excitation_cache);
+            let excitation_phase = x.reduced.phase * wdet.reduced.phase;
 
             // For `m_\alpha=m_\beta=0`, try fixed-rank determinant/cofactor formulas before the
             // generic evaluator. Any other zero-overlap distribution requires the general path.
@@ -133,16 +129,15 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 }
 
 /// Evaluate batched Hamiltonian and overlap matrix elements for one ordered reference pair.
-/// Every request supplied to this routine already belongs to that reference pair. Requests are
-/// streamed through generated `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})` bins when
+/// Every request supplied to this routine already belongs to that reference pair. A single
+/// request has no other requests to fill SIMD lanes and is evaluated directly. Otherwise requests
+/// are streamed through generated `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})` bins when
 /// `m_\alpha = m_\beta = 0`. The widest matching real or complex SIMD kernel is selected internally,
 /// incomplete bins are padded with one valid request, and unsupported requests use the existing
 /// prepared scalar evaluator.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `basis`: Determinant basis used only by generic fallback evaluation.
-/// - `reduced_states`: Compact two-spin metadata keyed by global determinant index.
-/// - `requests`: Tuples `(output, a, b)` containing output position and determinant indices.
+/// - `requests`: Output positions with their prepared bra and ket determinants.
 /// - `enuc`: Nuclear repulsion energy.
 /// - `scratch`: Reusable Wick workspace for scalar generic-rank evaluation.
 /// - `tol`: Numerical tolerance used by generic determinant and adjugate evaluation.
@@ -151,8 +146,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 /// - `()`: Writes every matrix element in `requests` into `out`.
 pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    basis: (&NOCISpace<T>, &[ReducedTwoSpinState]),
-    requests: &[(usize, usize, usize)],
+    requests: &[(usize, ExcitedState, ExcitedState)],
     enuc: f64,
     scratch: &mut WickScratchSpin<T>,
     tol: f64,
@@ -161,6 +155,11 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_prepared_batched,
         {
+            if let [(output, x, wdet)] = requests {
+                out[*output] = xw_hamiltonian_overlap_prepared(w, (x, wdet), enuc, scratch, tol);
+                return;
+            }
+
             // A reference pair with near-zero orbital pairs is the sum over its combinations of
             // alpha- and beta-spin branches; accumulate the requested outputs of each one.
             if w.ncombinations() > 1 {
@@ -172,7 +171,6 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                 for k in 0..w.ncombinations() {
                     xw_hamiltonian_overlap_prepared_batched(
                         &w.combination(k),
-                        basis,
                         requests,
                         enuc,
                         scratch,
@@ -194,7 +192,6 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                 unsafe {
                     if TypeId::of::<T>() == TypeId::of::<f64>() {
                         let w_f64 = &*std::ptr::from_ref(w).cast::<WicksPairView<'_, f64>>();
-                        let basis_f64 = &*std::ptr::from_ref(basis.0).cast::<NOCISpace<f64>>();
                         let scratch_f64 =
                             &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<f64>>();
                         let out_f64 = std::slice::from_raw_parts_mut(
@@ -205,7 +202,6 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                         if is_x86_feature_detected!("avx512f") {
                             xw_hamiltonian_overlap_prepared_simd(
                                 w_f64,
-                                (basis_f64, basis.1),
                                 requests,
                                 (enuc, tol),
                                 scratch_f64,
@@ -218,7 +214,6 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
                             xw_hamiltonian_overlap_prepared_simd(
                                 w_f64,
-                                (basis_f64, basis.1),
                                 requests,
                                 (enuc, tol),
                                 scratch_f64,
@@ -231,8 +226,6 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
 
                     if TypeId::of::<T>() == TypeId::of::<Complex64>() {
                         let w_c64 = &*std::ptr::from_ref(w).cast::<WicksPairView<'_, Complex64>>();
-                        let basis_c64 =
-                            &*std::ptr::from_ref(basis.0).cast::<NOCISpace<Complex64>>();
                         let scratch_c64 =
                             &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<Complex64>>();
                         let out_c64 = std::slice::from_raw_parts_mut(
@@ -243,7 +236,6 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                         if is_x86_feature_detected!("avx512f") {
                             xw_hamiltonian_overlap_prepared_simd(
                                 w_c64,
-                                (basis_c64, basis.1),
                                 requests,
                                 (enuc, tol),
                                 scratch_c64,
@@ -256,7 +248,6 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
                             xw_hamiltonian_overlap_prepared_simd(
                                 w_c64,
-                                (basis_c64, basis.1),
                                 requests,
                                 (enuc, tol),
                                 scratch_c64,
@@ -269,32 +260,10 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                 }
             }
 
-            let (space, reduced_states) = basis;
-            // Scalar fallback reconstructs full excitations only for requests outside the
-            // generated fixed-rank region; `output` preserves original request order.
-            for &(output, a, b) in requests {
-                let x_det = &reduced_states[a];
-                let w_det = &reduced_states[b];
-                let (xa, xb) = space.excitations(NOCIIndex(a));
-                let (wa, wb) = space.excitations(NOCIIndex(b));
-                let x_state = Excitation {
-                    alpha: *xa,
-                    beta: *xb,
-                };
-                let w_state = Excitation {
-                    alpha: *wa,
-                    beta: *wb,
-                };
-
-                out[output] = xw_hamiltonian_overlap_prepared(
-                    w,
-                    (&x_state, &w_state),
-                    (&x_det.excitation_cache, &w_det.excitation_cache),
-                    x_det.phase * w_det.phase,
-                    enuc,
-                    scratch,
-                    tol,
-                );
+            // Without a SIMD kernel every request uses the prepared scalar evaluator; `output`
+            // preserves the original request order.
+            for (output, x, wdet) in requests {
+                out[*output] = xw_hamiltonian_overlap_prepared(w, (x, wdet), enuc, scratch, tol);
             }
         }
     )
@@ -306,7 +275,6 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
 /// Incomplete packets are padded with a valid lane and unsupported ranks use the scalar evaluator.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `basis`: Full determinant data and compact determinant metadata.
 /// - `requests`: Output positions and determinant pairs belonging to this reference pair.
 /// - `parameters`: Nuclear repulsion energy and scalar-fallback numerical tolerance.
 /// - `scratch`: Reusable scalar fallback workspace.
@@ -320,8 +288,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
 #[allow(clippy::type_complexity)]
 unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
     w: &WicksPairView<'_, T>,
-    basis: (&NOCISpace<T>, &[ReducedTwoSpinState]),
-    requests: &[(usize, usize, usize)],
+    requests: &[(usize, ExcitedState, ExcitedState)],
     parameters: (f64, f64),
     scratch: &mut WickScratchSpin<T>,
     out: &mut [(T, T)],
@@ -335,7 +302,6 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
     ),
 ) {
     let (enuc, tol) = parameters;
-    let (basis, reduced_states) = basis;
 
     let mut rank_bins = [usize::MAX; HAMSPACE];
 
@@ -353,11 +319,10 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
     // Bin requests by `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})` so every SIMD packet
     // shares one fixed-rank determinant/cofactor expression.
     unsafe {
-        for &(output, a, b) in requests {
-            let x_det = &reduced_states[a];
-            let w_det = &reduced_states[b];
-            let x_cache = x_det.excitation_cache;
-            let w_cache = w_det.excitation_cache;
+        for (output, x, wdet) in requests {
+            let output = *output;
+            let x_cache = x.reduced.excitation_cache;
+            let w_cache = wdet.reduced.excitation_cache;
             let ranks = (
                 usize::from(x_cache.alpha.rank),
                 usize::from(w_cache.alpha.rank),
@@ -380,7 +345,7 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
                 let count = counts[bin];
                 x_bins[bin][count] = x_cache;
                 w_bins[bin][count] = w_cache;
-                phases[bin][count] = x_det.phase * w_det.phase;
+                phases[bin][count] = x.reduced.phase * wdet.reduced.phase;
                 outputs[bin][count] = output;
                 counts[bin] += 1;
 
@@ -405,26 +370,7 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
                 }
             } else {
                 // Unsupported rank: preserve correctness through the scalar prepared evaluator.
-                let (xa, xb) = basis.excitations(NOCIIndex(a));
-                let (wa, wb) = basis.excitations(NOCIIndex(b));
-                let x_state = Excitation {
-                    alpha: *xa,
-                    beta: *xb,
-                };
-                let w_state = Excitation {
-                    alpha: *wa,
-                    beta: *wb,
-                };
-                let value = xw_hamiltonian_overlap_prepared(
-                    w,
-                    (&x_state, &w_state),
-                    (&x_cache, &w_cache),
-                    x_det.phase * w_det.phase,
-                    enuc,
-                    scratch,
-                    tol,
-                );
-                out[output] = value;
+                out[output] = xw_hamiltonian_overlap_prepared(w, (x, wdet), enuc, scratch, tol);
             }
         }
 

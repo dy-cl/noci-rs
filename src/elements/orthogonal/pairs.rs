@@ -5,14 +5,14 @@
 // Crate-root imports.
 use crate::basis::excitation_between;
 use crate::determinant::{NOCIIndex, NOCISpace, OrthogonalConnection};
-use crate::elements::{DetPair, FockMOCache, MOCache, NOCIData};
+use crate::elements::{DetPair, FockMOCache, NOCIData, PairDeterminant};
 use crate::time_call;
-use crate::{AoData, Excitation, ExcitationCache, ExcitationSpin, NOCIScalar, ReducedTwoSpinState};
+use crate::{Excitation, ExcitationCache, ExcitationSpin, NOCIScalar, ReducedTwoSpinState};
 
 // Parent/sibling imports.
 use super::{
-    xw_fock_orthogonal, xw_fock_orthogonal_batched, xw_hamiltonian_orthogonal,
-    xw_hamiltonian_orthogonal_batched, xw_overlap_orthogonal, xw_overlap_orthogonal_batched,
+    xw_fock_orthogonal, xw_hamiltonian_orthogonal, xw_hamiltonian_orthogonal_batched,
+    xw_overlap_orthogonal,
 };
 
 /// Calculate the overlap matrix element between determinants x and w using
@@ -106,51 +106,6 @@ impl OrthogonalHamiltonianScratch {
             group.clear();
         }
     }
-}
-
-/// Calculate both the overlap and Hamiltonian matrix elements between determinants x and w using
-/// standard Slater-Condon rules.
-/// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
-/// - `cache`: MO-basis one and two-electron integral cache for the shared parent determinant.
-/// - `ldet`: Bra-reference state x.
-/// - `gdet`: Ket-reference state w.
-/// - `space`: Determinant space containing the bra and ket states.
-/// # Returns:
-/// - `(T, T)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
-pub(in crate::elements) fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
-    ao: &AoData,
-    cache: &MOCache<T>,
-    space: &NOCISpace<T>,
-    ldet: NOCIIndex,
-    gdet: NOCIIndex,
-) -> (T, T) {
-    let s = calculate_s_pair_orthogonal(space, ldet, gdet);
-    let h =
-        calculate_h_pair_orthogonal(ao, cache, space.occupations(ldet), space.occupations(gdet));
-    (h, s)
-}
-
-/// Calculate an orthogonal-parent Hamiltonian matrix element using shared Slater-Condon rules.
-/// # Arguments:
-/// - `ao`: AO integrals and nuclear-repulsion energy.
-/// - `cache`: MO-basis one- and two-electron integrals for the common parent.
-/// - `l_occ`: Bra alpha and beta occupation bitstrings.
-/// - `g_occ`: Ket alpha and beta occupation bitstrings.
-/// # Returns:
-/// - `T`: Hamiltonian matrix element between the occupation-defined determinants.
-pub(crate) fn calculate_h_pair_orthogonal<T: NOCIScalar>(
-    ao: &AoData,
-    cache: &MOCache<T>,
-    l_occ: (u128, u128),
-    g_occ: (u128, u128),
-) -> T {
-    time_call!(crate::timers::noci::add_calculate_hs_pair_orthogonal, {
-        match prepare_orthogonal_state(l_occ, g_occ, 2) {
-            Some(state) => xw_hamiltonian_orthogonal(ao, cache, g_occ, &state),
-            None => T::from_real(0.0),
-        }
-    })
 }
 
 /// Evaluate a compact batch `H_{D_kx_k}=\langle D_k^{P_k}|\hat H|\Phi_{x_k}^{P_k}\rangle`.
@@ -265,251 +220,53 @@ pub(crate) fn calculate_f_pair_orthogonal<T: NOCIScalar>(
     })
 }
 
-/// Calculate the shifted candidate-candidate matrix element between determinants
-/// with the same parent using standard Slater-Condon rules.
-/// # Arguments:
-/// - `cache`: MO-basis Fock cache for the shared parent determinant.
-/// - `ldet`: State `a`.
-/// - `gdet`: State `b`.
-/// - `e0`: Zeroth-order energy shift.
-/// - `space`: Determinant space containing the bra and ket states.
-/// # Returns:
-/// - `T`: Shifted matrix element `M_{ab}`.
-pub(in crate::elements) fn calculate_m_pair_orthogonal<T: NOCIScalar>(
-    cache: &FockMOCache<T>,
-    space: &NOCISpace<T>,
-    ldet: NOCIIndex,
-    gdet: NOCIIndex,
-    e0: f64,
-) -> T {
-    // A one-body Fock operator connects identical determinants or a single excitation in one
-    // spin sector; higher excitation ranks vanish.
-    let g_occ = space.occupations(gdet);
-    let Some(state) = prepare_orthogonal_state(space.occupations(ldet), g_occ, 1) else {
-        return T::from_real(0.0);
-    };
-
-    // `M_{ab} = F_{ab} - E_0 S_{ab}`, where only the diagonal sector has nonzero overlap.
-    let f = xw_fock_orthogonal(cache, g_occ, &state);
-    let s = xw_overlap_orthogonal::<T>(&state);
-    f - T::from_real(e0) * s
-}
-
-/// Evaluate parent-grouped orthogonal pair requests through one batched kernel per parent.
+/// Evaluate the same-parent requests of one orthonormal parent through one batched kernel.
 /// Each request is converted once to its reduced fixed-rank excitation; connections beyond
 /// `rank` are written as `zero` without entering the kernel.
 /// # Arguments:
-/// - `space`: Determinant space containing the bra and ket states.
-/// - `groups`: Same-parent `(output, pair)` requests indexed by orthonormal parent.
+/// - `space`: Determinant space holding the parent frames.
+/// - `requests`: Same-parent `(output, pair)` requests of one orthonormal parent.
 /// - `rank`: Largest total excitation rank coupled by the operator.
 /// - `zero`: Matrix element written for uncoupled requests.
 /// - `out`: Results in original request order.
-/// - `kernel`: Parent-local batched evaluator taking occupations, states, and outputs.
+/// - `kernel`: Parent-local batched evaluator taking ket occupations, connections and outputs.
 /// # Returns:
-/// - `()`: Writes every grouped request into `out`.
-fn calculate_pairs_orthogonal_batched<T: NOCIScalar, U: Copy>(
+/// - `()`: Writes every request into `out`.
+pub(in crate::elements) fn calculate_pairs_orthogonal_batched<T, D, U>(
     space: &NOCISpace<T>,
-    groups: &[Vec<(usize, DetPair)>],
+    requests: &[(usize, DetPair<D>)],
     rank: usize,
     zero: U,
     out: &mut [U],
-    mut kernel: impl FnMut(usize, &[(u128, u128)], &[ReducedTwoSpinState], &mut [U]),
-) {
-    let mut outputs = Vec::new();
-    let mut occupations = Vec::new();
-    let mut states = Vec::new();
-    let mut values = Vec::new();
-
-    for (parent, group) in groups.iter().enumerate() {
-        if group.is_empty() {
-            continue;
-        }
-
-        // Prepare coupled requests and write uncoupled ones directly.
-        outputs.clear();
-        occupations.clear();
-        states.clear();
-        for &(output, pair) in group {
-            let g_occ = space.occupations(pair.gdet);
-            match prepare_orthogonal_state(space.occupations(pair.ldet), g_occ, rank) {
-                Some(state) => {
-                    outputs.push(output);
-                    occupations.push(g_occ);
-                    states.push(state);
-                }
-                None => out[output] = zero,
+    mut kernel: impl FnMut(&[(u128, u128)], &[ReducedTwoSpinState], &mut [U]),
+) where
+    T: NOCIScalar,
+    D: PairDeterminant<T>,
+    U: Copy,
+{
+    // Prepare coupled requests and write uncoupled ones directly.
+    let mut outputs = Vec::with_capacity(requests.len());
+    let mut occupations = Vec::with_capacity(requests.len());
+    let mut connections = Vec::with_capacity(requests.len());
+    for &(output, pair) in requests {
+        let g_occ = pair.gdet.occupations(space);
+        match prepare_orthogonal_state(pair.ldet.occupations(space), g_occ, rank) {
+            Some(connection) => {
+                outputs.push(output);
+                occupations.push(g_occ);
+                connections.push(connection);
             }
-        }
-        if states.is_empty() {
-            continue;
-        }
-
-        // Evaluate the parent-local batch, then scatter values back to request order.
-        values.clear();
-        values.resize(states.len(), zero);
-        kernel(parent, &occupations, &states, &mut values);
-        for (&output, &value) in outputs.iter().zip(&values) {
-            out[output] = value;
+            None => out[output] = zero,
         }
     }
-}
+    if connections.is_empty() {
+        return;
+    }
 
-/// Evaluate parent-grouped orthogonal overlap matrix elements.
-/// # Arguments:
-/// - `space`: Determinant space containing the bra and ket states.
-/// - `groups`: Same-parent `(output, pair)` requests indexed by orthonormal parent.
-/// - `out`: Overlap results in original request order.
-/// # Returns:
-/// - `()`: Writes every grouped overlap into `out`.
-pub(in crate::elements) fn calculate_s_pairs_orthogonal_batched<T: NOCIScalar>(
-    space: &NOCISpace<T>,
-    groups: &[Vec<(usize, DetPair)>],
-    out: &mut [T],
-) {
-    calculate_pairs_orthogonal_batched(
-        space,
-        groups,
-        0,
-        T::from_real(0.0),
-        out,
-        |_, _, states, values| xw_overlap_orthogonal_batched(states, values),
-    );
-}
-
-/// Evaluate parent-grouped orthogonal Fock matrix elements.
-/// # Arguments:
-/// - `fock_mocache`: MO-basis Fock caches indexed by parent.
-/// - `space`: Determinant space containing the bra and ket states.
-/// - `groups`: Same-parent `(output, pair)` requests indexed by orthonormal parent.
-/// - `out`: Fock results in original request order.
-/// # Returns:
-/// - `()`: Writes every grouped Fock matrix element into `out`.
-pub(in crate::elements) fn calculate_f_pairs_orthogonal_batched<T: NOCIScalar>(
-    fock_mocache: &[FockMOCache<T>],
-    space: &NOCISpace<T>,
-    groups: &[Vec<(usize, DetPair)>],
-    out: &mut [T],
-) {
-    calculate_pairs_orthogonal_batched(
-        space,
-        groups,
-        1,
-        T::from_real(0.0),
-        out,
-        |parent, occupations, states, values| {
-            xw_fock_orthogonal_batched(&fock_mocache[parent], occupations, states, values)
-        },
-    );
-}
-
-/// Evaluate parent-grouped orthogonal shifted matrix elements `M_{ab} = F_{ab} - E_0 S_{ab}`.
-/// # Arguments:
-/// - `fock_mocache`: MO-basis Fock caches indexed by parent.
-/// - `space`: Determinant space containing the bra and ket states.
-/// - `groups`: Same-parent `(output, pair)` requests indexed by orthonormal parent.
-/// - `e0`: Zeroth-order energy shift.
-/// - `out`: Shifted results in original request order.
-/// # Returns:
-/// - `()`: Writes every grouped shifted matrix element into `out`.
-pub(in crate::elements) fn calculate_m_pairs_orthogonal_batched<T: NOCIScalar>(
-    fock_mocache: &[FockMOCache<T>],
-    space: &NOCISpace<T>,
-    groups: &[Vec<(usize, DetPair)>],
-    e0: f64,
-    out: &mut [T],
-) {
-    let mut s = Vec::new();
-    calculate_pairs_orthogonal_batched(
-        space,
-        groups,
-        1,
-        T::from_real(0.0),
-        out,
-        |parent, occupations, states, values| {
-            // Evaluate `F` and `S` with their own batched kernels before shifting.
-            xw_fock_orthogonal_batched(&fock_mocache[parent], occupations, states, values);
-            s.clear();
-            s.resize(states.len(), T::from_real(0.0));
-            xw_overlap_orthogonal_batched(states, &mut s);
-            for (value, &s) in values.iter_mut().zip(&s) {
-                *value -= T::from_real(e0) * s;
-            }
-        },
-    );
-}
-
-/// Evaluate parent-grouped orthogonal Hamiltonian and overlap matrix elements.
-/// # Arguments:
-/// - `ao`: AO integrals and nuclear-repulsion energy.
-/// - `mocache`: MO-basis Hamiltonian caches indexed by parent.
-/// - `space`: Determinant space containing the bra and ket states.
-/// - `groups`: Same-parent `(output, pair)` requests indexed by orthonormal parent.
-/// - `out`: Hamiltonian and overlap results in original request order.
-/// # Returns:
-/// - `()`: Writes every grouped `(H, S)` pair into `out`.
-pub(in crate::elements) fn calculate_hs_pairs_orthogonal_batched<T: NOCIScalar>(
-    ao: &AoData,
-    mocache: &[MOCache<T>],
-    space: &NOCISpace<T>,
-    groups: &[Vec<(usize, DetPair)>],
-    out: &mut [(T, T)],
-) {
-    let zero = T::from_real(0.0);
-    let mut h = Vec::new();
-    let mut s = Vec::new();
-    calculate_pairs_orthogonal_batched(
-        space,
-        groups,
-        2,
-        (zero, zero),
-        out,
-        |parent, occupations, states, values| {
-            // Evaluate `H` and `S` with their own batched kernels before pairing them.
-            h.clear();
-            h.resize(states.len(), zero);
-            s.clear();
-            s.resize(states.len(), zero);
-            xw_hamiltonian_orthogonal_batched(ao, &mocache[parent], occupations, states, &mut h);
-            xw_overlap_orthogonal_batched(states, &mut s);
-            for ((value, &h), &s) in values.iter_mut().zip(&h).zip(&s) {
-                *value = (h, s);
-            }
-        },
-    );
-}
-
-/// Dense counterpart of `calculate_hs_pairs_orthogonal_batched`, which fills the same-parent
-/// columns of one matrix row. Each ket is tested against the bra occupation and, if coupled by
-/// the Hamiltonian, evaluated with the scalar fixed-rank kernels directly into the row.
-/// # Arguments:
-/// - `ao`: AO integrals and nuclear-repulsion energy.
-/// - `cache`: MO-basis Hamiltonian cache of the shared parent.
-/// - `space`: Determinant space containing the bra and ket states.
-/// - `ldet`: Bra determinant of the row.
-/// - `right`: Ket determinants of every column.
-/// - `columns`: Columns of the row with kets of the bra's parent.
-/// - `out`: Hamiltonian and overlap matrix elements of every column of the row.
-/// # Returns:
-/// - `()`: Writes the `(H, S)` element of every column in `columns` into `out`.
-pub(in crate::elements) fn calculate_hs_pairs_orthogonal_dense<T: NOCIScalar>(
-    ao: &AoData,
-    cache: &MOCache<T>,
-    space: &NOCISpace<T>,
-    ldet: NOCIIndex,
-    right: &[NOCIIndex],
-    columns: &[usize],
-    out: &mut [(T, T)],
-) {
-    let zero = T::from_real(0.0);
-    let l_occ = space.occupations(ldet);
-    for &j in columns {
-        let g_occ = space.occupations(right[j]);
-        out[j] = match prepare_orthogonal_state(l_occ, g_occ, 2) {
-            Some(state) => (
-                xw_hamiltonian_orthogonal(ao, cache, g_occ, &state),
-                xw_overlap_orthogonal(&state),
-            ),
-            None => (zero, zero),
-        };
+    // Evaluate the parent-local batch, then scatter values back to request order.
+    let mut values = vec![zero; connections.len()];
+    kernel(&occupations, &connections, &mut values);
+    for (&output, &value) in outputs.iter().zip(&values) {
+        out[output] = value;
     }
 }

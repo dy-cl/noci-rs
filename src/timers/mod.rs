@@ -406,7 +406,8 @@ pub fn reset_all() {
 }
 
 /// Time a block of code and record the elapsed nanoseconds using the supplied callback.
-/// This macro is only active when the `timings` feature is enabled.
+/// This macro is only active when the `timings` feature is enabled; without it the callback is
+/// still named, so every counter path is checked in both builds.
 /// # Arguments:
 /// - `$path`: Function taking a `u64` nanosecond count and updating the chosen counter.
 /// - `$body`: Block of code to execute and time.
@@ -445,6 +446,7 @@ macro_rules! time_call {
 
         #[cfg(not(feature = "timings"))]
         {
+            let _: fn(u64) = $add;
             $body
         }
     }};

@@ -10,20 +10,18 @@
 //! - `naive`: the generalised Slater-Condon rules for nonorthogonal pairs;
 //! - `nonorthogonalwicks`: the extended nonorthogonal Wick theorem for nonorthogonal pairs.
 //!
-//! The operator files at this level dispatch each pair to its engine; `rdm` assembles the
-//! reduced density matrices of NOCI states from the pair densities. Both method families,
-//! `noci` and `nocc`, evaluate their matrix elements here.
+//! `operator` defines the overlap, shifted Fock and Hamiltonian operators by their evaluation in
+//! each engine, and `pairs` routes every pair of a batch to its engine for any operator; `rdm`
+//! assembles the reduced density matrices of NOCI states from the pair densities. Both method
+//! families, `noci` and `nocc`, evaluate their matrix elements here.
 
 pub mod nonorthogonalwicks;
 
 mod cache;
-mod excited;
-mod fock;
-mod hs;
-mod m;
 mod naive;
+mod operator;
 mod orthogonal;
-mod overlap;
+mod pairs;
 mod rdm;
 mod types;
 
@@ -35,25 +33,20 @@ pub use cache::build_mo_cache;
 pub use nonorthogonalwicks::build_wicks_shared;
 
 // Crate-visible type re-exports.
+pub(crate) use operator::{Fock, HamiltonianOverlap, Overlap};
 pub(crate) use orthogonal::OrthogonalHamiltonianScratch;
 #[cfg(feature = "gnocc")]
 pub(crate) use rdm::{RDM1, RDM2, RDM3, RDM4};
-pub(crate) use types::{DetPair, FockData};
+pub(crate) use types::{DetPair, FockData, PairDeterminant};
 
 // Crate-visible function re-exports.
 pub(crate) use cache::build_fock_mo_cache;
-pub(crate) use excited::{calculate_hs_excited, calculate_hs_states, calculate_s_states};
-pub(crate) use fock::{calculate_f_pair, compare_f_pair_wicks_naive};
-pub(crate) use hs::{calculate_hs_pair, calculate_hs_pair_dense, compare_hs_pair_wicks_naive};
-pub(crate) use m::calculate_m_pair;
-pub(crate) use naive::{
-    build_s_pair, build_s_pair_floored, calculate_s_pair_naive, occ_coeffs, pair_density,
-};
+pub(crate) use naive::{build_s_pair, build_s_pair_floored, occ_coeffs, pair_density};
 pub(crate) use nonorthogonalwicks::update_wicks_fock;
 pub(crate) use orthogonal::{
     calculate_f_pair_orthogonal, calculate_h_pairs_orthogonal_batched, calculate_s_pair_orthogonal,
 };
-pub(crate) use overlap::calculate_s_pair;
+pub(crate) use pairs::{calculate_pairs, calculate_pairs_dense, compare_pairs_wicks_naive};
 pub(crate) use rdm::noci_density;
 #[cfg(feature = "gnocc")]
 pub(crate) use rdm::{rdm1, rdm2, rdm3, rdm4};
