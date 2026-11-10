@@ -26,49 +26,10 @@
   &nbsp;·&nbsp;
   <a href="https://noci-rs.readthedocs.io/en/latest/input/index.html">Input reference</a>
   &nbsp;·&nbsp;
+  <a href="https://noci-rs.readthedocs.io/en/latest/results.html">Results</a>
+  &nbsp;·&nbsp;
   <a href="https://noci-rs.readthedocs.io/en/latest/citing.html">Citing</a>
 </h3>
-
----
-
-<p align="center">
-  <img
-    src="assets/results/HChain_STO-3G_1_5_Compression.png"
-    width="820"
-  >
-</p>
-
-<div align="center">
-
-Shoulder population $N_w$ against hydrogen chain length $N_H$ for NOCISD(3)QMC and accuracy matched CIQMC in the STO-3G basis. The measured shoulders are extrapolated, demonstrating the large compression of NOCIQMC relative to CIQMC at comparable accuracy.
-
-</div>
-
-<p align="center">
-  <img
-    src="assets/results/H20_STO-3G_b-apply_NOCISD3_1_5.png"
-    width="820"
-  >
-</p>
-
-<div align="center">
-
-Typical evolution of the projected energy $E_{\mathrm{Proj}}(\tau)$ and shift $E_s^S(\tau)$ for the H<sub>20</sub> linear chain at 1.5 Å in the STO-3G basis using the `b-apply` propagator. The same trajectories can also be seen for `s-apply`.
-
-</div>
-
-<p align="center">
-  <img
-    src="assets/results/F2_cc-pVDZ_NOCIPT2_Holomorphic_Scan.png"
-    width="820"
-  >
-</p>
-
-<div align="center">
-
-NOCI-PT2(3) calculation for F<sub>2</sub> in the cc-pVDZ basis. The NOCI-PT2 method recovers much of the dynamical correlation absent from reference NOCI, shown by good agreement with the CCSD(T) energies. Use of the non-orthogonal Wick's theorem for matrix elements allows larger first-order spaces to be treated than was previously possible.
-
-</div>
 
 ---
 
