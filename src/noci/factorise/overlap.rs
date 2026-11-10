@@ -10,12 +10,11 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::determinant::{
-    AuxiliaryDeterminantState, AuxiliaryIndex, AuxiliarySpace, AuxiliarySpinIndex, NOCIIndex,
-    ReducedOneSpinNOCIDeterminantState,
+    AuxiliaryDeterminantState, AuxiliaryIndex, AuxiliarySpace, AuxiliarySpinIndex,
+    ExcitedSpinState, NOCIIndex,
 };
 use crate::elements::nonorthogonalwicks::{
-    SameSpinOrthogonalOverlapBatch, SameSpinOverlapBatch, WickScratchSpin, WicksPairView,
-    xw_overlap_orthogonal_prepared_batched, xw_overlap_prepared_batched,
+    SameSpinOverlapBatch, WickScratchSpin, WicksPairView, xw_overlap_prepared_batched,
 };
 use crate::elements::{DetPair, NOCIData, Overlap, calculate_pairs};
 use crate::input::SNOCIStorage;
@@ -546,7 +545,6 @@ impl SpinFactorisation {
                         let (afac, _, _, _) = factors.factors_mut();
                         build_spin_overlap_factors(
                             &pair,
-                            data,
                             (target.areps.as_slice(), source.areps.as_slice()),
                             0..nta,
                             target_left,
@@ -561,7 +559,6 @@ impl SpinFactorisation {
                         let (_, bfac, _, _) = factors.factors_mut();
                         build_spin_overlap_factors(
                             &pair,
-                            data,
                             (target.breps.as_slice(), source.breps.as_slice()),
                             0..ntb,
                             target_left,
@@ -624,7 +621,7 @@ impl SpinFactorisation {
     /// - `auxiliary`: Canonical auxiliary component topology and numerical spin payloads.
     /// - `target_parent`: Target parent `Q`.
     /// - `source`: Auxiliary source block belonging to parent `P`.
-    /// - `context`: Shared NOCI data, ordered Wick pair, and left-reference flag.
+    /// - `context`: Ordered Wick pair and left-reference flag.
     /// # Returns
     /// - `Option<&OverlapFactorBlock>`: Persistent factor block after materialisation, when present.
     fn intern_auxiliary_source_columns<'a>(
@@ -633,10 +630,10 @@ impl SpinFactorisation {
         auxiliary: &AuxiliarySpace,
         target_parent: usize,
         source: &AuxiliaryParentUpdates,
-        context: (&NOCIData<'_, f64>, &WicksPairView<'_, f64>, bool),
+        context: (&WicksPairView<'_, f64>, bool),
     ) -> Option<&'a OverlapFactorBlock> {
         // Resolve the persistent parent-pair block and canonical one-spin component spaces.
-        let (data, pair, target_left) = context;
+        let (pair, target_left) = context;
         let source_parent = source.parent;
         let nparent = self.parents.len();
         let block = factors.block_mut(nparent, target_parent, source_parent)?;
@@ -670,26 +667,19 @@ impl SpinFactorisation {
         if !missing_alpha.is_empty() {
             let source_reps = missing_alpha
                 .iter()
-                .map(|&id| components.alpha(AuxiliarySpinIndex(id)).reduced)
-                .collect::<Vec<_>>();
-            let source_excitations = missing_alpha
-                .iter()
-                .map(|&id| components.alpha(AuxiliarySpinIndex(id)).excitation)
+                .map(|&id| components.alpha(AuxiliarySpinIndex(id)).excited())
                 .collect::<Vec<_>>();
             let mut table = vec![0.0; target_areps.len() * source_reps.len()];
             table
                 .par_chunks_mut(source_reps.len())
                 .zip(target_areps.par_iter())
                 .for_each_init(WickScratchSpin::new, |wick, (row, &target_rep)| {
-                    xw_overlap_orthogonal_prepared_batched(
+                    xw_overlap_prepared_batched(
                         &pair.aa,
-                        SameSpinOrthogonalOverlapBatch {
-                            basis: data.space,
+                        SameSpinOverlapBatch {
                             target: target_rep,
                             sources: &source_reps,
-                            source_excitations: &source_excitations,
                             target_left,
-                            alpha: true,
                             out: row,
                         },
                         &mut wick.aa,
@@ -716,26 +706,19 @@ impl SpinFactorisation {
         if !missing_beta.is_empty() {
             let source_reps = missing_beta
                 .iter()
-                .map(|&id| components.beta(AuxiliarySpinIndex(id)).reduced)
-                .collect::<Vec<_>>();
-            let source_excitations = missing_beta
-                .iter()
-                .map(|&id| components.beta(AuxiliarySpinIndex(id)).excitation)
+                .map(|&id| components.beta(AuxiliarySpinIndex(id)).excited())
                 .collect::<Vec<_>>();
             let mut table = vec![0.0; target_breps.len() * source_reps.len()];
             table
                 .par_chunks_mut(source_reps.len())
                 .zip(target_breps.par_iter())
                 .for_each_init(WickScratchSpin::new, |wick, (row, &target_rep)| {
-                    xw_overlap_orthogonal_prepared_batched(
+                    xw_overlap_prepared_batched(
                         &pair.bb,
-                        SameSpinOrthogonalOverlapBatch {
-                            basis: data.space,
+                        SameSpinOverlapBatch {
                             target: target_rep,
                             sources: &source_reps,
-                            source_excitations: &source_excitations,
                             target_left,
-                            alpha: false,
                             out: row,
                         },
                         &mut wick.bb,
@@ -919,7 +902,7 @@ impl SpinFactorisation {
                     auxiliary,
                     target.parent,
                     &source,
-                    (data, &pair, target_left),
+                    (&pair, target_left),
                 );
                 if let Some(block) = persistent {
                     self.apply_persistent_overlap_parent_pair(
@@ -938,7 +921,6 @@ impl SpinFactorisation {
                 self.build_auxiliary_overlap_factor_tables(
                     target,
                     &source,
-                    data,
                     auxiliary,
                     (&pair, target_left),
                     &mut scratch.contraction,
@@ -1294,18 +1276,17 @@ impl SpinFactorisation {
                 self.apply_overlap_factorised_rows_transient(
                     output,
                     (target, source),
-                    data,
                     &pair,
                     target_left,
                     scratch,
                 );
             }
             OverlapContraction::AFirst => {
-                self.build_overlap_factor_tables(target, source, data, &pair, target_left, scratch);
+                self.build_overlap_factor_tables(target, source, &pair, target_left, scratch);
                 self.apply_overlap_a_first_scratch(output, target, factorised, scratch);
             }
             OverlapContraction::BFirst => {
-                self.build_overlap_factor_tables(target, source, data, &pair, target_left, scratch);
+                self.build_overlap_factor_tables(target, source, &pair, target_left, scratch);
                 self.apply_overlap_b_first_scratch(output, target, factorised, scratch);
             }
         }
@@ -1477,7 +1458,6 @@ impl SpinFactorisation {
     /// - `self`: Shared retained determinant spin factorisation.
     /// - `output`: Rank-local persistent population increment.
     /// - `blocks`: Rank-local target block `Q` and source-parent sparse updates `P`.
-    /// - `data`: Shared NOCI determinant data.
     /// - `pair`: Wick intermediates for the ordered parent pair.
     /// - `target_left`: Whether target determinants belong to the left Wick reference.
     /// - `scratch`: Reusable per-target output storage.
@@ -1487,7 +1467,6 @@ impl SpinFactorisation {
         &self,
         output: &mut [f64],
         blocks: (&LocalParentBlock, &ParentUpdates),
-        data: &NOCIData<'_, f64>,
         pair: &WicksPairView<'_, f64>,
         target_left: bool,
         scratch: &mut OverlapContractionScratch,
@@ -1523,7 +1502,6 @@ impl SpinFactorisation {
                     let (wick, afac, bfac) = state;
                     build_spin_overlap_factor_row(
                         pair,
-                        data,
                         (
                             self.parents[target.parent].areps[t.a],
                             source_areps.as_slice(),
@@ -1535,7 +1513,6 @@ impl SpinFactorisation {
                     );
                     build_spin_overlap_factor_row(
                         pair,
-                        data,
                         (
                             self.parents[target.parent].breps[t.b],
                             source_breps.as_slice(),
@@ -1872,7 +1849,6 @@ impl SpinFactorisation {
     /// - `self`: Shared retained determinant spin factorisation.
     /// - `target`: Retained target block defining active target spin components.
     /// - `source`: Sparse auxiliary sources defining active physical component IDs.
-    /// - `data`: Shared retained NOCI basis.
     /// - `auxiliary`: Canonical auxiliary component topology and numerical spin payloads.
     /// - `context`: Wick intermediates for ordered reference pair `QP` and whether target parent
     ///   `Q` is the left Wick reference.
@@ -1883,7 +1859,6 @@ impl SpinFactorisation {
         &self,
         target: &LocalParentBlock,
         source: &AuxiliaryParentUpdates,
-        data: &NOCIData<'_, f64>,
         auxiliary: &AuxiliarySpace,
         context: (&WicksPairView<'_, f64>, bool),
         scratch: &mut OverlapContractionScratch,
@@ -1900,27 +1875,17 @@ impl SpinFactorisation {
             .iter()
             .map(|&b| self.parents[target.parent].breps[b])
             .collect::<Vec<_>>();
-        // Gather active auxiliary source representatives and their explicit excitations.
+        // Gather the active auxiliary source representatives in prepared form.
         let components = auxiliary.parent_components(source.parent);
         let source_areps = source
             .aids
             .iter()
-            .map(|&a| components.alpha(AuxiliarySpinIndex(a)).reduced)
+            .map(|&a| components.alpha(AuxiliarySpinIndex(a)).excited())
             .collect::<Vec<_>>();
         let source_breps = source
             .bids
             .iter()
-            .map(|&b| components.beta(AuxiliarySpinIndex(b)).reduced)
-            .collect::<Vec<_>>();
-        let source_aex = source
-            .aids
-            .iter()
-            .map(|&a| components.alpha(AuxiliarySpinIndex(a)).excitation)
-            .collect::<Vec<_>>();
-        let source_bex = source
-            .bids
-            .iter()
-            .map(|&b| components.beta(AuxiliarySpinIndex(b)).excitation)
+            .map(|&b| components.beta(AuxiliarySpinIndex(b)).excited())
             .collect::<Vec<_>>();
         // Size transient row-major tables to the active target/source Cartesian products.
         let nsa = source_areps.len();
@@ -1937,15 +1902,12 @@ impl SpinFactorisation {
             .par_chunks_mut(nsa)
             .zip(target_areps.par_iter())
             .for_each_init(WickScratchSpin::new, |wick, (row, &target_rep)| {
-                xw_overlap_orthogonal_prepared_batched(
+                xw_overlap_prepared_batched(
                     &pair.aa,
-                    SameSpinOrthogonalOverlapBatch {
-                        basis: data.space,
+                    SameSpinOverlapBatch {
                         target: target_rep,
                         sources: &source_areps,
-                        source_excitations: &source_aex,
                         target_left,
-                        alpha: true,
                         out: row,
                     },
                     &mut wick.aa,
@@ -1957,15 +1919,12 @@ impl SpinFactorisation {
             .par_chunks_mut(nsb)
             .zip(target_breps.par_iter())
             .for_each_init(WickScratchSpin::new, |wick, (row, &target_rep)| {
-                xw_overlap_orthogonal_prepared_batched(
+                xw_overlap_prepared_batched(
                     &pair.bb,
-                    SameSpinOrthogonalOverlapBatch {
-                        basis: data.space,
+                    SameSpinOverlapBatch {
                         target: target_rep,
                         sources: &source_breps,
-                        source_excitations: &source_bex,
                         target_left,
-                        alpha: false,
                         out: row,
                     },
                     &mut wick.bb,
@@ -1980,7 +1939,6 @@ impl SpinFactorisation {
     /// - `self`: Shared retained determinant spin factorisation.
     /// - `target`: Target parent block defining active target component IDs.
     /// - `source`: Source parent updates defining active source component IDs.
-    /// - `data`: Shared NOCI determinant data.
     /// - `pair`: Wick intermediates for the ordered parent pair.
     /// - `target_left`: Whether target determinants belong to the left Wick reference.
     /// - `scratch`: Reusable active factor-table storage.
@@ -1990,7 +1948,6 @@ impl SpinFactorisation {
         &self,
         target: &LocalParentBlock,
         source: &ParentUpdates,
-        data: &NOCIData<'_, f64>,
         pair: &WicksPairView<'_, f64>,
         target_left: bool,
         scratch: &mut OverlapContractionScratch,
@@ -2031,7 +1988,6 @@ impl SpinFactorisation {
         // Evaluate alpha and beta factors with identical orientation and spin-specific Wick data.
         build_spin_overlap_factors(
             pair,
-            data,
             (target_areps.as_slice(), source_areps.as_slice()),
             0..nta,
             target_left,
@@ -2040,7 +1996,6 @@ impl SpinFactorisation {
         );
         build_spin_overlap_factors(
             pair,
-            data,
             (target_breps.as_slice(), source_breps.as_slice()),
             0..ntb,
             target_left,
@@ -2270,8 +2225,7 @@ impl SpinFactorisation {
 /// kernel is used when applicable, with the scalar overlap evaluator as the fallback.
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
-/// - `data`: Shared NOCI determinant data.
-/// - `reps`: Reduced target and source spin representatives.
+/// - `reps`: Prepared target and source spin representatives.
 /// - `rows`: Target-row range to fill.
 /// - `target_left`: Whether target determinants belong to the left Wick reference.
 /// - `alpha`: Whether to build alpha or beta overlap factors.
@@ -2280,11 +2234,7 @@ impl SpinFactorisation {
 /// - `()`: Fills `out` overlap factor rows.
 fn build_spin_overlap_factors(
     pair: &WicksPairView<'_, f64>,
-    data: &NOCIData<'_, f64>,
-    reps: (
-        &[ReducedOneSpinNOCIDeterminantState],
-        &[ReducedOneSpinNOCIDeterminantState],
-    ),
+    reps: (&[ExcitedSpinState], &[ExcitedSpinState]),
     rows: Range<usize>,
     target_left: bool,
     alpha: bool,
@@ -2301,7 +2251,6 @@ fn build_spin_overlap_factors(
         .for_each_init(WickScratchSpin::new, |scratch, (row, &target_rep)| {
             build_spin_overlap_factor_row(
                 pair,
-                data,
                 (target_rep, source_reps),
                 target_left,
                 alpha,
@@ -2316,8 +2265,7 @@ fn build_spin_overlap_factors(
 /// excitation ranks and available CPU features.
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
-/// - `data`: Shared NOCI determinant data used by scalar fallback evaluation.
-/// - `reps`: Reduced target representative and source representatives.
+/// - `reps`: Prepared target representative and source representatives.
 /// - `target_left`: Whether the target determinant belongs to the left Wick reference.
 /// - `alpha`: Whether to evaluate alpha-alpha or beta-beta overlap factors.
 /// - `scratch`: Reusable spin-resolved Wick evaluator workspace.
@@ -2326,11 +2274,7 @@ fn build_spin_overlap_factors(
 /// - `()`: Fills `out` for the target spin component.
 fn build_spin_overlap_factor_row(
     pair: &WicksPairView<'_, f64>,
-    data: &NOCIData<'_, f64>,
-    reps: (
-        ReducedOneSpinNOCIDeterminantState,
-        &[ReducedOneSpinNOCIDeterminantState],
-    ),
+    reps: (ExcitedSpinState, &[ExcitedSpinState]),
     target_left: bool,
     alpha: bool,
     scratch: &mut WickScratchSpin<f64>,
@@ -2346,11 +2290,9 @@ fn build_spin_overlap_factor_row(
     xw_overlap_prepared_batched(
         w,
         SameSpinOverlapBatch {
-            basis: data.space,
             target,
             sources,
             target_left,
-            alpha,
             out,
         },
         scratch,

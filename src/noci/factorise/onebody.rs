@@ -11,13 +11,13 @@ use ndarray::Array1;
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::ExcitationSpinCache;
 use crate::NOCIScalar;
-use crate::determinant::{NOCIIndex, NOCISpace, NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
+use crate::determinant::{ExcitedSpinState, NOCIIndex, NOCISpace, NOCISpinIndex};
 use crate::elements::calculate_f_pair_orthogonal;
 use crate::elements::calculate_s_pair_orthogonal;
 use crate::elements::nonorthogonalwicks::{
-    SameSpinOneBodyBatch, WickScratchSpin, WicksPairView, xw_f_overlap_prepared_batched,
+    SameSpinOneBodyBatch, SpinEvaluationOrder, WickScratchSpin, WicksPairView,
+    xw_f_overlap_prepared_batched,
 };
 use crate::elements::{FockData, FockMOCache, NOCIData};
 use crate::input::SNOCIStorage;
@@ -759,10 +759,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         target.areps[ta],
                         SpinOneBodySources {
                             reps: source.areps.as_slice(),
-                            order: source.a_eval_order.as_slice(),
-                            groups: source.a_eval_groups.as_slice(),
-                            caches: source.a_eval_caches.as_slice(),
-                            phases: source.a_eval_phases.as_slice(),
+                            order: &source.a_order,
                         },
                         (target_left, true),
                         wick,
@@ -803,10 +800,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         target.breps[tb],
                         SpinOneBodySources {
                             reps: source.breps.as_slice(),
-                            order: source.b_eval_order.as_slice(),
-                            groups: source.b_eval_groups.as_slice(),
-                            caches: source.b_eval_caches.as_slice(),
-                            phases: source.b_eval_phases.as_slice(),
+                            order: &source.b_order,
                         },
                         (target_left, false),
                         wick,
@@ -936,10 +930,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         target.breps[tb],
                         SpinOneBodySources {
                             reps: source.breps.as_slice(),
-                            order: source.b_eval_order.as_slice(),
-                            groups: source.b_eval_groups.as_slice(),
-                            caches: source.b_eval_caches.as_slice(),
-                            phases: source.b_eval_phases.as_slice(),
+                            order: &source.b_order,
                         },
                         (target_left, false),
                         wick,
@@ -979,10 +970,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         target.areps[ta],
                         SpinOneBodySources {
                             reps: source.areps.as_slice(),
-                            order: source.a_eval_order.as_slice(),
-                            groups: source.a_eval_groups.as_slice(),
-                            caches: source.a_eval_caches.as_slice(),
-                            phases: source.a_eval_phases.as_slice(),
+                            order: &source.a_order,
                         },
                         (target_left, true),
                         wick,
@@ -1078,10 +1066,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
             target.areps.as_slice(),
             SpinOneBodySources {
                 reps: source.areps.as_slice(),
-                order: source.a_eval_order.as_slice(),
-                groups: source.a_eval_groups.as_slice(),
-                caches: source.a_eval_caches.as_slice(),
-                phases: source.a_eval_phases.as_slice(),
+                order: &source.a_order,
             },
             0..nta,
             (target_left, true),
@@ -1099,10 +1084,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
             target.breps.as_slice(),
             SpinOneBodySources {
                 reps: source.breps.as_slice(),
-                order: source.b_eval_order.as_slice(),
-                groups: source.b_eval_groups.as_slice(),
-                caches: source.b_eval_caches.as_slice(),
-                phases: source.b_eval_phases.as_slice(),
+                order: &source.b_order,
             },
             0..ntb,
             (target_left, false),
@@ -1356,16 +1338,10 @@ fn apply_orthogonal_beta_singles<T, R>(
 /// Source representatives and their fixed-rank Wick evaluation metadata.
 #[derive(Clone, Copy)]
 struct SpinOneBodySources<'a> {
-    /// Reduced source spin representatives in output-column order.
-    reps: &'a [ReducedOneSpinNOCIDeterminantState],
-    /// Logical source component IDs in fixed-rank Wick evaluation order.
-    order: &'a [usize],
-    /// Boundaries of equal-rank, common-hole source groups in `order`.
-    groups: &'a [usize],
-    /// Source excitation caches in fixed-rank Wick evaluation order.
-    caches: &'a [ExcitationSpinCache],
-    /// Source excitation phases in fixed-rank Wick evaluation order.
-    phases: &'a [f64],
+    /// Prepared source spin representatives in output-column order.
+    reps: &'a [ExcitedSpinState],
+    /// Fixed-rank Wick evaluation order of `reps`.
+    order: &'a SpinEvaluationOrder,
 }
 
 /// Build same-spin `S` and `F` factor rows from prepared Wick pair batches.
@@ -1383,7 +1359,7 @@ struct SpinOneBodySources<'a> {
 fn build_spin_one_body_factors<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
-    target_reps: &[ReducedOneSpinNOCIDeterminantState],
+    target_reps: &[ExcitedSpinState],
     sources: SpinOneBodySources<'_>,
     rows: Range<usize>,
     flags: (bool, bool),
@@ -1428,7 +1404,7 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 fn build_spin_one_body_factor_row<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
-    target: ReducedOneSpinNOCIDeterminantState,
+    target: ExcitedSpinState,
     sources: SpinOneBodySources<'_>,
     flags: (bool, bool),
     scratch: &mut WickScratchSpin<T>,
@@ -1446,15 +1422,10 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
     xw_f_overlap_prepared_batched(
         w,
         SameSpinOneBodyBatch {
-            basis: data.space,
             target,
             sources: sources.reps,
-            source_order: sources.order,
-            source_groups: sources.groups,
-            source_caches: sources.caches,
-            source_phases: sources.phases,
+            order: sources.order,
             target_left,
-            alpha,
             overlap,
             fock,
         },

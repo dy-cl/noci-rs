@@ -49,7 +49,7 @@ pub use view::WicksView;
 
 // Crate-visible type re-exports.
 pub(crate) use build::{DiffSpinBuild, SameSpinBuild};
-pub(crate) use eval::{SameSpinOneBodyBatch, SameSpinOrthogonalOverlapBatch, SameSpinOverlapBatch};
+pub(crate) use eval::{SameSpinOneBodyBatch, SameSpinOverlapBatch, SpinEvaluationOrder};
 #[cfg(feature = "gnocc")]
 pub(crate) use scratch::WickScratch;
 pub(crate) use scratch::WickScratchSpin;
@@ -67,14 +67,14 @@ pub use shared::build_wicks_shared;
 pub(crate) use eval::xw_rdmk_same_prepared_batched;
 pub(crate) use eval::{
     xw_f_overlap_prepared, xw_f_overlap_prepared_batched, xw_hamiltonian_overlap_prepared_batched,
-    xw_overlap_orthogonal_prepared_batched, xw_overlap_prepared, xw_overlap_prepared_batched,
+    xw_overlap_prepared, xw_overlap_prepared_batched,
 };
 pub(crate) use layout::{assign_offsets, write_diff_spin, write_hcol0, write_same_spin, write2t};
 pub(crate) use shared::update_wicks_fock;
 pub(crate) use storage::{create_wicks_mmap, load_wicks_mmap};
 
 // Restricted function re-exports.
-pub(in crate::elements) use pairs::{calculate_fs_pair_wicks, calculate_s_pair_wicks};
+pub(in crate::elements) use pairs::{calculate_fs_pairs_wicks, calculate_s_pairs_wicks};
 #[cfg(feature = "gnocc")]
 pub(in crate::elements) use rdm::{
     rdm1_pair_wicks, rdm2_pair_wicks, rdm3_pair_wicks, rdm4_pair_wicks,

@@ -7,6 +7,9 @@ use std::collections::HashMap;
 use crate::basis::{excitation_between, excitation_phase_bits};
 use crate::{ExcitationSpin, ReducedOneSpinState};
 
+// Parent/sibling imports.
+use super::excited::ExcitedSpinState;
+
 /// Compact index of a spin component in one parent determinant.
 pub(crate) trait SpinDeterminantIndex: Copy + Eq {
     /// Construct an index from its parent-local position.
@@ -66,6 +69,18 @@ pub(crate) struct SpinDeterminantState {
 }
 
 impl SpinDeterminantState {
+    /// Return this spin component in the prepared form of the same-spin kernels.
+    /// # Arguments:
+    /// - `self`: Canonical parent-local spin component.
+    /// # Returns:
+    /// - `ExcitedSpinState`: Parent-relative excitation, phase and fixed-rank cache.
+    pub(crate) fn excited(&self) -> ExcitedSpinState {
+        ExcitedSpinState {
+            excitation: self.excitation,
+            state: self.reduced,
+        }
+    }
+
     /// Derive parent-relative excitation, phase, cache and rank lookup tables from occupations.
     /// # Arguments:
     /// - `parent_occupation`: Occupation of the parent spin reference.

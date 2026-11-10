@@ -9,14 +9,14 @@
 
 // Crate-root imports.
 use crate::determinant::ExcitedState;
-use crate::elements::{FockData, NOCIData};
+use crate::elements::{DetPair, FockData, NOCIData, PairDeterminant};
 use crate::time_call;
 use crate::{NOCIScalar, ReducedTwoSpinState};
 
 // Parent/sibling imports.
 use super::naive::{calculate_fs_pair_naive, calculate_hs_pair_naive, calculate_s_pair_naive};
 use super::nonorthogonalwicks::{
-    WickScratchSpin, WicksPairView, calculate_fs_pair_wicks, calculate_s_pair_wicks,
+    WickScratchSpin, WicksPairView, calculate_fs_pairs_wicks, calculate_s_pairs_wicks,
     xw_hamiltonian_overlap_prepared_batched,
 };
 use super::orthogonal::{
@@ -81,16 +81,16 @@ pub(crate) trait PairOperator<T: NOCIScalar> {
     /// - `self`: Operator.
     /// - `data`: Shared data required for NOCI matrix-element evaluation.
     /// - `w`: Wick intermediates of the ordered reference pair.
-    /// - `requests`: Output positions with their prepared bra and ket determinants.
+    /// - `requests`: Output positions with their determinant pairs.
     /// - `scratch`: Scratch space for Wick's calculations.
     /// - `out`: Matrix elements indexed by output position.
     /// # Returns:
     /// - `()`: Writes every requested matrix element into `out`.
-    fn wicks(
+    fn wicks<D: PairDeterminant<T>>(
         &self,
         data: &NOCIData<'_, T>,
         w: &WicksPairView<'_, T>,
-        requests: &[(usize, ExcitedState, ExcitedState)],
+        requests: &[(usize, DetPair<D>)],
         scratch: &mut WickScratchSpin<T>,
         out: &mut [Self::Out],
     );
@@ -193,24 +193,25 @@ impl<T: NOCIScalar> PairOperator<T> for Overlap {
     /// Evaluate the overlaps of one ordered reference pair with Wick's theorem.
     /// # Arguments:
     /// - `self`: Overlap operator.
-    /// - `data`: Unused, as Wick overlaps need only the intermediates.
+    /// - `data`: Shared data holding the determinant space.
     /// - `w`: Wick intermediates of the ordered reference pair.
-    /// - `requests`: Output positions with their prepared bra and ket determinants.
+    /// - `requests`: Output positions with their determinant pairs.
     /// - `scratch`: Scratch space for Wick's calculations.
     /// - `out`: Overlaps indexed by output position.
     /// # Returns:
     /// - `()`: Writes every requested overlap into `out`.
-    fn wicks(
+    fn wicks<D: PairDeterminant<T>>(
         &self,
-        _data: &NOCIData<'_, T>,
+        data: &NOCIData<'_, T>,
         w: &WicksPairView<'_, T>,
-        requests: &[(usize, ExcitedState, ExcitedState)],
+        requests: &[(usize, DetPair<D>)],
         scratch: &mut WickScratchSpin<T>,
         out: &mut [T],
     ) {
         time_call!(crate::timers::noci::add_calculate_s_pair_wicks, {
-            for (output, bra, ket) in requests {
-                out[*output] = calculate_s_pair_wicks(w, bra, ket, scratch);
+            let overlaps = calculate_s_pairs_wicks(w, data.space, requests, scratch);
+            for ((output, _), s) in requests.iter().zip(overlaps) {
+                out[*output] = s;
             }
         });
     }
@@ -317,22 +318,22 @@ impl<T: NOCIScalar> PairOperator<T> for Fock<'_, T> {
     /// - `self`: Shifted Fock operator.
     /// - `data`: Shared data holding the numerical tolerance.
     /// - `w`: Wick intermediates of the ordered reference pair.
-    /// - `requests`: Output positions with their prepared bra and ket determinants.
+    /// - `requests`: Output positions with their determinant pairs.
     /// - `scratch`: Scratch space for Wick's calculations.
     /// - `out`: Shifted Fock elements indexed by output position.
     /// # Returns:
     /// - `()`: Writes every requested element into `out`.
-    fn wicks(
+    fn wicks<D: PairDeterminant<T>>(
         &self,
         data: &NOCIData<'_, T>,
         w: &WicksPairView<'_, T>,
-        requests: &[(usize, ExcitedState, ExcitedState)],
+        requests: &[(usize, DetPair<D>)],
         scratch: &mut WickScratchSpin<T>,
         out: &mut [T],
     ) {
         time_call!(crate::timers::noci::add_calculate_f_pair_wicks, {
-            for (output, bra, ket) in requests {
-                let (f, s) = calculate_fs_pair_wicks(w, bra, ket, data.tol, scratch);
+            let elements = calculate_fs_pairs_wicks(w, data.space, requests, data.tol, scratch);
+            for ((output, _), (f, s)) in requests.iter().zip(elements) {
                 out[*output] = f - T::from_real(self.shift) * s;
             }
         });
@@ -448,23 +449,34 @@ impl<T: NOCIScalar> PairOperator<T> for HamiltonianOverlap {
     /// - `self`: Hamiltonian and overlap operator.
     /// - `data`: Shared data holding the nuclear repulsion and numerical tolerance.
     /// - `w`: Wick intermediates of the ordered reference pair.
-    /// - `requests`: Output positions with their prepared bra and ket determinants.
+    /// - `requests`: Output positions with their determinant pairs.
     /// - `scratch`: Scratch space for Wick's calculations.
     /// - `out`: Hamiltonian and overlap elements indexed by output position.
     /// # Returns:
     /// - `()`: Writes every requested `(H, S)` pair into `out`.
-    fn wicks(
+    fn wicks<D: PairDeterminant<T>>(
         &self,
         data: &NOCIData<'_, T>,
         w: &WicksPairView<'_, T>,
-        requests: &[(usize, ExcitedState, ExcitedState)],
+        requests: &[(usize, DetPair<D>)],
         scratch: &mut WickScratchSpin<T>,
         out: &mut [(T, T)],
     ) {
         time_call!(crate::timers::noci::add_calculate_hs_pair_wicks, {
+            // The two-spin kernel needs every request's determinants in prepared form.
+            let states: Vec<_> = requests
+                .iter()
+                .map(|&(output, pair)| {
+                    (
+                        output,
+                        pair.ldet.state(data.space),
+                        pair.gdet.state(data.space),
+                    )
+                })
+                .collect();
             xw_hamiltonian_overlap_prepared_batched(
                 w,
-                requests,
+                &states,
                 data.ao.enuc,
                 scratch,
                 data.tol,

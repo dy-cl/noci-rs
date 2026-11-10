@@ -4,7 +4,9 @@
 use ndarray::{Array2, Array4};
 
 // Crate-root imports.
-use crate::determinant::{ExcitedDeterminant, ExcitedState, NOCIIndex, NOCISpace};
+use crate::determinant::{
+    ExcitedDeterminant, ExcitedSpinState, ExcitedState, NOCIIndex, NOCISpace,
+};
 use crate::input::Input;
 use crate::{AoData, NOCIScalar};
 
@@ -159,6 +161,19 @@ pub(crate) trait PairDeterminant<T: NOCIScalar>: Copy {
         self,
         space: &NOCISpace<T>,
     ) -> ExcitedState;
+
+    /// Return one spin component of the determinant in its prepared form.
+    /// # Arguments:
+    /// - `self`: Determinant.
+    /// - `space`: Determinant space holding the parent frames.
+    /// - `alpha`: Whether to return the alpha rather than the beta component.
+    /// # Returns:
+    /// - `ExcitedSpinState`: Parent-relative excitation, phase and fixed-rank cache of the spin.
+    fn spin(
+        self,
+        space: &NOCISpace<T>,
+        alpha: bool,
+    ) -> ExcitedSpinState;
 }
 
 impl<T: NOCIScalar> PairDeterminant<T> for NOCIIndex {
@@ -199,6 +214,25 @@ impl<T: NOCIScalar> PairDeterminant<T> for NOCIIndex {
         space: &NOCISpace<T>,
     ) -> ExcitedState {
         space.excited_state(self)
+    }
+
+    /// Return one stored spin component of a retained determinant.
+    /// # Arguments:
+    /// - `self`: Retained determinant index.
+    /// - `space`: Determinant space containing the determinant.
+    /// - `alpha`: Whether to return the alpha rather than the beta component.
+    /// # Returns:
+    /// - `ExcitedSpinState`: Stored excitation, phase and fixed-rank cache of the spin.
+    fn spin(
+        self,
+        space: &NOCISpace<T>,
+        alpha: bool,
+    ) -> ExcitedSpinState {
+        if alpha {
+            space.alpha(self).excited()
+        } else {
+            space.beta(self).excited()
+        }
     }
 }
 
@@ -241,6 +275,21 @@ impl<T: NOCIScalar> PairDeterminant<T> for &ExcitedState {
     ) -> ExcitedState {
         *self
     }
+
+    /// Return one spin component of a prepared determinant.
+    /// # Arguments:
+    /// - `self`: Prepared determinant.
+    /// - `space`: Unused, as the determinant is already prepared.
+    /// - `alpha`: Whether to return the alpha rather than the beta component.
+    /// # Returns:
+    /// - `ExcitedSpinState`: Excitation, phase and fixed-rank cache of the spin.
+    fn spin(
+        self,
+        _space: &NOCISpace<T>,
+        alpha: bool,
+    ) -> ExcitedSpinState {
+        if alpha { self.alpha() } else { self.beta() }
+    }
 }
 
 impl<T: NOCIScalar> PairDeterminant<T> for ExcitedDeterminant {
@@ -281,6 +330,22 @@ impl<T: NOCIScalar> PairDeterminant<T> for ExcitedDeterminant {
         space: &NOCISpace<T>,
     ) -> ExcitedState {
         ExcitedDeterminant::state(&self, space.parents())
+    }
+
+    /// Prepare one spin component of an occupation-identified determinant.
+    /// # Arguments:
+    /// - `self`: Occupation-identified determinant.
+    /// - `space`: Determinant space holding the parent frames.
+    /// - `alpha`: Whether to return the alpha rather than the beta component.
+    /// # Returns:
+    /// - `ExcitedSpinState`: Derived excitation, phase and fixed-rank cache of the spin.
+    fn spin(
+        self,
+        space: &NOCISpace<T>,
+        alpha: bool,
+    ) -> ExcitedSpinState {
+        let state = ExcitedDeterminant::state(&self, space.parents());
+        if alpha { state.alpha() } else { state.beta() }
     }
 }
 

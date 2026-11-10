@@ -7,7 +7,6 @@ pub(crate) mod auxiliary;
 pub(crate) mod connection;
 pub(crate) mod excited;
 pub(crate) mod parent;
-pub(crate) mod reduced;
 pub(crate) mod space;
 pub(crate) mod state;
 
@@ -20,9 +19,8 @@ pub(crate) use auxiliary::{
     AuxiliaryDeterminantState, AuxiliaryIndex, AuxiliarySpace, AuxiliarySpinIndex,
 };
 pub(crate) use connection::OrthogonalConnection;
-pub(crate) use excited::{ExcitedDeterminant, ExcitedState};
-pub(crate) use reduced::ReducedOneSpinDeterminantState;
-pub(crate) use space::{NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
+pub(crate) use excited::{ExcitedDeterminant, ExcitedSpinState, ExcitedState};
+pub(crate) use space::NOCISpinIndex;
 pub(crate) use state::{
     DeterminantState, ParentComponents, SpinDeterminantIndex, SpinDeterminantState,
 };

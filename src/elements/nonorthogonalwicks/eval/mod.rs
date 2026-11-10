@@ -12,13 +12,11 @@ mod prepareonebodyoverlap;
 mod rdm;
 
 // Crate-visible type re-exports.
-pub(crate) use overlap::{SameSpinOrthogonalOverlapBatch, SameSpinOverlapBatch};
-pub(crate) use prepareonebodyoverlap::SameSpinOneBodyBatch;
+pub(crate) use overlap::SameSpinOverlapBatch;
+pub(crate) use prepareonebodyoverlap::{SameSpinOneBodyBatch, SpinEvaluationOrder};
 
 // Crate-visible function re-exports.
-pub(crate) use overlap::{
-    xw_overlap_orthogonal_prepared_batched, xw_overlap_prepared, xw_overlap_prepared_batched,
-};
+pub(crate) use overlap::{xw_overlap_prepared, xw_overlap_prepared_batched};
 pub(crate) use preparehamiltonianoverlap::xw_hamiltonian_overlap_prepared_batched;
 pub(crate) use prepareonebodyoverlap::{xw_f_overlap_prepared, xw_f_overlap_prepared_batched};
 #[cfg(feature = "gnocc")]

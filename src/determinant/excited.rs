@@ -2,7 +2,7 @@
 
 // Crate-root imports.
 use crate::basis::{excitation_between, excitation_phase_bits};
-use crate::{Excitation, ExcitationSpin, ReducedTwoSpinState, StateScalar};
+use crate::{Excitation, ExcitationSpin, ReducedOneSpinState, ReducedTwoSpinState, StateScalar};
 
 // Parent/sibling imports.
 use super::parent::ParentDeterminant;
@@ -33,6 +33,42 @@ pub(crate) struct ExcitedState {
     pub(crate) phase_b: f64,
     /// Combined phase and fixed-rank excitation caches used by numerical kernels.
     pub(crate) reduced: ReducedTwoSpinState,
+}
+
+/// One spin component of a prepared determinant: its parent-relative excitation with the phase
+/// and fixed-rank cache used by the same-spin nonorthogonal kernels.
+#[derive(Clone, Copy)]
+pub(crate) struct ExcitedSpinState {
+    /// Holes and particles relative to the parent determinant in this spin.
+    pub(crate) excitation: ExcitationSpin,
+    /// Phase and fixed-rank excitation cache of this spin.
+    pub(crate) state: ReducedOneSpinState,
+}
+
+impl ExcitedState {
+    /// Return the alpha component of the prepared determinant.
+    /// # Arguments:
+    /// - `self`: Prepared determinant.
+    /// # Returns:
+    /// - `ExcitedSpinState`: Alpha excitation, phase and fixed-rank cache.
+    pub(crate) fn alpha(&self) -> ExcitedSpinState {
+        ExcitedSpinState {
+            excitation: self.excitation.alpha,
+            state: ReducedOneSpinState::new(self.phase_a, self.reduced.excitation_cache.alpha),
+        }
+    }
+
+    /// Return the beta component of the prepared determinant.
+    /// # Arguments:
+    /// - `self`: Prepared determinant.
+    /// # Returns:
+    /// - `ExcitedSpinState`: Beta excitation, phase and fixed-rank cache.
+    pub(crate) fn beta(&self) -> ExcitedSpinState {
+        ExcitedSpinState {
+            excitation: self.excitation.beta,
+            state: ReducedOneSpinState::new(self.phase_b, self.reduced.excitation_cache.beta),
+        }
+    }
 }
 
 impl ExcitedDeterminant {

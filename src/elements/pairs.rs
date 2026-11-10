@@ -148,26 +148,15 @@ pub(crate) fn calculate_pairs<T, Op, D>(
             );
         }
 
-        // Each nonempty Wick group contains only requests belonging to one reference pair, whose
-        // determinants are prepared once for the nonorthogonal kernels.
+        // Each nonempty Wick group contains only requests belonging to one reference pair.
         if let Some(wicks) = wicks {
             let scratch = scratch.expect("Wick pairs require Wick scratch space");
-            let mut states = Vec::new();
             for (group, requests) in nonorthogonal.iter().enumerate() {
                 if requests.is_empty() {
                     continue;
                 }
-                states.clear();
-                states.extend(requests.iter().map(|&(output, pair)| {
-                    (output, pair.ldet.state(space), pair.gdet.state(space))
-                }));
-                op.wicks(
-                    data,
-                    &wicks.pair(group / nref, group % nref),
-                    &states,
-                    scratch,
-                    out,
-                );
+                let w = wicks.pair(group / nref, group % nref);
+                op.wicks(data, &w, requests, scratch, out);
             }
         }
     })
@@ -210,10 +199,11 @@ where
             }
         }
         Route::Wicks => {
-            let (bra, ket) = (pair.ldet.state(space), pair.gdet.state(space));
-            let w = wicks.unwrap().pair(bra.det.parent, ket.det.parent);
+            let w = wicks
+                .unwrap()
+                .pair(pair.ldet.parent(space), pair.gdet.parent(space));
             let scratch = scratch.expect("Wick pairs require Wick scratch space");
-            op.wicks(data, &w, &[(0, bra, ket)], scratch, &mut value);
+            op.wicks(data, &w, &[(0, pair)], scratch, &mut value);
         }
         Route::Naive => {
             value[0] = op.naive(data, &pair.ldet.state(space), &pair.gdet.state(space));
@@ -256,9 +246,8 @@ pub(crate) fn calculate_pairs_dense<T, Op>(
         let space = data.space;
         let wicks = enabled_wicks(data);
         let lp = ldet.parent(space);
-        let bra = ldet.state(space);
         let mut orthogonal = Vec::new();
-        let mut states = Vec::new();
+        let mut nonorthogonal = Vec::new();
 
         for (gp, columns) in runs {
             // Columns are ascending, so the requested ones form a suffix.
@@ -266,14 +255,16 @@ pub(crate) fn calculate_pairs_dense<T, Op>(
 
             // Route every column of the run to its engine, evaluating naive columns at once.
             orthogonal.clear();
-            states.clear();
+            nonorthogonal.clear();
             for &j in columns {
                 let pair = DetPair::new(ldet, right[j]);
                 match route(data, op, wicks.is_some(), pair) {
                     Route::Zero => out[j] = Op::zero(),
                     Route::Orthogonal => orthogonal.push((j, pair)),
-                    Route::Wicks => states.push((j, bra, right[j].state(space))),
-                    Route::Naive => out[j] = op.naive(data, &bra, &right[j].state(space)),
+                    Route::Wicks => nonorthogonal.push((j, pair)),
+                    Route::Naive => {
+                        out[j] = op.naive(data, &ldet.state(space), &right[j].state(space))
+                    }
                 }
             }
 
@@ -291,12 +282,12 @@ pub(crate) fn calculate_pairs_dense<T, Op>(
                 );
             }
             if let Some(wicks) = wicks
-                && !states.is_empty()
+                && !nonorthogonal.is_empty()
             {
                 let scratch = scratch
                     .as_deref_mut()
                     .expect("Wick pairs require Wick scratch space");
-                op.wicks(data, &wicks.pair(lp, *gp), &states, scratch, out);
+                op.wicks(data, &wicks.pair(lp, *gp), &nonorthogonal, scratch, out);
             }
         }
     })
@@ -324,15 +315,14 @@ where
     Op: PairOperator<T>,
 {
     let space = data.space;
-    let (bra, ket) = (pair.ldet.state(space), pair.gdet.state(space));
     let w = data
         .wicks
         .expect("comparison requires Wick intermediates")
-        .pair(bra.det.parent, ket.det.parent);
+        .pair(pair.ldet.parent(space), pair.gdet.parent(space));
 
     let mut wick = [Op::zero()];
-    op.wicks(data, &w, &[(0, bra, ket)], scratch, &mut wick);
-    let naive = op.naive(data, &bra, &ket);
+    op.wicks(data, &w, &[(0, pair)], scratch, &mut wick);
+    let naive = op.naive(data, &pair.ldet.state(space), &pair.gdet.state(space));
 
     (wick[0], Op::discrepancy(wick[0], naive))
 }

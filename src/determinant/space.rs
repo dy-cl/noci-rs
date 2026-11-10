@@ -10,7 +10,7 @@ use itertools::Itertools;
 use crate::basis::{excitation_between, undo_excitation};
 use crate::determinant::{
     DeterminantState, ExcitedDeterminant, ExcitedState, ParentComponents, ParentDeterminant,
-    ReducedOneSpinDeterminantState, SpinDeterminantIndex, SpinDeterminantState,
+    SpinDeterminantIndex, SpinDeterminantState,
 };
 use crate::input::Input;
 use crate::{Excitation, ExcitationSpin, ReducedTwoSpinState, SCFState, StateScalar};
@@ -97,9 +97,6 @@ impl DeterminantState for NOCIDeterminantState {
         self.bid
     }
 }
-
-/// Parent-local retained one-spin identity and reduced kernel payload.
-pub(crate) type ReducedOneSpinNOCIDeterminantState = ReducedOneSpinDeterminantState<NOCISpinIndex>;
 
 /// Authoritative ordered NOCI determinant topology and identity registry.
 /// Active retained, selected or candidate subspaces are represented by ordered
