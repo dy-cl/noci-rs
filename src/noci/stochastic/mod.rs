@@ -5,31 +5,22 @@
 //! matrices. Matrix elements required by the current population and excitation generator are
 //! evaluated on demand using the common NOCI matrix-element layer.
 //!
-//! Two population representations are provided: the signed-integer walker formulation and
-//! two range-preserving S-apply and B-apply formulations.
+//! Two population representations are provided: the sparse coefficient vector of the unshifted
+//! propagator and the range populations of the S-apply and B-apply propagators. All three use
+//! one population-control shift `E_s`, which multiplies the overlap.
 //!
-//! # Signed-integer walker propagation
+//! # Unshifted propagation
 //!
-//! The signed-integer formulation represents the determinant coefficient vector by populations
-//! `n_x \in \mathbb Z and maintains the corresponding overlap-transformed population`
+//! The unshifted propagator samples the residual directly on the coefficient vector,
 //!
-//! `\tilde n_x = \sum_w S_{xw}n_w.`
+//! `\mathbf c' = \mathbf c - \Delta\tau(\mathbf H - E_s\mathbf S)\mathbf c,`
 //!
-//! Spawning samples the off-diagonal propagator, death or cloning samples its diagonal
-//! contribution, and annihilation combines changes of opposite sign on the same determinant.
-//! The unshifted, shifted, doubly shifted and difference-doubly-shifted propagators are defined
-//! by the residual
-//!
-//! `(\mathbf H - E_s^S\mathbf S)\mathbf n`
-//!
-//! `together with an identity shift controlled by E_s, E_s^S, or their difference. The`
-//! coefficient and overlap-transformed populations therefore have separate population-control
-//! shifts and population statistics.
-//!
-//! Because an extended NOCI basis may be overcomplete, stochastic noise can generate
-//! `coefficient population in \operatorname{null}(\mathbf S). Such population represents the`
-//! zero state of the Hilbert space and does not affect physical observables, but it can increase
-//! the total walker population and computational cost.
+//! drawing both `H` and `S` elements for every spawn, so it never applies the overlap exactly and
+//! its populations stay sparse. Its sampled residual is the same as S-apply's; only the persistent
+//! update differs. The shift enters only through `E_s\mathbf S`, so it has no control over
+//! `\operatorname{null}(\mathbf S)`: stochastic noise there grows without bound. The propagator is
+//! therefore valid only when the overlap of the determinant space has full rank, and is best when
+//! its smallest eigenvalue is not tiny.
 //!
 //! # Range propagation
 //!
@@ -92,9 +83,8 @@
 //! - The shift-tangent controller of the range propagators;
 //! - Report-block accumulation, output and restart support.
 //!
-//! The stochastic driver selects the population representation from the configured propagator,
-//! using explicit `SApply` and `BApply` range branches and the signed-walker implementation for
-//! the remaining stochastic propagators.
+//! The stochastic driver selects the population representation from the configured propagator:
+//! `Unshifted` uses the coefficient implementation, `SApply` and `BApply` the range branches.
 
 mod bapply;
 mod common;
@@ -108,7 +98,7 @@ mod restart;
 mod sapply;
 mod shift;
 mod state;
-mod walkers;
+mod unshifted;
 
 // Public type re-exports.
 pub use crate::qmc::excitgen::ExcitationHist;

@@ -163,21 +163,18 @@ pub(super) fn print_initial_null_diagnostics<T: NOCIScalar>(
 /// Print diagnostics for the projected propagator blocks.
 /// # Arguments
 /// - `propagator`: Propagator blocks in relevant and null subspace bases.
-/// - `es`: Initial value of the non-overlap shift.
-/// - `es_s`: Initial value of the overlap-transformed shift.
-/// - `sapply`: Whether S-apply propagation is active.
+/// - `es`: Initial value of the shift `E_s`.
+/// - `range`: Whether a range propagator (S-apply or B-apply) is active.
 /// # Returns
 /// - `()`: Prints the projected propagator diagnostics.
 pub(super) fn print_projected_propagator_diagnostics<T: NOCIScalar>(
     propagator: &ProjPropagator<T>,
     es: f64,
-    es_s: f64,
-    sapply: bool,
+    range: bool,
 ) {
     println!(
-        "With initial shifts E_s: {}, E_s^S: {}, ||Unn||: {}, ||Urr||: {}, ||Urn||: {}, ||Unr||: {}.",
+        "With initial shift E_s: {}, ||Unn||: {}, ||Urr||: {}, ||Urn||: {}, ||Unr||: {}.",
         es,
-        es_s,
         propagator.unn.norm(),
         propagator.urr.norm(),
         propagator.urn.norm(),
@@ -187,10 +184,10 @@ pub(super) fn print_projected_propagator_diagnostics<T: NOCIScalar>(
     let nnull = propagator.unn.nrows();
     if nnull == 0 {
         println!("Null-space dimension is 0.");
-    } else if sapply {
+    } else if range {
         let identity_n = Array2::<T>::eye(nnull);
         println!(
-            "S-apply null-space diagnostics: ||Unn - I|| = {}, ||Unr|| = {}, ||Urn|| = {}.",
+            "Range-propagator null-space diagnostics: ||Unn - I|| = {}, ||Unr|| = {}, ||Urn|| = {}.",
             (&propagator.unn - &identity_n).norm(),
             propagator.unr.norm(),
             propagator.urn.norm()
@@ -203,33 +200,20 @@ pub(super) fn print_projected_propagator_diagnostics<T: NOCIScalar>(
 
 /// Print the deterministic propagation table header.
 /// # Arguments
-/// - `sapply`: Whether S-apply propagation is active.
+/// - `range`: Whether a range propagator (S-apply or B-apply) is active.
 /// # Returns
 /// - `()`: Prints the selected table headings.
-pub(super) fn print_propagation_table_header(sapply: bool) {
-    let (
-        identity_shift_label,
-        overlap_shift_label,
-        population_label,
-        overlap_population_label,
-        metric_label,
-    ) = if sapply {
-        ("Identity shift", "Shift (EsS)", "||N||", "||SN||", "N^†SN")
+pub(super) fn print_propagation_table_header(range: bool) {
+    let (population_label, metric_label) = if range {
+        ("||N||", "N^†SN")
     } else {
-        ("Shift (Es)", "Shift (EsS)", "||C||", "||SC||", "C^†SC")
+        ("||C||", "C^†SC")
     };
 
     println!("{}", "=".repeat(100));
     println!(
-        "{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-        "iter",
-        "E",
-        "|dE|",
-        identity_shift_label,
-        overlap_shift_label,
-        population_label,
-        overlap_population_label,
-        metric_label,
+        "{:<6} {:>16} {:>16} {:>16} {:>16} {:>16}",
+        "iter", "E", "|dE|", "Shift (Es)", population_label, metric_label,
     );
 }
 
@@ -237,25 +221,23 @@ pub(super) fn print_propagation_table_header(sapply: bool) {
 /// # Arguments
 /// - `iter`: Iteration number.
 /// - `energy`: Projected energy and absolute energy change.
-/// - `shifts`: Current non-overlap and overlap-transformed shifts.
-/// - `populations`: Current coefficient and overlap-weighted populations.
+/// - `es`: Current shift `E_s`.
+/// - `population`: Current population of the propagated vector.
 /// - `den`: Current overlap metric.
 /// # Returns
 /// - `()`: Prints one propagation row.
 pub(super) fn print_propagation_table_row(
     iter: usize,
     energy: (f64, f64),
-    shifts: (f64, f64),
-    populations: (f64, f64),
+    es: f64,
+    population: f64,
     den: f64,
 ) {
     let (e, de) = energy;
-    let (es, es_s) = shifts;
-    let (pop_c, pop_sc) = populations;
 
     println!(
-        "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
-        iter, e, de, es, es_s, pop_c, pop_sc, den
+        "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+        iter, e, de, es, population, den
     );
 }
 

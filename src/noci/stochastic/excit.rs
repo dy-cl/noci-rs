@@ -275,7 +275,7 @@ pub(in crate::noci::stochastic) fn pgen_heat_bath(
     scratch: &mut WickScratchSpin<f64>,
 ) -> (f64, f64, usize) {
     let ndets = data.space.len();
-    // If \Sum_{x \neq w} |H_{xw} - E_s^S(\tau)S_{xw} (sumxw)
+    // If \Sum_{x \neq w} |H_{xw} - E_s(\tau)S_{xw} (sumxw)
     // is zero (unsure how likely this is) then fallback to uniform distribution.
     if hb.sumxw == 0.0 {
         let mut lambda = rng.gen_range(0..(ndets - 1));
@@ -287,16 +287,16 @@ pub(in crate::noci::stochastic) fn pgen_heat_bath(
         return (pgen, k, lambda);
     }
 
-    // We want P_{\text{gen}} = |H_{xw} - E_s^S(\tau)S_{xw}| /
-    // \Sum_{x \neq w} |H_{xw} - E_s^S(\tau)S_{xw}|. We
-    // choose a number (target) uniformly in \Sum_{x \neq w} |H_{xw} - E_s^S(\tau)S_{xw}
+    // We want P_{\text{gen}} = |H_{xw} - E_s(\tau)S_{xw}| /
+    // \Sum_{x \neq w} |H_{xw} - E_s(\tau)S_{xw}|. We
+    // choose a number (target) uniformly in \Sum_{x \neq w} |H_{xw} - E_s(\tau)S_{xw}
     // (sumxw) and define the sequence of cumulative sums:
-    //      A_1 = |H_{1w} - E_s^S(\tau)S_{1w}|
+    //      A_1 = |H_{1w} - E_s(\tau)S_{1w}|
     //      ..
-    //      A_n = \sum_{i=1}^n |H_{iw} - E_s^S(\tau)S_{iw}|.
+    //      A_n = \sum_{i=1}^n |H_{iw} - E_s(\tau)S_{iw}|.
     // The probability that target is between A_{j-1} and A_{j} is:
-    //     |H_{xw} - E_s^S(\tau)S_{xw}| /
-    //     \Sum_{x \neq w} |H_{xw} - E_s^S(\tau)S_{xw}|,
+    //     |H_{xw} - E_s(\tau)S_{xw}| /
+    //     \Sum_{x \neq w} |H_{xw} - E_s(\tau)S_{xw}|,
     // which is exactly the distribution we want to sample. We can therefore add the A's
     // until we pass the target at which point the last tested x is the one chosen
     // with the correct probability, and we can compute k and pgen accordingly.
@@ -313,7 +313,7 @@ pub(in crate::noci::stochastic) fn pgen_heat_bath(
         Err(i) => i,
     };
 
-    // Return P_{\text{gen}}, H_{xw} - E_s^S(\tau)S_{xw} and sampled child index.
+    // Return P_{\text{gen}}, H_{xw} - E_s(\tau)S_{xw} and sampled child index.
     let lambda = hb.lambdas[i];
     let k = hb.ks[i];
     let pgen = k.abs() / hb.sumxw;

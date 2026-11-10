@@ -182,7 +182,7 @@ pub fn print_report(
             4,
         );
         print_counter(
-            "Apply overlap-transformed population",
+            "Apply overlap to range population",
             res.timings.stochastic.step.apply_overlap_changes,
             4,
         );

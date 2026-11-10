@@ -42,7 +42,7 @@ states = {
 
 prop = {
     dt = 1e-3,
-    propagator = "unshifted",
+    propagator = "b-apply",
 }
 
 det = {

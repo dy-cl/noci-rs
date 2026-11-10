@@ -22,7 +22,7 @@ pub struct StepTotals {
     pub unpack_population_changes: Counter,
     /// Total time spent taking accumulated changes into sparse storage.
     pub take_population_changes: Counter,
-    /// Total time spent applying overlap-transformed population changes.
+    /// Total time spent applying the overlap to range-population changes.
     pub apply_overlap_changes: Counter,
     /// Total time spent gathering overlap-change counts between MPI ranks.
     pub overlap_change_gather_counts: Counter,

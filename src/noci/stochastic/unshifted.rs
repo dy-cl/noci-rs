@@ -1,6 +1,6 @@
-// noci/stochastic/walkers.rs
-//! Signed-integer walker propagation for the unshifted, shifted, doubly shifted and
-//! difference-doubly-shifted coefficient propagators.
+// noci/stochastic/unshifted.rs
+//! Unshifted propagation of real-valued coefficient populations,
+//! `c' = c - \Delta\tau(H - E_s S)c`, valid only when the overlap has full rank.
 //!
 //! # References
 //!
@@ -38,18 +38,17 @@ use super::restart::{population_representation, read_restart_hdf5};
 use super::shift::update_shift;
 use super::state::{
     MCState, NOCIMPIScratch, NOCIPropagationResult, NOCIThreadPropagation, OverlapDerivativeSums,
-    PopulationStats, ProjectedEnergyUpdate, PropagationState, QMCRunInfo, ShiftSpec,
-    SparsePopulations,
+    PopulationStats, ProjectedEnergyUpdate, PropagationState, QMCRunInfo, SparsePopulations,
 };
 
-/// Initialise rank-local walker populations from the initial coefficient vector.
+/// Initialise rank-local coefficient populations from the initial coefficient vector.
 /// # Arguments:
 /// - `c0`: Initial determinant coefficient vector.
 /// - `initial_population`: Requested initial population 1-norm.
 /// - `run`: Rank-local propagation metadata.
 /// - `world`: MPI communicator.
 /// # Returns:
-/// - `Vec<f64>`: Rank-local walker populations proportional to `c_0`.
+/// - `Vec<f64>`: Rank-local coefficient populations proportional to `c_0`.
 fn initialise_populations(
     c0: &[f64],
     initial_population: f64,
@@ -74,9 +73,9 @@ fn initialise_populations(
     run.owned.iter().map(|&i| scale * c0[i]).collect()
 }
 
-/// Apply direct walker-population changes to rank-local populations.
+/// Apply direct coefficient-population changes to rank-local populations.
 /// # Arguments:
-/// - `populations`: Rank-local walker population vector.
+/// - `populations`: Rank-local coefficient population vector.
 /// - `changes`: Coalesced sparse global population changes.
 /// - `local_pos`: Global determinant to rank-local position map.
 /// # Returns:
@@ -96,7 +95,7 @@ fn apply_population_changes(
     }
 }
 
-/// Perform stochastic NOCI propagation in the walker-population representation.
+/// Perform stochastic NOCI propagation with the unshifted propagator on coefficient populations.
 /// # Arguments:
 /// - `data`: Immutable stochastic propagation data.
 /// - `c0`: Initial determinant coefficient vector.
@@ -294,11 +293,7 @@ pub fn qmc_step(
                 (iter, &state.mc.sampled),
                 data,
                 &run,
-                ShiftSpec {
-                    es: *es,
-                    es_s: *es,
-                    propagator: data.input.prop_ref().propagator,
-                },
+                *es,
                 (
                     overlap_generation.as_ref().map(|(factors, _)| factors),
                     overlap_generation.as_ref().map(|(_, generator)| generator),

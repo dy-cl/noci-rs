@@ -490,21 +490,6 @@ fn qmc_lih_sto_3g_2_8_ang_trajectory_s_apply() {
     assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_S_APPLY");
 }
 
-/// Test that a short LiH STO-3G DDS2 QMC trajectory reproduces the stored deterministic QMC trajectory.
-/// # Arguments:
-/// - None.
-/// # Returns
-/// - `()`: The trajectory matches the stored report energies.
-/// # Panics
-/// - If the binary run fails.
-/// - If the report trajectory length differs from the stored trajectory.
-/// - If any report energy differs from the stored trajectory outside tolerance.
-#[test]
-#[serial]
-fn qmc_lih_sto_3g_2_8_ang_trajectory_dds2() {
-    assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_DDS2");
-}
-
 /// Test that a short LiH 6-31G SApply QMC trajectory reproduces the stored deterministic QMC trajectory.
 /// # Arguments:
 /// - None.
@@ -518,21 +503,6 @@ fn qmc_lih_sto_3g_2_8_ang_trajectory_dds2() {
 #[serial]
 fn qmc_lih_6_31g_2_8_ang_trajectory_s_apply() {
     assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_S_APPLY");
-}
-
-/// Test that a short LiH 6-31G DDS2 QMC trajectory reproduces the stored deterministic QMC trajectory.
-/// # Arguments:
-/// - None.
-/// # Returns
-/// - `()`: The trajectory matches the stored report energies.
-/// # Panics
-/// - If the binary run fails.
-/// - If the report trajectory length differs from the stored trajectory.
-/// - If any report energy differs from the stored trajectory outside tolerance.
-#[test]
-#[serial]
-fn qmc_lih_6_31g_2_8_ang_trajectory_dds2() {
-    assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_DDS2");
 }
 
 /// Test that an H6 STO-3G SDT Wick SApply QMC trajectory reproduces the stored deterministic QMC trajectory.

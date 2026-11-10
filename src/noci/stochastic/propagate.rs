@@ -28,13 +28,7 @@ pub fn qmc_step(
     world: &impl Communicator,
 ) -> (f64, Option<ExcitationHist>) {
     match data.input.prop_ref().propagator {
-        Propagator::Unshifted
-        | Propagator::Shifted
-        | Propagator::DoublyShifted
-        | Propagator::DifferenceDoublyShiftedU1
-        | Propagator::DifferenceDoublyShiftedU2 => {
-            super::walkers::qmc_step(data, c0, es, ref_indices, world)
-        }
+        Propagator::Unshifted => super::unshifted::qmc_step(data, c0, es, ref_indices, world),
         Propagator::SApply => super::sapply::qmc_step(data, c0, es, ref_indices, world),
         Propagator::BApply => super::bapply::qmc_step(data, c0, es, ref_indices, world),
     }

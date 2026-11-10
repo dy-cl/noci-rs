@@ -29,7 +29,7 @@ use super::restart::{basis_hash, population_representation, restart_base_seed};
 use super::state::{
     AuxiliaryPropagationResult, AuxiliaryThreadPropagation, MCState, NOCIMPIScratch,
     NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation, PopulationStats,
-    ProjectedEnergyUpdate, QMCRunInfo, ScratchSize, ShiftSpec, SparsePopulations,
+    ProjectedEnergyUpdate, QMCRunInfo, ScratchSize, SparsePopulations,
 };
 
 /// Accumulate one signed population change in dense/sparse Monte Carlo storage.
@@ -130,14 +130,14 @@ pub(in crate::noci::stochastic) fn exchange_accumulated_updates(
     scratch.send_contig.clear();
 }
 
-/// Generate one stochastic estimate of the ordinary or SApply NOCI residual.
+/// Generate one stochastic estimate of the unshifted or SApply NOCI residual.
 /// SApply additionally accumulates `B = \partial\Delta/\partial E_s = dt S\tilde N` from the
-/// same sampled paths; ordinary walker propagators omit this tangent.
+/// same sampled paths; the unshifted propagator omits this tangent.
 /// # Arguments:
 /// - `sample`: Global cycle index and sparse sampled populations.
 /// - `data`: Immutable stochastic propagation data.
 /// - `run`: Rank-local propagation metadata.
-/// - `shift`: Current shifted residual specification.
+/// - `shift`: Current population-control shift `E_s`.
 /// - `overlap`: Persistent factors, generator, mixture weight, and optimisation flag.
 /// - `workers`: Persistent thread-local propagation storage.
 /// - `result`: Reusable generated-update storage.
@@ -147,7 +147,7 @@ pub(in crate::noci::stochastic) fn propagate_iteration(
     sample: (usize, &SparsePopulations),
     data: &NOCIData<'_, f64>,
     run: &QMCRunInfo,
-    shift: ShiftSpec,
+    shift: f64,
     overlap: (
         Option<&OverlapFactors>,
         Option<&OverlapWeightedGenerator>,
@@ -160,7 +160,7 @@ pub(in crate::noci::stochastic) fn propagate_iteration(
     // Resolve cycle data and prepare optional SApply shift-tangent accumulation.
     let (iteration, sampled) = sample;
     let (overlap_factors, overlap_generator, overlap_weight, optimise_overlap_weight) = overlap;
-    let accumulate_tangent = matches!(shift.propagator, Propagator::SApply);
+    let accumulate_tangent = matches!(data.input.prop_ref().propagator, Propagator::SApply);
     let dt = data.input.prop_ref().dt;
     if accumulate_tangent {
         for worker in workers.iter_mut() {
