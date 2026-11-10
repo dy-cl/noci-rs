@@ -8,7 +8,9 @@ Organise methods by family first and approach second, above three shared layers:
 2. `elements/`: every matrix element and reduced density matrix between determinants.
    `operator.rs` defines each operator by its evaluation in every engine, and `pairs.rs`
    dispatches each determinant pair to one engine: `orthogonal/`, `naive/` (generalised
-   Slater-Condon) or `nonorthogonalwicks/`.
+   Slater-Condon) or `nonorthogonalwicks/`. The Wick evaluators in `nonorthogonalwicks/eval/`
+   have one file per operator family, `overlap.rs`, `onebody.rs` and `hamiltonian.rs`, and
+   `batch.rs` evaluates rows of same-spin factors for any family that implements `SpinFactor`.
 3. `qmc/`: stochastic machinery independent of the population representation: seeded random
    streams, MPI ownership, exchange and annihilation of keyed updates, FRI compression, the
    population-control shift, stop requests, and excitation generators within one parent frame
