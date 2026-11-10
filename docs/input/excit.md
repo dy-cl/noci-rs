@@ -6,6 +6,7 @@ Excitations are generated from every reference NOCI determinant, within its own 
 over every $\alpha$/$\beta$ split of each order.
 
 ```lua
+-- Singles and doubles of every reference, the NOCISD space.
 excit = {
     orders = {1, 2},
 }

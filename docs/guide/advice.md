@@ -5,11 +5,12 @@ choices interact most.
 
 ## Choosing references
 
-- **Cover the static correlation.** For a stretched bond, include RHF and the spin-flipped pair of
-  UHF solutions, `(+, -)` and `(-, +)`. Both members of a spin-flipped pair are needed to restore
-  the spin symmetry that each one breaks.
-- **Set `noci = true` on every recipe you want in the basis.** An omitted `noci` is false (see
-  [Parsing rules](../input/index.md#parsing-rules)).
+How to pick good references for the post-NOCI methods is largely unexplored, so treat these
+points as observations rather than rules.
+
+- **Spin-flipped pairs.** The stretched hydrogen chains studied so far used RHF and the
+  spin-flipped pair of UHF solutions, `(+, -)` and `(-, +)`. Using both members of a pair keeps the
+  spin symmetry that each one breaks on its own.
 - **Watch for duplicates.** Near a coalescence point two recipes can converge to the same
   solution. Duplicates within `scf.d_tol` are removed automatically, but nearly identical solutions
   still make the overlap ill-conditioned.
@@ -19,31 +20,40 @@ choices interact most.
 - **More references are not always better.** Extra references enlarge the overcomplete null space
   of the extended space. In JM-NOCCMC, more references than target states cause intruders.
 
-## Choosing a propagator
+## Choosing a NOCIQMC propagator
 
 - **`b-apply`** is the default choice for extended spaces. It is safe in overcomplete spaces and
   has no slowing from the overlap. Use it with `pchb` generation.
 - **`s-apply`** is also safe in overcomplete spaces and works directly in the NOCI basis, with
   overlap-weighted generation. Its extra overlap action slows the small-eigenvalue directions of an
-  ill-conditioned overlap, so it equilibrates more slowly than B-apply in such spaces.
-- **`unshifted`** keeps the populations sparse, but only works when the overlap of the extended
-  space has full rank. With an exact null space its population there grows without bound and the
-  run diverges.
+  ill-conditioned overlap, so it equilibrates more slowly than $B$-apply in such spaces.
+- **`unshifted`** exists for those who are confident that their extended space has no null space,
+  and who can therefore use a sparse coefficient vector. With an exact null space its population
+  there grows without bound and the run diverges.
 
-To check the rank before an unshifted run, write the matrices of a deterministic run on the same
-space, or a smaller analogue, and inspect the overlap spectrum:
+The overlap spectrum shows whether a space has a null space, but only as a diagnostic: it needs the
+dense overlap and its exact diagonalisation, so it is feasible only for small spaces or smaller
+analogues of a production space, never for production runs themselves. Write the matrices of a
+one-step deterministic run and diagonalise the overlap:
 
 ```lua
+-- One deterministic B-apply step, only to build the extended-space matrices.
 prop = { dt = 1e-4, propagator = "b-apply" }
 det = { max_steps = 1, dynamic_shift = false }
+
+-- Write the Hamiltonian and overlap as npy files under data/.
 write = { write_matrices = true, matrix_format = "npy" }
 ```
 
 ```python
 import numpy as np
+
+# Load the dense overlap of the extended space.
 s = np.load("data/OVLP.npy")
+
+# Print its smallest eigenvalues and its condition number.
 w = np.linalg.eigvalsh(s)
-print(w[:5], w[0] / w[-1])
+print(w[:5], w[-1] / w[0])
 ```
 
 An eigenvalue at round-off level means an exact null direction, and `unshifted` will fail.
@@ -52,7 +62,7 @@ An eigenvalue at round-off level means an exact null direction, and `unshifted` 
 
 - **The time step is limited by stability, not noise.** Propagation is stable only if
   $\Delta\tau < 2/\lambda_\text{max}$, where $\lambda_\text{max}$ is the largest eigenvalue of the
-  propagated operator, for example $\mathbf H - E_s\mathbf S$. Above the limit the population grows
+  propagated operator, for example $H_{wx} - E_s^S S_{wx}$ for $B$-apply. Above the limit the population grows
   without control, typically to the point of exhausting memory.
 - **The limit shrinks with system size and basis**, because $\lambda_\text{max}$ grows. A time
   step that is stable for a short chain can diverge for a longer one.
@@ -77,7 +87,7 @@ An eigenvalue at round-off level means an exact null direction, and `unshifted` 
 
 ## Excitation generators and FRI
 
-- **`pchb` reduces the shoulder of B-apply** compared with `uniform`, typically by a factor of 1.5–3
+- **`pchb` reduces the shoulder of $B$-apply** compared with `uniform`, typically by a factor of 1.5–3
   in our tests, at a modest cost per spawn.
 - **A generator only matters for spawns above `fri.spawn.cutoff`.** Below the cutoff, spawns are
   rounded stochastically and the rounding noise does not depend on the generator. If almost no
@@ -88,7 +98,8 @@ An eigenvalue at round-off level means an exact null direction, and `unshifted` 
   noisy at large time steps.
 - **Leave `momentum_beta` at zero.** Momentum accelerates the slow modes deterministically, but
   the stochastic noise grows much faster than the acceleration. Increasing `dt` gives the same
-  acceleration with smaller error bars.
+  acceleration with smaller error bars. You may ask why it is in the code then. The answer is that
+  I can't be bothered to remove it.
 
 ## Analysing stochastic output
 
@@ -109,9 +120,8 @@ An eigenvalue at round-off level means an exact null direction, and `unshifted` 
 ## NOCI-PT2 and selected NOCI
 
 - **Use singles and doubles**, `excit.orders = {1, 2}`, for NOCI-PT2. Higher orders are accepted,
-  but the rigorous first-order interacting space is singles and doubles.
-- **Use the `woodbury` preconditioner** (the default). It captures the projection against the
-  reference state that the diagonal misses.
+  but the rigorous first-order interacting space is singles and doubles, and a perturbation theory
+  in higher excitations would constitute a new research direction.
 - **If the energy diverges along a scan**, an intruder candidate is nearly degenerate with the
   reference. Add a small imaginary shift to `snoci.imag_shift` and check how the energy depends on
   it.
@@ -121,7 +131,7 @@ An eigenvalue at round-off level means an exact null direction, and `unshifted` 
 ## Performance
 
 - **Keep Wick intermediates enabled.** They are much faster for excited determinants and are
-  required by B-apply with several references and by the factorised paths.
+  required by $B$-apply with several references and by the factorised paths.
 - **Move large caches to disk** with `wicks.storage = "disk"` and point `wicks.cachedir` at fast
   local scratch, not a network file system.
 - **Match `MAXEXCIT` to your excitation ranks.** Pairs within `MAXEXCIT` use specialised kernels;

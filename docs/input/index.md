@@ -19,8 +19,8 @@ be generated in loops, and common settings can be shared through `dofile`.
 | [`reshf`](reshf.md) | No | ResHF optimisation of the references |
 | [`write`](write.md) | No | Output files, verbosity and restarts |
 | [`wicks`](wicks.md) | No | Nonorthogonal Wick intermediates and disk caches |
-| [`noccmc`](nocc.md#noccmc) | No | GNOCC, with the `gnocc` feature |
-| [`jmnoccmc`](nocc.md#jmnoccmc) | No | JM-NOCCMC |
+| [`gnoccmc`](nocc.md#gnoccmc) | No | GNOCC, with the `gnocc` feature |
+| [`jmnoccmc`](nocc.md#jmnoccmc) | No | JM-NOCCMC, with nested `det` and `qmc` tables |
 
 ## What runs
 
@@ -29,11 +29,11 @@ For every geometry in `mol.r`, in order:
 1. The SCF states of `states` are generated, seeded from the previous geometry.
 2. If `reshf` is present, ResHF re-optimises the states with `noci = true`.
 3. Reference NOCI runs over the states with `noci = true`, after duplicates are removed.
-4. Every post-NOCI table present runs, in this order: `det`, `jmnoccmc`, `noccmc`, `snoci`,
+4. Every post-NOCI table present runs, in this order: `det`, `jmnoccmc`, `gnoccmc`, `snoci`,
    `qmc`.
 
 If any recipe is holomorphic, NOCI is complex and only `det` and `snoci` run afterwards. `qmc` is
-skipped with a warning, and `jmnoccmc` and `noccmc` are skipped silently.
+skipped with a warning, and `jmnoccmc` and `gnoccmc` are skipped silently.
 
 ## Parsing rules
 

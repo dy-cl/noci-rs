@@ -15,12 +15,18 @@ Across several ranks:
 RAYON_NUM_THREADS=8 mpirun -np 4 ./target/release/noci-rs input.lua > output.out
 ```
 
-| Method | Rayon | MPI |
-| --- | --- | --- |
-| Full Hamiltonian and overlap construction | Determinant pairs | — |
-| Selected NOCI and NOCI-PT2 | Matrix elements within a rank | Candidate-space operator applications |
-| Stochastic NOCIQMC | Spawning within a rank | Determinant ownership and update exchange |
-| Wick intermediates | — | Shared memory between ranks on each node |
+The two levels are largely interchangeable. Where a method distributes its work over MPI ranks,
+more ranks with fewer threads each give a similar effect to fewer ranks with more threads.
+Shared-memory parallelism is simply more convenient where it is possible, on a single node, and MPI
+is needed to go beyond one node.
+
+- **Selected NOCI and NOCI-PT2** distribute candidate-space operator applications over ranks and
+  their matrix elements over threads.
+- **Stochastic NOCIQMC and JM-NOCCMC** distribute determinant or excitor ownership over ranks and
+  spawning over threads.
+- **Dense Hamiltonian and overlap construction**, used by reference NOCI and deterministic
+  propagation, uses threads only.
+- **Wick intermediates** are held once per node and shared between the ranks on it.
 
 Set `OPENBLAS_NUM_THREADS=1` and `OMP_NUM_THREADS=1` when Rayon already uses every core, so that
 BLAS calls do not oversubscribe the node.
@@ -43,11 +49,13 @@ See [the `write` table](../input/write.md) for the full list.
 
 A stochastic calculation writes a restart file, `write.write_restart`, every
 `write.write_restart_interval` iterations, which must be a multiple of `qmc.ncycles`. Creating a
-file named `STOP` in the working directory writes a restart and ends the run cleanly. No restart
-is written when a run simply finishes, so set an interval if you may want to continue it.
+file named `STOP` in the working directory writes a restart and ends the run cleanly. A run that
+finishes on its own writes no further restart: its last restart is the last interval it reached,
+so choose an interval that divides the run length, `ncycles` × `nreports`, if you may want to
+continue it.
 
 Restarting with `write.read_restart` restores the populations, shift and population-control
-state, so the run continues where it stopped. S-apply and B-apply share one population
+state, so the run continues where it stopped. $S$-apply and $B$-apply share one population
 representation, so a restart written by one can be read by the other.
 
 ## Analysis scripts
@@ -61,10 +69,18 @@ from the population shoulder, an MSER criterion and the flatness of the trial ov
 
 ```bash
 python3 scripts/blocking.py run.out restart1.out
-python3 scripts/blocking.py run.out --start 200000
 ```
 
-`plotting.py` draws one figure per subcommand, shown on screen or written with `--save`:
+The automatic start is deliberately more conservative than in other QMC codes. Nonorthogonality
+gives rise to slow modes, which relax long after the population and shift look converged, so a
+start chosen from the population alone would block part of this relaxation. The script therefore
+also applies the MSER criterion and checks that the trial overlap is flat, and it requires the
+blocked window to last at least as long as the run took to reach population control, because a
+shorter window can make a slow drift look stationary.
+
+`plotting.py` draws one figure per subcommand, shown on screen or written with `--save`. The
+trajectory plots also accept `--live`, which redraws the figure as a running calculation writes its
+output, every `--interval` seconds:
 
 | Subcommand | Plot |
 | --- | --- |

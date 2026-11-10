@@ -8,6 +8,7 @@ present, and `det` runs first.
 ## `prop`
 
 ```lua
+-- Range-preserving B-apply propagation with a small time step.
 prop = {
     dt = 1e-4,
     propagator = "b-apply",
@@ -26,9 +27,11 @@ SCF and reference NOCI have run.
 
 ```lua
 det = {
+    -- Propagate until the energy is converged or the step limit is reached.
     max_steps = 10000,
     e_tol = 1e-10,
 
+    -- Let the shift follow the population of the propagated vector.
     dynamic_shift = true,
     dynamic_shift_alpha = 0.1,
 }
@@ -53,17 +56,21 @@ without it.
 
 ```lua
 qmc = {
+    -- Grow from a small population at the NOCI energy, then control it at the target.
     initial_population = 10,
     target_population = 1e5,
     initial_shift = "noci",
     shift_damping = 5e-4,
 
+    -- 1000 reports of 10 iterations each.
     ncycles = 10,
     nreports = 1000,
 
+    -- Spawn with heat-bath weights from a fixed seed.
     excitation_gen = "pchb",
     seed = 92774801300236626,
 
+    -- Compress the population, spawns, report change and shift tangent.
     fri = {
         population = { cutoff = 1.0 },
         spawn = { cutoff = 0.25 },
@@ -77,7 +84,7 @@ qmc = {
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `initial_population` | number | `100` | 1-norm of the starting population: the coefficients for `unshifted`, the range population $\mathbf N = \mathbf S\mathbf c$ for `s-apply` and `b-apply`. |
+| `initial_population` | number | `100` | 1-norm of the starting population: the coefficients for `unshifted`, the range population $N_w = S_{wx}c_x$ for `s-apply` and `b-apply`. |
 | `target_population` | number | `1e5` | Population at which shift control starts; with `population_restoring` > 0, also the population it restores towards. Should lie above the shoulder. |
 | `initial_shift` | string or number | `"noci"` | Shift before control starts: `"noci"` for the reference NOCI energy, `"hf"` for the energy of the first reference (normally RHF), or a number in $E_\text{h}$. A restart overrides it. |
 | `shift_damping` | number | `5e-4` | Damping $\zeta$ of the shift update. |
@@ -101,8 +108,8 @@ qmc = {
 | `overlap_weight` | number | `0.5` for `s-apply` with `overlap-weighted`, otherwise `0.0` | Probability $0 \le p < 1$ of the overlap branch of `overlap-weighted`; the rest is uniform. |
 | `optimise_overlap_weight` | boolean | `false` | Adapt `overlap_weight` between reports from the sampled second moment. Requires `overlap-weighted`. |
 | `factor_tables` | string | `"ram"` | Storage of the overlap-factor tables of the unshifted `overlap-weighted` generator: `"none"`, `"ram"` or `"disk"`. Also the default of the next two keys. |
-| `sapply_factor_tables` | string | `factor_tables` | S-apply overlap factors and proposal tables. Must be `"ram"` or `"disk"` with `overlap-weighted`. |
-| `bapply_factor_tables` | string | `factor_tables` | B-apply auxiliary $\mathbf B^\dagger$ tables. |
+| `sapply_factor_tables` | string | `factor_tables` | $S$-apply overlap factors and proposal tables. Must be `"ram"` or `"disk"` with `overlap-weighted`. |
+| `bapply_factor_tables` | string | `factor_tables` | $B$-apply spin factors of the back-transformation $\mathcal B^*_{pw}$. |
 
 Disk-backed tables are written to [`wicks.cachedir`](wicks.md).
 
@@ -113,7 +120,7 @@ Disk-backed tables are written to [`wicks.cachedir`](wicks.md).
 | `heat-bath` | Yes, very expensive | No | No |
 | `pchb` | No | No | Yes |
 
-S-apply rejects `heat-bath` because its shift tangent needs separately realised overlap elements.
+$S$-apply rejects `heat-bath` because its shift tangent needs separately realised overlap elements.
 The generators are described under
 [Excitation generators](../methods/nociqmc.md#excitation-generators).
 

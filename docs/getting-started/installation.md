@@ -61,18 +61,26 @@ rank.
 cargo build --release --features timings
 ```
 
-This adds routine-level call counts and timing summaries to the output. The instrumentation
-perturbs short kernel timings, so use it to see how calls are distributed across routines rather
-than for absolute timings.
+This adds routine-level call counts and timing summaries to the output.
 
-### Experimental NOCC
+:::{warning}
+The instrumentation slows the whole program down massively, and its timings misrepresent where
+the time goes in a normal build. Use it only to see how calls are distributed across routines. To
+find hot spots, profile an ordinary release build with a sampling profiler such as `perf`.
+:::
 
-The generalised-normal-ordered NOCC implementation is behind the `gnocc` feature:
+### GNOCC
+
+[GNOCC](../methods/nocc.md#generalised-normal-ordered-nocc) is behind the `gnocc` feature:
 
 ```bash
 cargo build --release --features gnocc
 ```
 
-The build script generates its residual, energy, metric and zeroth-order term tables and caches
-them under `build/generated/`. Set `WICKFORCEREGENERATE=1` to regenerate them. Compiling with this
-feature takes much longer, so leave it off unless you need GNOCC. JM-NOCCMC does not need it.
+Its coupled-cluster equations are not written by hand. The build script expands the energy and
+residual equations, together with the metric and zeroth-order operator of the first-order
+interacting space, by Wick's theorem in generalised normal order. It spin adapts the result and
+stores it as *term tables*, each term a contraction of amplitudes, integrals and density cumulants,
+cached under `build/generated/`. Set `WICKFORCEREGENERATE=1` to regenerate them.
+Compiling with this feature takes much longer, so leave it off unless you need GNOCC. JM-NOCCMC
+does not need it.

@@ -11,14 +11,17 @@ Each entry is a recipe for one SCF solution. Recipes are processed in order.
 ```lua
 states = {
     mom = {
+        -- Unbiased guess, converging to the RHF ground state.
         { label = "RHF", noci = true },
 
+        -- Spin bias with alpha density on the first atom and beta density on the second.
         {
             label = "UHF (+, -)",
             spin_bias = { pattern = {1, -1}, pol = 0.75 },
             noci = true,
         },
 
+        -- The spin-flipped partner of the previous state.
         {
             label = "UHF (-, +)",
             spin_bias = { pattern = {-1, 1}, pol = 0.75 },
@@ -77,12 +80,15 @@ give `occ`.
 ```lua
 states = {
     metadynamics = {
+        -- Find one RHF solution and one spin-flipped pair of UHF solutions.
         nstates_rhf = 1,
         nstates_uhf = 2,
 
+        -- Polarise the random initial guesses.
         spinpol = 0.75,
         spatialpol = 0.75,
 
+        -- Bias strength and the number of attempts before giving up.
         lambda = 0.5,
         max_attempts = 100,
     },

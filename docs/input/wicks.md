@@ -5,9 +5,11 @@ intermediates](../methods/elements.md#different-frames-extended-nonorthogonal-wi
 
 ```lua
 wicks = {
+    -- Use the Wick intermediates without checking them against Slater-Condon.
     enabled = true,
     compare = false,
 
+    -- Keep the intermediates in a disk cache on fast local scratch.
     storage = "disk",
     cachedir = "/scratch/me/wicks",
 }
@@ -21,4 +23,4 @@ wicks = {
 | `cachedir` | string | `<write.write_dir>/wicks` | Directory of the disk cache. It also holds the disk-backed QMC factor tables and SNOCI `full_m` and `factor_tables` files. |
 
 Wick intermediates are needed by the stochastic factor tables, the factorised SNOCI path and
-B-apply with more than one parent, so leave them enabled unless you are testing.
+$B$-apply with more than one parent, so leave them enabled unless you are testing.

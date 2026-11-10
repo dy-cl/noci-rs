@@ -4,13 +4,16 @@ The optional `write` table sets verbosity, output files and stochastic restarts.
 
 ```lua
 write = {
+    -- Print progress and diagnostics, and write files under data/.
     verbose = 1,
     write_dir = "data",
 
+    -- Write no orbitals, and write matrices as npy if requested.
     write_orbitals = false,
     write_matrices = false,
     matrix_format = "npy",
 
+    -- Checkpoint a stochastic run every 100000 iterations, starting fresh.
     write_restart = "run.h5",
     write_restart_interval = 100000,
     read_restart = nil,
@@ -33,7 +36,7 @@ write = {
 ## Restarts
 
 A restart holds the populations, shift and controller history, random seed, overlap weight and
-momentum, so a resumed run continues where it stopped. S-apply and B-apply restarts are
+momentum, so a resumed run continues where it stopped. $S$-apply and $B$-apply restarts are
 interchangeable. Reading checks that the restart matches the determinant space and the MPI
 partition.
 
@@ -43,4 +46,4 @@ in the working directory, which also ends the run cleanly. It is **not** written
 finishes normally, so set `write_restart_interval` to keep a restart of a completed run.
 :::
 
-JM-NOCCMC does not use the restart options.
+JM-NOCCMC does not use the restart options yet.

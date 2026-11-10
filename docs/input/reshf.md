@@ -4,6 +4,7 @@ The `reshf` table replaces the real SCF states marked `noci = true` with
 [ResHF](../methods/noci.md#reshf-reference-optimisation) determinants before reference NOCI.
 
 ```lua
+-- Optimise the references for the NOCI ground state alone.
 reshf = {
     weights = {1.0},
     cutoff = 1e-8,

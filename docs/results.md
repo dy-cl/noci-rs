@@ -23,7 +23,7 @@ remaining dynamic correlation.
 :width: 100%
 :alt: Projected energy and shift against iteration for H20 with b-apply
 
-Typical evolution of the projected energy $E_\mathrm{Proj}(\tau)$ and shift $E_s(\tau)$ for the
+Typical evolution of the projected energy $E_\mathrm{Proj}(\tau)$ and shift $E_s^S(\tau)$ for the
 H{sub}`20` linear chain at 1.5 Å in the STO-3G basis using the `b-apply` propagator. The same
 trajectories are seen for `s-apply`.
 ```

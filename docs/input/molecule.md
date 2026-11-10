@@ -3,11 +3,13 @@
 The required `mol` table defines the molecule, basis set and geometry scan.
 
 ```lua
+-- H2 scanned over three bond lengths in Angstrom.
 mol = {
     basis = "cc-pVDZ",
     unit = "Ang",
     r = {0.8, 1.0, 1.2},
 
+    -- Place the two atoms symmetrically about the origin at each bond length.
     atoms = function(r)
         return {
             string.format("H 0 0 %g", -r / 2),
@@ -27,6 +29,7 @@ mol = {
 :::{note}
 There is no charge or spin input. Each spin receives half of the total nuclear charge, so only
 neutral, closed-shell-count ($M_s = 0$) systems with an even number of electrons are supported.
+This will be changed one day.
 :::
 
 The atom order of `atoms` is the order used by the `pattern` lists of
