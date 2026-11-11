@@ -19,7 +19,7 @@ use crate::input::{Input, Propagator};
 use crate::maths::general_evp;
 use crate::mpiutils::broadcast;
 use crate::noci::OverlapFactors;
-use crate::qmc::{exchange_to_owners, owner, rank_seed, stream};
+use crate::qmc::{PopulationUpdate, exchange_to_owners, owner, rank_seed, stream};
 use crate::time_call;
 
 // Parent/sibling imports.
@@ -28,8 +28,8 @@ use super::overlapweighted::OverlapWeightedGenerator;
 use super::restart::{basis_hash, population_representation, restart_base_seed};
 use super::state::{
     AuxiliaryPropagationResult, AuxiliaryThreadPropagation, MCState, NOCIMPIScratch,
-    NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation, PopulationStats,
-    ProjectedEnergyUpdate, PropagationWorker, QMCRunInfo, ScratchSize, SparsePopulations,
+    NOCIPropagationResult, NOCIThreadPropagation, PopulationStats, ProjectedEnergyUpdate,
+    PropagationWorker, QMCRunInfo, ScratchSize, SparsePopulations,
 };
 
 /// Accumulate one signed population change in dense/sparse Monte Carlo storage.
@@ -61,15 +61,15 @@ fn add_delta(
 /// - `()`: Clears touched dense entries and fills `changes`.
 pub(in crate::noci::stochastic) fn take_population_changes(
     mc: &mut MCState,
-    changes: &mut Vec<NOCIPopulationUpdate>,
+    changes: &mut Vec<PopulationUpdate>,
 ) {
     changes.clear();
     for det in mc.changed.drain(..) {
         let dn = mc.delta[det];
         mc.delta[det] = 0.0;
         if dn != 0.0 {
-            changes.push(NOCIPopulationUpdate {
-                det: det as u64,
+            changes.push(PopulationUpdate {
+                index: det as u64,
                 dn,
             });
         }
@@ -125,7 +125,7 @@ pub(in crate::noci::stochastic) fn exchange_accumulated_updates(
         return;
     }
     for update in exchange_to_owners(world, run.irank, scratch) {
-        add_delta(mc, update.det as usize, update.dn);
+        add_delta(mc, update.index as usize, update.dn);
     }
     scratch.send_contig.clear();
 }

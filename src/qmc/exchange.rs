@@ -26,6 +26,54 @@ pub(crate) trait KeyedUpdate: FriAmplitude + Equivalence + Default {
     fn key(&self) -> Self::Key;
 }
 
+/// A change of one population keyed by its flat index, a determinant, auxiliary determinant or
+/// excitor, as it is exchanged between ranks and annihilated by its owner.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Equivalence)]
+pub(crate) struct PopulationUpdate {
+    /// Flat index of the population the change applies to.
+    pub(crate) index: u64,
+    /// Signed population change.
+    pub(crate) dn: f64,
+}
+
+impl KeyedUpdate for PopulationUpdate {
+    type Key = u64;
+
+    /// Return the flat index of the population.
+    /// # Arguments:
+    /// - `self`: Population change.
+    /// # Returns
+    /// - `u64`: Flat population index.
+    fn key(&self) -> u64 {
+        self.index
+    }
+}
+
+impl FriAmplitude for PopulationUpdate {
+    /// Return the population change.
+    /// # Arguments:
+    /// - `self`: Population change.
+    /// # Returns
+    /// - `f64`: Signed population change.
+    fn amplitude(&self) -> f64 {
+        self.dn
+    }
+
+    /// Replace the population change.
+    /// # Arguments:
+    /// - `self`: Population change.
+    /// - `amplitude`: Replacement population change.
+    /// # Returns
+    /// - `()`: Updates `dn` in place.
+    fn set_amplitude(
+        &mut self,
+        amplitude: f64,
+    ) {
+        self.dn = amplitude;
+    }
+}
+
 /// Reusable MPI buffers for exchanging and gathering keyed population updates.
 pub(crate) struct ExchangeScratch<U> {
     /// Number of sparse updates contributed by each rank for all-gather.

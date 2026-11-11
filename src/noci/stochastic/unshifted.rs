@@ -20,15 +20,13 @@ use mpi::topology::Communicator;
 use crate::elements::NOCIData;
 use crate::input::ExcitationGen;
 use crate::noci::{OverlapFactors, SpinFactorisation};
-use crate::qmc::coalesce;
+use crate::qmc::{PopulationUpdate, coalesce};
 
 // Parent/sibling imports.
 use super::common::{exchange_accumulated_updates, take_population_changes};
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::propagate::{NOCIPropagator, NOCIRun};
-use super::state::{
-    NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation, QMCRunInfo, ScratchSize,
-};
+use super::state::{NOCIPropagationResult, NOCIThreadPropagation, QMCRunInfo, ScratchSize};
 
 /// Apply direct coefficient-population changes to rank-local populations.
 /// # Arguments:
@@ -39,11 +37,11 @@ use super::state::{
 /// - `()`: Updates rank-local populations in place.
 fn apply_population_changes(
     populations: &mut [f64],
-    changes: &[NOCIPopulationUpdate],
+    changes: &[PopulationUpdate],
     local_pos: &[usize],
 ) {
     for update in changes {
-        let det = update.det as usize;
+        let det = update.index as usize;
         let pos = local_pos[det];
 
         if pos != usize::MAX {
@@ -64,7 +62,7 @@ pub(in crate::noci::stochastic) struct Unshifted {
     /// Reusable gathered spawns of one cycle.
     result: NOCIPropagationResult,
     /// Coalesced report change.
-    changes: Vec<NOCIPopulationUpdate>,
+    changes: Vec<PopulationUpdate>,
 }
 
 impl<C: Communicator> NOCIPropagator<C> for Unshifted {
@@ -163,7 +161,7 @@ impl<C: Communicator> NOCIPropagator<C> for Unshifted {
     ) -> Option<&[f64]> {
         exchange_accumulated_updates(&mut run.state.mc, &mut run.mpi, run.world, &run.run);
         take_population_changes(&mut run.state.mc, &mut self.changes);
-        self.changes.sort_unstable_by_key(|update| update.det);
+        self.changes.sort_unstable_by_key(|update| update.index);
         coalesce(&mut self.changes);
         apply_population_changes(
             &mut run.state.mc.populations,

@@ -11,15 +11,13 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::noci::{OverlapFactors, OverlapScratch, SpinFactorisation};
-use crate::qmc::{QmcRng, compress_sparse, exchange_to_owners, target_cutoff};
+use crate::qmc::{PopulationUpdate, QmcRng, compress_sparse, exchange_to_owners, target_cutoff};
 
 // Parent/sibling imports.
 use super::fri::compress_dense_to_sparse;
 use super::propagate::NOCIRun;
 use super::sapply::apply_overlap_population_changes;
-use super::state::{
-    NOCIMPIScratch, NOCIPopulationUpdate, PropagationWorker, QMCRunInfo, ShiftTangent,
-};
+use super::state::{NOCIMPIScratch, PropagationWorker, QMCRunInfo, ShiftTangent};
 
 /// The shift tangent of one report of a range propagator, `B = \partial\Delta/\partial E_s`:
 /// gathered from the workers, compressed, and propagated through the overlap to
@@ -28,7 +26,7 @@ pub(in crate::noci::stochastic) struct ReportTangent {
     /// Report tangent gathered from the workers.
     gathered: ShiftTangent,
     /// Sparse tangent after compression.
-    sparse: Vec<NOCIPopulationUpdate>,
+    sparse: Vec<PopulationUpdate>,
     /// Propagated tangent on the owned determinants.
     propagated: Vec<f64>,
     /// Last FRI cutoff, which seeds the next search.
@@ -170,7 +168,7 @@ fn exchange_shift_tangent(
     // Redistribute them by determinant ownership before report-level FRI.
     mpi.send_ranked.append(&mut tangent.remote);
     for update in exchange_to_owners(world, run.irank, mpi) {
-        tangent.add(update.det as usize, update.dn, true);
+        tangent.add(update.index as usize, update.dn, true);
     }
     mpi.send_contig.clear();
 }

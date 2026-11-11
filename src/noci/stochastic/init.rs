@@ -9,15 +9,15 @@ use mpi::traits::*;
 use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::qmc::excitgen::ExcitationHist;
-use crate::qmc::gather_updates;
+use crate::qmc::{PopulationUpdate, gather_updates};
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::common::{find_s, population_stats_projected_energy, projected_energy};
 use super::restart::{population_representation, read_restart_hdf5};
 use super::state::{
-    MCState, NOCIMPIScratch, NOCIPopulationUpdate, PopulationRepresentation, PopulationStats,
-    PropagationState, QMCRunInfo, SparsePopulations,
+    MCState, NOCIMPIScratch, PopulationRepresentation, PopulationStats, PropagationState,
+    QMCRunInfo, SparsePopulations,
 };
 
 /// Initialise the persistent range-safe population vector as `S c0`, the starting populations of
@@ -48,8 +48,8 @@ fn initialise_range_populations(
             .iter()
             .enumerate()
             .filter(|(i, population)| **population != 0.0 && run.det_owner[*i] == run.irank)
-            .map(|(i, &population)| NOCIPopulationUpdate {
-                det: i as u64,
+            .map(|(i, &population)| PopulationUpdate {
+                index: i as u64,
                 dn: population,
             })
             .collect::<Vec<_>>();
@@ -64,7 +64,7 @@ fn initialise_range_populations(
             let mut population = 0.0;
 
             for update in global {
-                population += find_s(data, gamma, update.det as usize, scratch) * update.dn;
+                population += find_s(data, gamma, update.index as usize, scratch) * update.dn;
             }
 
             populations[k] = population;

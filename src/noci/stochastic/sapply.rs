@@ -14,7 +14,9 @@ use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::input::ExcitationGen;
 use crate::noci::{OverlapFactors, OverlapScratch, SpinFactorisation};
-use crate::qmc::{QmcRng, coalesce, compress_sparse, gather_updates, target_cutoff};
+use crate::qmc::{
+    PopulationUpdate, QmcRng, coalesce, compress_sparse, gather_updates, target_cutoff,
+};
 use crate::time_call;
 
 // Parent/sibling imports.
@@ -23,8 +25,7 @@ use super::overlapweighted::OverlapWeightedGenerator;
 use super::propagate::{NOCIPropagator, NOCIRun};
 use super::shift::ReportTangent;
 use super::state::{
-    NOCIMPIScratch, NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation, QMCRunInfo,
-    ScratchSize,
+    NOCIMPIScratch, NOCIPropagationResult, NOCIThreadPropagation, QMCRunInfo, ScratchSize,
 };
 
 /// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
@@ -77,7 +78,7 @@ fn apply_population_changes_local<I>(
 /// # Returns
 /// - `()`: Applies the overlap to the global range-population change.
 pub(in crate::noci::stochastic) fn apply_overlap_population_changes(
-    changes: (&mut [f64], &[NOCIPopulationUpdate]),
+    changes: (&mut [f64], &[PopulationUpdate]),
     data: &NOCIData<'_, f64>,
     overlap: (&SpinFactorisation, &OverlapFactors),
     run: &QMCRunInfo,
@@ -95,7 +96,7 @@ pub(in crate::noci::stochastic) fn apply_overlap_population_changes(
                 {
                     apply_population_changes_local(
                         populations,
-                        dlocal.iter().map(|up| (up.det as usize, up.dn)),
+                        dlocal.iter().map(|up| (up.index as usize, up.dn)),
                         data,
                         overlap_factor,
                         overlap_factors,
@@ -117,12 +118,12 @@ pub(in crate::noci::stochastic) fn apply_overlap_population_changes(
         time_call!(
             crate::timers::stochastic::add_apply_remote_overlap_changes,
             {
-                mpi.gather_recv.sort_unstable_by_key(|update| update.det);
+                mpi.gather_recv.sort_unstable_by_key(|update| update.index);
                 coalesce(&mut mpi.gather_recv);
 
                 apply_population_changes_local(
                     populations,
-                    mpi.gather_recv.iter().map(|up| (up.det as usize, up.dn)),
+                    mpi.gather_recv.iter().map(|up| (up.index as usize, up.dn)),
                     data,
                     overlap_factor,
                     overlap_factors,
@@ -158,7 +159,7 @@ pub(in crate::noci::stochastic) struct SApply {
     /// Reusable storage of one application of the overlap.
     overlap_scratch: OverlapScratch,
     /// Coalesced report change `\Delta`.
-    changes: Vec<NOCIPopulationUpdate>,
+    changes: Vec<PopulationUpdate>,
     /// Last FRI cutoff of the change, which seeds the next search.
     hint: f64,
     /// Report shift tangent `B = \partial\Delta/\partial E_s`.
@@ -228,7 +229,7 @@ impl<C: Communicator> NOCIPropagator<C> for SApply {
             );
             type ThreadState = (
                 Vec<(usize, f64)>,
-                Vec<NOCIPopulationUpdate>,
+                Vec<PopulationUpdate>,
                 Vec<f64>,
                 QmcRng,
                 WickScratchSpin<f64>,
@@ -290,7 +291,7 @@ impl<C: Communicator> NOCIPropagator<C> for SApply {
         // Route the report change to its owners and coalesce it.
         exchange_accumulated_updates(&mut run.state.mc, &mut run.mpi, run.world, &run.run);
         take_population_changes(&mut run.state.mc, &mut self.changes);
-        self.changes.sort_unstable_by_key(|update| update.det);
+        self.changes.sort_unstable_by_key(|update| update.index);
 
         // Choose c_Delta from `E[||Phi_c(Delta)||_0] = \sum_i min(1,|Delta_i|/c)` and compress
         // the complete physical report change before the outer overlap action.

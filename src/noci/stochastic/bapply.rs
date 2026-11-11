@@ -9,14 +9,14 @@ use mpi::topology::Communicator;
 use rand::SeedableRng;
 
 // Crate-root imports.
-use crate::determinant::{AuxiliarySpace, NOCIIndex};
+use crate::determinant::{AuxiliaryIndex, AuxiliarySpace, NOCIIndex};
 use crate::elements::NOCIData;
 use crate::input::ExcitationGen;
 use crate::noci::{AuxiliaryOverlapScratch, OverlapFactors, OverlapScratch, SpinFactorisation};
 use crate::qmc::excitgen::{ExcitationHist, OrthogonalUniformGenerator};
 use crate::qmc::{
-    QmcRng, coalesce, compress_sparse, exchange_updates, gather_updates, pack_updates,
-    target_cutoff,
+    PopulationUpdate, QmcRng, coalesce, compress_sparse, exchange_updates, gather_updates,
+    pack_updates, target_cutoff,
 };
 
 // Parent/sibling imports.
@@ -25,8 +25,8 @@ use super::excit::{AuxiliaryGenerator, pchb_generator};
 use super::propagate::{NOCIPropagator, NOCIRun};
 use super::shift::ReportTangent;
 use super::state::{
-    AuxiliaryMPIScratch, AuxiliaryPopulationUpdate, AuxiliaryPropagationResult,
-    AuxiliaryThreadPropagation, QMCRunInfo, ScratchSize,
+    AuxiliaryMPIScratch, AuxiliaryPropagationResult, AuxiliaryThreadPropagation, QMCRunInfo,
+    ScratchSize,
 };
 
 /// Accumulate one cycle's `\chi_D^P` events and retain remote events for report exchange.
@@ -39,7 +39,7 @@ use super::state::{
 /// - `()`: Drains cycle-local auxiliary results into report accumulators.
 fn accumulate_generated_updates_auxiliary(
     result: &mut AuxiliaryPropagationResult,
-    updates: &mut Vec<AuxiliaryPopulationUpdate>,
+    updates: &mut Vec<PopulationUpdate>,
     scratch: &mut AuxiliaryMPIScratch,
     histogram: &mut Option<ExcitationHist>,
 ) {
@@ -62,7 +62,7 @@ fn accumulate_generated_updates_auxiliary(
 /// # Returns
 /// - `()`: Places complete owner-local contributions in `scratch.recv_contig`.
 fn redistribute_population_updates_auxiliary(
-    local: &mut Vec<AuxiliaryPopulationUpdate>,
+    local: &mut Vec<PopulationUpdate>,
     scratch: &mut AuxiliaryMPIScratch,
     world: &impl Communicator,
 ) {
@@ -136,7 +136,7 @@ pub(in crate::noci::stochastic) struct BApply {
     /// Reusable gathered spawns of one cycle.
     result: AuxiliaryPropagationResult,
     /// Report change `\chi` owned by this rank.
-    local: Vec<AuxiliaryPopulationUpdate>,
+    local: Vec<PopulationUpdate>,
     /// Last FRI cutoff of `\chi`, which seeds the next search.
     hint: f64,
     /// Report shift tangent.
@@ -275,7 +275,7 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
         let (world, nranks) = (run.world, run.run.nranks);
 
         // Coalesce generated auxiliary amplitudes on their owning MPI ranks.
-        self.local.sort_unstable_by_key(|update| update.det);
+        self.local.sort_unstable_by_key(|update| update.index);
         coalesce(&mut self.local);
         let mut owner_updates = if nranks == 1 {
             // Preserve allocation across reports while avoiding MPI scratch and a second coalesce.
@@ -283,7 +283,7 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
         } else {
             redistribute_population_updates_auxiliary(&mut self.local, &mut self.mpi, world);
             let mut updates = std::mem::take(&mut self.mpi.recv_contig);
-            updates.sort_unstable_by_key(|update| update.det);
+            updates.sort_unstable_by_key(|update| update.index);
             coalesce(&mut updates);
             updates
         };
@@ -298,7 +298,7 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
         let mut fri_rng =
             QmcRng::seed_from_u64(run.run.rank_seed ^ 0xA0761D6478BD642F ^ report as u64);
         compress_sparse(&mut owner_updates, self.hint, &mut fri_rng);
-        let physical_updates: &[AuxiliaryPopulationUpdate] = if nranks == 1 {
+        let physical_updates: &[PopulationUpdate] = if nranks == 1 {
             &owner_updates
         } else {
             gather_updates(world, &owner_updates, &mut self.mpi)
@@ -310,7 +310,7 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
             &run.run.owned,
             physical_updates
                 .iter()
-                .map(|update| (update.index(), update.dn)),
+                .map(|update| (AuxiliaryIndex(update.index as usize), update.dn)),
             (run.data, &self.auxiliary),
             &mut self.factors,
             &mut self.auxiliary_scratch,
