@@ -160,31 +160,24 @@ fn xw_lane_packets<B: LaneBatch, const N: usize>(
 
 /// Arrange lanes into contiguous groups by key, keeping request order within a group.
 /// # Arguments:
-/// - `keys`: Group key of every lane, below `ngroups`.
-/// - `ngroups`: Number of group keys.
+/// - `keys`: Group key of every lane.
 /// # Returns
 /// - `(Vec<usize>, Vec<usize>)`: Lane of every position in group order, and the boundaries of the
-///   nonempty groups.
-pub(crate) fn group_lanes(
-    keys: &[usize],
-    ngroups: usize,
-) -> (Vec<usize>, Vec<usize>) {
-    // Count every key, then place each lane after the lanes of smaller keys.
-    let mut bounds = vec![0; ngroups + 1];
-    for &key in keys {
-        bounds[key + 1] += 1;
-    }
-    for key in 0..ngroups {
-        bounds[key + 1] += bounds[key];
-    }
-    let mut next = bounds.clone();
-    let mut order = vec![0; keys.len()];
-    for (lane, &key) in keys.iter().enumerate() {
-        order[next[key]] = lane;
-        next[key] += 1;
-    }
+///   groups.
+pub(crate) fn group_lanes(keys: &[usize]) -> (Vec<usize>, Vec<usize>) {
+    // A stable sort by key keeps request order within each group.
+    let mut order: Vec<usize> = (0..keys.len()).collect();
+    order.sort_by_key(|&lane| keys[lane]);
 
-    // Empty groups have no lane to select their kernel from.
-    bounds.dedup();
+    // A new group starts wherever the key changes.
+    let mut bounds = vec![0];
+    for position in 1..order.len() {
+        if keys[order[position]] != keys[order[position - 1]] {
+            bounds.push(position);
+        }
+    }
+    if !order.is_empty() {
+        bounds.push(order.len());
+    }
     (order, bounds)
 }

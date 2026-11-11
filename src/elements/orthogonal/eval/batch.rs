@@ -191,7 +191,7 @@ pub(crate) fn xw_orthogonal_batched<E: OrthogonalElement<T>, T: NOCIScalar>(
             },
         )
         .collect();
-    let (order, groups) = group_lanes(&keys, SECTORS + 1);
+    let (order, groups) = group_lanes(&keys);
     let lanes: Vec<DeterminantData> = order.iter().map(|&request| states[request]).collect();
 
     // Evaluate every sector and write each value back to its request.

@@ -18,9 +18,7 @@ use crate::{Excitation, ExcitationCache, ExcitationSpinCache};
 // Parent/sibling imports.
 use super::super::scratch::WickScratchSpin;
 use super::super::view::WicksPairView;
-use super::dispatch::{
-    HAMRADIX, HAMSPACE, dispatch_hamiltonian_ranks, dispatch_hamiltonian_ranks_inner,
-};
+use super::dispatch::{HAMRADIX, dispatch_hamiltonian_ranks, dispatch_hamiltonian_ranks_inner};
 use super::helpers::{DetBranches, DetIndex, Minor, ReplacementLayout};
 use super::helpers::{
     adjugate_transpose_generic, bit, column_replacement_correction, column_replacement_det,
@@ -206,11 +204,11 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                     if rxa.max(rwa).max(rxb).max(rwb) < HAMRADIX {
                         ((rxa * HAMRADIX + rwa) * HAMRADIX + rxb) * HAMRADIX + rwb
                     } else {
-                        HAMSPACE
+                        usize::MAX
                     }
                 })
                 .collect();
-            let (order, groups) = group_lanes(&keys, HAMSPACE + 1);
+            let (order, groups) = group_lanes(&keys);
             let lanes: Vec<(DeterminantData, DeterminantData)> = order
                 .iter()
                 .map(|&request| (requests[request].1, requests[request].2))
