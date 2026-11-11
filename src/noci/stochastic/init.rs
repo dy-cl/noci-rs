@@ -8,7 +8,6 @@ use mpi::traits::*;
 // Crate-root imports.
 use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
-use crate::input::Propagator;
 use crate::qmc::excitgen::ExcitationHist;
 use crate::qmc::gather_updates;
 use crate::time_call;
@@ -102,8 +101,8 @@ pub(in crate::noci::stochastic) fn initialise_populations(
 /// # Returns:
 /// - `PropagationState`: Initialised stochastic propagation state.
 /// # Panics
-/// - Panics if restart loading fails or saved populations or momentum do not match this rank's
-///   determinant layout.
+/// - Panics if restart loading fails or saved populations do not match this rank's determinant
+///   layout.
 pub(in crate::noci::stochastic) fn initialise_qmc_state(
     c0: &[f64],
     es: &mut f64,
@@ -171,39 +170,9 @@ pub(in crate::noci::stochastic) fn initialise_qmc_state(
         );
         let overlap_weight = restart.overlap_weight.unwrap_or(qmc.overlap_weight);
 
-        // Restore `V_r` for active BApply momentum, defaulting legacy restarts to zero.
-        let momentum = if data.input.prop_ref().propagator == Propagator::BApply
-            && qmc.momentum_beta > 0.0
-        {
-            match restart.momentum {
-                Some(momentum) => {
-                    if momentum.len() != run.owned.len() {
-                        panic!(
-                            "Restart momentum length mismatch on rank {}: saved {}, current {}.",
-                            run.irank,
-                            momentum.len(),
-                            run.owned.len()
-                        );
-                    }
-                    Some(momentum)
-                }
-                None => {
-                    if run.irank == 0 {
-                        println!(
-                            "Warning: restart contains no heavy-ball momentum; initialising V_r = 0."
-                        );
-                    }
-                    Some(vec![0.0; run.owned.len()])
-                }
-            }
-        } else {
-            None
-        };
-
         // Resume at the report following the checkpoint, inferring legacy activation if needed.
         return PropagationState::new(
             mc,
-            momentum,
             pe,
             restart.report + 1,
             restart.reached.unwrap_or_else(|| {
@@ -272,14 +241,6 @@ pub(in crate::noci::stochastic) fn initialise_qmc_state(
 
     let stats = PopulationStats::new(global[0], global[1], 0.0, 0);
 
-    // Fresh BApply momentum starts from `V_0 = 0` in the rank-local range-space layout.
-    let momentum =
-        if data.input.prop_ref().propagator == Propagator::BApply && qmc.momentum_beta > 0.0 {
-            Some(vec![0.0; run.owned.len()])
-        } else {
-            None
-        };
-
     // Start a fresh run at report zero with population control inactive.
-    PropagationState::new(mc, momentum, pe, 0, false, stats, qmc.overlap_weight)
+    PropagationState::new(mc, pe, 0, false, stats, qmc.overlap_weight)
 }

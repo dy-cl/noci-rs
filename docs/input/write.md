@@ -35,8 +35,8 @@ write = {
 
 ## Restarts
 
-A restart holds the populations, shift and controller history, random seed, overlap weight and
-momentum, so a resumed run continues where it stopped. $S$-apply and $B$-apply restarts are
+A restart holds the populations, shift and controller history, random seed and overlap weight, so
+a resumed run continues where it stopped. $S$-apply and $B$-apply restarts are
 interchangeable. Reading checks that the restart matches the determinant space and the MPI
 partition.
 

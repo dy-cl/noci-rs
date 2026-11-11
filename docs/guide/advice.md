@@ -67,7 +67,7 @@ An eigenvalue at round-off level means an exact null direction, and `unshifted` 
 - **The limit shrinks with system size and basis**, because $\lambda_\text{max}$ grows. A time
   step that is stable for a short chain can diverge for a longer one.
 - **Scan for the largest stable value** with short runs, then back off a little. Do not guess
-  large values, and do not compensate for a slow run with momentum (below).
+  large values.
 - A larger `dt` reaches equilibrium in fewer iterations but usually needs a larger population, so
   it trades imaginary time for population rather than giving a free speedup.
 
@@ -96,10 +96,6 @@ An eigenvalue at round-off level means an exact null direction, and `unshifted` 
 - **If the population blows up at a time step that should be stable**, increase
   `fri.pre_overlap.target_nnz`. Too small a target makes the compressed pre-overlap change too
   noisy at large time steps.
-- **Leave `momentum_beta` at zero.** Momentum accelerates the slow modes deterministically, but
-  the stochastic noise grows much faster than the acceleration. Increasing `dt` gives the same
-  acceleration with smaller error bars. You may ask why it is in the code then. The answer is that
-  I can't be bothered to remove it.
 
 ## Analysing stochastic output
 
