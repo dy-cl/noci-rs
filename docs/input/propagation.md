@@ -89,7 +89,6 @@ qmc = {
 | `initial_shift` | string or number | `"noci"` | Shift before control starts: `"noci"` for the reference NOCI energy, `"hf"` for the energy of the first reference (normally RHF), or a number in $E_\text{h}$. A restart overrides it. |
 | `shift_damping` | number | `5e-4` | Damping $\zeta$ of the shift update. |
 | `population_restoring` | number | `0.0` | Restoring strength $\kappa$, with $0 \le \kappa < 1$. `0` holds the population at zero growth. Used by `s-apply` and `b-apply`; the unshifted controller ignores it. |
-| `momentum_beta` | number | `0.0` | Report-level heavy-ball momentum $\beta$, with $0 \le \beta < 1$. `b-apply` only. |
 
 ### Run length and estimators
 

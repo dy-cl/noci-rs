@@ -118,9 +118,7 @@ fn print_bapply_storage(
 
 /// Perform BApply stochastic range propagation.
 /// `\chi \simeq -dt(\hat H-E_s)B N` is sampled in parent-orthogonal determinant spaces and the
-/// persistent real range population is updated as `N_{r+1} = N_r + B^\dagger\chi_r`, or with
-/// report-level heavy-ball momentum as `V_{r+1} = \beta V_r + B^\dagger\chi_r` and
-/// `N_{r+1} = N_r + V_{r+1}`.
+/// persistent real range population is updated as `N_{r+1} = N_r + B^\dagger\chi_r`.
 /// # Arguments:
 /// - `data`: Immutable stochastic propagation data.
 /// - `c0`: Initial determinant coefficient vector.
@@ -129,13 +127,9 @@ fn print_bapply_storage(
 /// - `world`: MPI communicator.
 /// # Returns
 /// - `(f64, Option<ExcitationHist>)`: Final projected energy and optional spawning histogram.
-/// # References
-/// - Polyak, *USSR Comput. Math. Math. Phys.* **4**, 1–17 (1964),
-///   [doi:10.1016/0041-5553(64)90137-5](https://doi.org/10.1016/0041-5553(64)90137-5),
-///   for the optional heavy-ball momentum update.
 /// # Panics
 /// - Panics for unsupported excitation generation, invalid restart intervals, nonorthogonal
-///   parent orbitals, missing MO caches or Wick data, or an uninitialised momentum state.
+///   parent orbitals, or missing MO caches or Wick data.
 pub fn qmc_step(
     data: &NOCIData<'_, f64>,
     c0: &[f64],
@@ -297,43 +291,17 @@ pub fn qmc_step(
             gather_updates(world, &owner_updates, &mut auxiliary_mpi)
         };
 
-        if qmc.momentum_beta == 0.0 {
-            factorisation.apply_auxiliary_overlap_sparse(
-                &mut state.mc.populations,
-                &run.owned,
-                physical_updates
-                    .iter()
-                    .map(|update| (update.index(), update.dn)),
-                (data, &auxiliary),
-                &mut overlap_factors,
-                &mut auxiliary_scratch,
-            );
-        } else {
-            let Some(momentum) = state.momentum.as_mut() else {
-                panic!("BApply heavy-ball momentum state is not initialised");
-            };
-
-            // Heavy-ball update: `V_{r+1} = \beta V_r + \Delta_r`, then
-            // `N_{r+1} = N_r + V_{r+1}`.
-            for velocity in momentum.iter_mut() {
-                *velocity *= qmc.momentum_beta;
-            }
-
-            factorisation.apply_auxiliary_overlap_sparse(
-                momentum.as_mut_slice(),
-                &run.owned,
-                physical_updates
-                    .iter()
-                    .map(|update| (update.index(), update.dn)),
-                (data, &auxiliary),
-                &mut overlap_factors,
-                &mut auxiliary_scratch,
-            );
-
-            for (population, velocity) in state.mc.populations.iter_mut().zip(momentum.iter()) {
-                *population += *velocity;
-            }
-        }
+        // Apply the realised range update `N_{r+1} = N_r + B^\dagger\chi_r`.
+        factorisation.apply_auxiliary_overlap_sparse(
+            &mut state.mc.populations,
+            &run.owned,
+            physical_updates
+                .iter()
+                .map(|update| (update.index(), update.dn)),
+            (data, &auxiliary),
+            &mut overlap_factors,
+            &mut auxiliary_scratch,
+        );
 
         // Collect and compress `d chi / d E_s` in the representation local to this MPI mode.
         if run.nranks == 1 {

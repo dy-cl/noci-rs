@@ -291,10 +291,6 @@ $$
 with restoring strength $\kappa$ = `population_restoring`. With $\kappa = 0$ the controller holds
 the population at zero growth; positive $\kappa$ weakly restores it towards $N_\text{target}$.
 
-$B$-apply can also add report-level heavy-ball momentum {cite}`polyak1964` to the
-back-transformed change, $V_w^{(r+1)} = \beta V_w^{(r)} + \mathcal B^*_{pw}\bar\chi_p^{(r)}$ for
-report $r$, with $\beta$ = `momentum_beta`.
-
 ### The shoulder
 
 Before population control starts, the population passes through a plateau: growth stalls while

@@ -271,8 +271,6 @@ impl PopulationStats {
 pub(in crate::noci::stochastic) struct PropagationState {
     /// Full Monte Carlo state.
     pub(in crate::noci::stochastic) mc: MCState,
-    /// Optional report-level heavy-ball velocity `V_r` in the rank-local population layout.
-    pub(in crate::noci::stochastic) momentum: Option<Vec<f64>>,
     /// Current projected-energy numerator and denominator.
     pub(in crate::noci::stochastic) pe: ProjectedEnergyUpdate,
     /// Population statistics at the previous shift update.
@@ -293,8 +291,6 @@ impl PropagationState {
     /// Construct a propagation state.
     /// # Arguments:
     /// - `mc`: Monte Carlo state.
-    /// - `momentum`: Optional report-level heavy-ball velocity `V_r` in the rank-local population
-    ///   layout.
     /// - `pe`: Projected-energy data.
     /// - `start_report`: Report from which propagation begins.
     /// - `reached`: Whether the target population has been reached.
@@ -304,7 +300,6 @@ impl PropagationState {
     /// - `PropagationState`: Initialised propagation state.
     pub(in crate::noci::stochastic) fn new(
         mc: MCState,
-        momentum: Option<Vec<f64>>,
         pe: ProjectedEnergyUpdate,
         start_report: usize,
         reached: bool,
@@ -315,7 +310,6 @@ impl PropagationState {
 
         Self {
             mc,
-            momentum,
             pe,
             prev_pop,
             cur_pop: prev_pop,
