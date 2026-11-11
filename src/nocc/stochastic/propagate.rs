@@ -7,7 +7,6 @@ use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::determinant::DeterminantState;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{DetPair, HamiltonianOverlap, NOCIData, calculate_pairs};
 use crate::hash::FastMap;
@@ -15,16 +14,16 @@ use crate::input::JMNOCCMCOptions;
 use crate::mpiutils::all_reduce_array1;
 use crate::nocc::Effective;
 use crate::qmc::{
-    AliasTable, ExchangeScratch, QmcRng, coalesce, compress_sparse, exchange_to_owners,
-    gather_updates, owner_words, print_table_header, print_table_row, rank_seed, stop_requested,
-    stream, update_shift,
+    AliasTable, ExchangeScratch, PopulationUpdate, QmcRng, coalesce, compress_sparse,
+    exchange_to_owners, gather_updates, owner_words, print_table_header, print_table_row,
+    rank_seed, stop_requested, stream, update_shift,
 };
 
 // Parent/sibling imports.
 use super::cluster::{collapse, coupling_combinations, select_cluster, select_coupling_cluster};
 use super::coupling::{left_action, project_cluster};
 use super::linked::linked_attempt;
-use super::population::{Block, Excitor, ExcitorState, ExcitorUpdate, ReferenceSpaces, rank};
+use super::population::{Block, Excitor, ExcitorIndex, ReferenceSpaces, rank};
 use super::state::JMTaskPropagation;
 
 /// Smallest number of cluster attempts in one parallel task.
@@ -62,24 +61,14 @@ enum Task {
 /// # Returns:
 /// - `usize`: Owning rank.
 fn owner(
-    key: &ExcitorState,
+    key: ExcitorIndex,
     assignment: u64,
     nranks: usize,
 ) -> usize {
     if nranks == 1 {
         return 0;
     }
-    owner_words(
-        &[
-            assignment,
-            key.0 as u64,
-            key.1 as u64,
-            (key.1 >> 64) as u64,
-            key.2 as u64,
-            (key.2 >> 64) as u64,
-        ],
-        nranks,
-    )
+    owner_words(&[assignment, key.0 as u64], nranks)
 }
 
 /// Build the per-step view of every block from this rank's populations, with excitors in key
@@ -94,7 +83,7 @@ fn owner(
 /// - `Vec<Block>`: Block populations of this rank.
 fn blocks(
     spaces: &ReferenceSpaces,
-    populations: &FastMap<ExcitorState, f64>,
+    populations: &FastMap<ExcitorIndex, f64>,
     nref: &[f64],
     ranks: f64,
 ) -> Vec<Block> {
@@ -107,16 +96,10 @@ fn blocks(
         .map(|(reference, &nref)| (*reference, nref, Vec::new()))
         .collect::<Vec<_>>();
 
-    for key in keys {
-        let (reference, _, excitors) = &mut out[key.0];
-        let det = DeterminantState {
-            parent: reference.parent,
-            alpha: key.1,
-            beta: key.2,
-        };
-        if det != *reference {
-            excitors.push((Excitor::new(reference, det), populations[&key]));
-        }
+    for key in keys.into_iter().filter(|&key| !spaces.is_reference(key)) {
+        let (reference, _, excitors) = &mut out[spaces.block(key)];
+        let excitor = Excitor::new(reference, spaces.determinant(key));
+        excitors.push((excitor, populations[&key]));
     }
     out.into_iter()
         .map(|(reference, nref, excitors)| {
@@ -230,13 +213,13 @@ fn run_task(
 /// - `initial`: Initial population.
 /// - `ownership`: Salt of the first assignment, this rank and the number of ranks.
 /// # Returns:
-/// - `(Vec<f64>, FastMap<ExcitorState, f64>)`: Trial coefficients and this rank's populations.
+/// - `(Vec<f64>, FastMap<ExcitorIndex, f64>)`: Trial coefficients and this rank's populations.
 fn initial_populations(
     spaces: &ReferenceSpaces,
     c0: &[f64],
     initial: f64,
     ownership: (u64, usize, usize),
-) -> (Vec<f64>, FastMap<ExcitorState, f64>) {
+) -> (Vec<f64>, FastMap<ExcitorIndex, f64>) {
     let (assignment, irank, nranks) = ownership;
     let m = spaces.references.len();
 
@@ -255,8 +238,8 @@ fn initial_populations(
     // Reference populations `N_z = N_0 c_z` on the ranks owning them, with no excitors.
     let mut populations = FastMap::default();
     for (z, reference) in spaces.references.iter().enumerate() {
-        let key = (z, reference.alpha, reference.beta);
-        if owner(&key, assignment, nranks) == irank {
+        let key = spaces.index(z, (reference.alpha, reference.beta));
+        if owner(key, assignment, nranks) == irank {
             populations.insert(key, initial * trial[z]);
         }
     }
@@ -391,7 +374,7 @@ fn run_tasks(
 fn sum_tasks(
     workers: &[JMTaskPropagation],
     m: usize,
-    merged: &mut FastMap<ExcitorState, f64>,
+    merged: &mut FastMap<ExcitorIndex, f64>,
 ) -> Vec<f64> {
     // Spawns of every task, summed per excitor.
     merged.clear();
@@ -434,9 +417,9 @@ fn sum_tasks(
 fn spawn_coupling<C: Communicator>(
     current: &[Block],
     spaces: &ReferenceSpaces,
-    comm: (&C, &mut ExchangeScratch<ExcitorUpdate>),
-    coupled: &FastMap<ExcitorState, f64>,
-    merged: &mut FastMap<ExcitorState, f64>,
+    comm: (&C, &mut ExchangeScratch<PopulationUpdate>),
+    coupled: &FastMap<ExcitorIndex, f64>,
+    merged: &mut FastMap<ExcitorIndex, f64>,
 ) {
     let (world, exchange) = comm;
     let irank = world.rank() as usize;
@@ -445,32 +428,31 @@ fn spawn_coupling<C: Communicator>(
     // Every rank needs the complete projection, since its excitors of `y` act on all rows.
     let q = coupled
         .iter()
-        .map(|(&key, &v)| ExcitorUpdate::new(key, v))
+        .map(|(&key, &dn)| PopulationUpdate {
+            index: key.0 as u64,
+            dn,
+        })
         .collect::<Vec<_>>();
     let mut q = if nranks > 1 {
         gather_updates(world, &q, exchange).to_vec()
     } else {
         q
     };
-    q.par_sort_unstable_by_key(|u| u.excitor());
+    q.par_sort_unstable_by_key(|u| u.index);
     coalesce(&mut q);
 
     // Left action of `e^{-\hat T_y}` on the rows of each block, added to the spawns.
     for (y, b) in current.iter().enumerate() {
         let entries = q
             .iter()
-            .map(|u| u.excitor())
-            .zip(q.iter().map(|u| u.dn))
-            .filter(|((block, _, _), _)| *block == y)
-            .map(|((_, alpha, beta), v)| ((alpha, beta), v))
+            .map(|u| (ExcitorIndex(u.index as usize), u.dn))
+            .filter(|&(key, _)| spaces.block(key) == y)
+            .map(|(key, dn)| {
+                let det = spaces.determinant(key);
+                ((det.alpha, det.beta), dn)
+            })
             .collect::<Vec<_>>();
-        for (key, dn) in left_action(
-            b,
-            y,
-            &entries,
-            spaces.cluster_rank,
-            (nranks as f64, irank == 0),
-        ) {
+        for (key, dn) in left_action(b, y, &entries, spaces, (nranks as f64, irank == 0)) {
             *merged.entry(key).or_insert(0.0) += dn;
         }
     }
@@ -487,10 +469,10 @@ fn spawn_coupling<C: Communicator>(
 /// # Returns:
 /// - `()`: Updates `populations` in place.
 fn exchange_populations<C: Communicator>(
-    populations: &mut FastMap<ExcitorState, f64>,
-    updates: Vec<ExcitorUpdate>,
+    populations: &mut FastMap<ExcitorIndex, f64>,
+    updates: Vec<PopulationUpdate>,
     next: u64,
-    comm: (&C, &mut ExchangeScratch<ExcitorUpdate>),
+    comm: (&C, &mut ExchangeScratch<PopulationUpdate>),
 ) {
     let (world, exchange) = comm;
     let irank = world.rank() as usize;
@@ -501,21 +483,25 @@ fn exchange_populations<C: Communicator>(
         // Route every spawn to the next owner of its excitor.
         exchange.send_ranked.clear();
         for update in updates {
-            let peer = owner(&update.excitor(), next, nranks);
+            let peer = owner(ExcitorIndex(update.index as usize), next, nranks);
             exchange.send_ranked.push((peer, update));
         }
 
         // Move the populations whose excitor changes owner under the next assignment.
         let moving = populations
             .keys()
-            .filter(|key| owner(key, next, nranks) != irank)
+            .filter(|&&key| owner(key, next, nranks) != irank)
             .copied()
             .collect::<Vec<_>>();
         for key in moving {
             let n = populations.remove(&key).unwrap();
+            let update = PopulationUpdate {
+                index: key.0 as u64,
+                dn: n,
+            };
             exchange
                 .send_ranked
-                .push((owner(&key, next, nranks), ExcitorUpdate::new(key, n)));
+                .push((owner(key, next, nranks), update));
         }
 
         exchange_to_owners(world, irank, exchange)
@@ -525,7 +511,9 @@ fn exchange_populations<C: Communicator>(
 
     // Annihilate the arrivals with the owned populations.
     for update in &received {
-        *populations.entry(update.excitor()).or_insert(0.0) += update.dn;
+        *populations
+            .entry(ExcitorIndex(update.index as usize))
+            .or_insert(0.0) += update.dn;
     }
 }
 
@@ -533,51 +521,54 @@ fn exchange_populations<C: Communicator>(
 /// removed.
 /// # Arguments:
 /// - `populations`: Excitor populations owned by this rank, references included.
-/// - `is_reference`: Whether an excitor key is a block reference.
+/// - `spaces`: Spaces of every reference block, which tell its references apart.
 /// - `cutoff`: Population cutoff.
 /// - `rng`: Rank-local rounding stream of the iteration.
 /// # Returns:
 /// - `()`: Updates `populations` in place.
 fn round_populations(
-    populations: &mut FastMap<ExcitorState, f64>,
-    is_reference: &impl Fn(&ExcitorState) -> bool,
+    populations: &mut FastMap<ExcitorIndex, f64>,
+    spaces: &ReferenceSpaces,
     cutoff: f64,
     mut rng: QmcRng,
 ) {
     // Take out the small excitor populations in key order, so the rounding is reproducible.
     let mut small = populations
         .iter()
-        .filter(|(key, n)| !is_reference(key) && n.abs() < cutoff)
-        .map(|(&key, &n)| ExcitorUpdate::new(key, n))
+        .filter(|&(&key, n)| !spaces.is_reference(key) && n.abs() < cutoff)
+        .map(|(&key, &n)| PopulationUpdate {
+            index: key.0 as u64,
+            dn: n,
+        })
         .collect::<Vec<_>>();
-    small.sort_unstable_by_key(|u| u.excitor());
+    small.sort_unstable_by_key(|u| u.index);
     for update in &small {
-        populations.remove(&update.excitor());
+        populations.remove(&ExcitorIndex(update.index as usize));
     }
 
     // Each survives as `\pm c` with probability `|n|/c` and the survivors return.
     compress_sparse(&mut small, cutoff, &mut rng);
-    populations.extend(small.iter().map(|u| (u.excitor(), u.dn)));
+    populations.extend(small.iter().map(|u| (ExcitorIndex(u.index as usize), u.dn)));
 }
 
 /// Population statistics over every rank: the total population `\sum|n|`, the reference
 /// population `\sum_x|N_x|` and the number of occupied excitors.
 /// # Arguments:
 /// - `populations`: Excitor populations owned by this rank, references included.
-/// - `is_reference`: Whether an excitor key is a block reference.
+/// - `spaces`: Spaces of every reference block, which tell its references apart.
 /// - `world`: MPI communicator.
 /// # Returns:
 /// - `(f64, f64, i64)`: Total population, reference population and occupied excitors.
 fn population_stats(
-    populations: &FastMap<ExcitorState, f64>,
-    is_reference: &impl Fn(&ExcitorState) -> bool,
+    populations: &FastMap<ExcitorIndex, f64>,
+    spaces: &ReferenceSpaces,
     world: &impl Communicator,
 ) -> (f64, f64, i64) {
     // This rank's contributions.
     let mut stats = vec![0.0; 3];
-    for (key, n) in populations {
+    for (&key, n) in populations {
         stats[0] += n.abs();
-        if is_reference(key) {
+        if spaces.is_reference(key) {
             stats[1] += n.abs();
         } else {
             stats[2] += 1.0;
@@ -652,12 +643,8 @@ pub(crate) fn jm_qmc_step(
     let local = rank_seed(base, irank);
     let assignment = |report: usize| base ^ (report as u64).wrapping_mul(ASSIGNSTRIDE);
 
-    // Fixed spaces of every block, and the test for a block's reference among the excitor keys.
+    // Fixed spaces of every block, which also index their excitors.
     let spaces = ReferenceSpaces::new(data, options);
-    let is_reference = |key: &ExcitorState| {
-        let reference = &spaces.references[key.0];
-        (key.1, key.2) == (reference.alpha, reference.beta)
-    };
 
     // Initial reference populations from the NOCI coefficients and the exact effective
     // Hamiltonian of uncorrelated references, `G = S^{-1}H`.
@@ -679,9 +666,9 @@ pub(crate) fn jm_qmc_step(
     let mut previous = all_reduce_array1(world, Array1::from_vec(vec![local_norm]))[0];
     let mut exchange = ExchangeScratch::new(nranks);
     let mut workers = Vec::<JMTaskPropagation>::new();
-    let mut merged = FastMap::<ExcitorState, f64>::default();
-    let mut spawns = FastMap::<ExcitorState, f64>::default();
-    let mut coupled = FastMap::<ExcitorState, f64>::default();
+    let mut merged = FastMap::<ExcitorIndex, f64>::default();
+    let mut spawns = FastMap::<ExcitorIndex, f64>::default();
+    let mut coupled = FastMap::<ExcitorIndex, f64>::default();
     let mut running = Effective::new(m);
     let mut eproj = f64::NAN;
 
@@ -693,11 +680,11 @@ pub(crate) fn jm_qmc_step(
         // The populations are frozen through the report: global reference populations and excitor
         // norms, then this rank's block view.
         let mut totals = vec![0.0; 2 * m];
-        for (key, &n) in &populations {
-            if is_reference(key) {
-                totals[key.0] += n;
+        for (&key, &n) in &populations {
+            if spaces.is_reference(key) {
+                totals[spaces.block(key)] += n;
             } else {
-                totals[m + key.0] += n.abs();
+                totals[m + spaces.block(key)] += n.abs();
             }
         }
         let totals = all_reduce_array1(world, Array1::from_vec(totals)).to_vec();
@@ -739,7 +726,8 @@ pub(crate) fn jm_qmc_step(
                 for y in 0..m {
                     for x in (0..m).filter(|&x| x != y) {
                         for (&(alpha, beta), &v) in &worker.projections.q[y][x] {
-                            *coupled.entry((y, alpha, beta)).or_insert(0.0) += gt[(x, y)] * v;
+                            let key = spaces.index(y, (alpha, beta));
+                            *coupled.entry(key).or_insert(0.0) += gt[(x, y)] * v;
                         }
                     }
                 }
@@ -785,9 +773,12 @@ pub(crate) fn jm_qmc_step(
         // Annihilate this rank's spawns of the report and round small ones stochastically.
         let mut updates = spawns
             .iter()
-            .map(|(&key, &dn)| ExcitorUpdate::new(key, dt * dn))
+            .map(|(&key, &dn)| PopulationUpdate {
+                index: key.0 as u64,
+                dn: dt * dn,
+            })
             .collect::<Vec<_>>();
-        updates.par_sort_unstable_by_key(|u| u.excitor());
+        updates.par_sort_unstable_by_key(|u| u.index);
         coalesce(&mut updates);
         let mut rng = stream(local, SPAWNSALT, report as u64);
         compress_sparse(&mut updates, qmc.fri.spawn_cutoff, &mut rng);
@@ -796,8 +787,8 @@ pub(crate) fn jm_qmc_step(
         // population, the report's step of the frozen populations.
         let growth = (0..m).map(|x| gt.row(x).sum()).collect::<Vec<_>>();
         let step = qmc.ncycles as f64 * dt;
-        for (key, n) in populations.iter_mut() {
-            *n *= 1.0 - step * (growth[key.0] - shift);
+        for (&key, n) in populations.iter_mut() {
+            *n *= 1.0 - step * (growth[spaces.block(key)] - shift);
         }
 
         // Spawns and populations to their owners under the next report's assignment, annihilation,
@@ -810,7 +801,7 @@ pub(crate) fn jm_qmc_step(
         );
         round_populations(
             &mut populations,
-            &is_reference,
+            &spaces,
             qmc.fri.population_cutoff,
             stream(local, ROUNDSALT, report as u64),
         );
@@ -823,7 +814,7 @@ pub(crate) fn jm_qmc_step(
         }
 
         // Population statistics over every rank and the shift update.
-        let (total, nref, nexcitors) = population_stats(&populations, &is_reference, world);
+        let (total, nref, nexcitors) = population_stats(&populations, &spaces, world);
         update_shift(
             &mut shift,
             &mut reached,

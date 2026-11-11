@@ -8,7 +8,7 @@ use crate::hash::FastMap;
 
 // Parent/sibling imports.
 use super::coupling::Projections;
-use super::population::{Excitor, ExcitorState, ReferenceSpaces};
+use super::population::{Excitor, ExcitorIndex, ReferenceSpaces};
 
 /// Destination of one batched same-reference Hamiltonian term.
 #[derive(Clone, Copy)]
@@ -16,7 +16,7 @@ pub(super) enum Target {
     /// Contribution to `N_zH^e_{zz}` of block `z`.
     Energy(usize),
     /// Population change per unit time of one excitor.
-    Excitor(ExcitorState),
+    Excitor(ExcitorIndex),
 }
 
 /// Batched same-reference request: `coefficient\,\langle\text{bra}|\hat H|\text{ket}\rangle` is
@@ -52,7 +52,7 @@ pub(super) struct CouplingBatchedRequest {
 /// queued during the attempts and resolved together, as in the NOCIQMC propagation workers.
 pub(super) struct JMTaskPropagation {
     /// Population changes per unit time, summed per excitor.
-    pub(super) spawns: FastMap<ExcitorState, f64>,
+    pub(super) spawns: FastMap<ExcitorIndex, f64>,
     /// Contribution to `N_z H^e_{zz}` of each block.
     pub(super) energy: Vec<f64>,
     /// Coupling projections.

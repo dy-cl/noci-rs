@@ -1,22 +1,22 @@
 // nocc/stochastic/population.rs
 
-// External crate imports.
-use mpi::traits::*;
-
 // Crate-root imports.
 use crate::basis::{apply_excitation, excitation_phase_bits, undo_excitation};
 use crate::determinant::{DeterminantState, NOCIIndex};
 use crate::elements::NOCIData;
+use crate::hash::FastMap;
 use crate::input::JMNOCCMCOptions;
 use crate::nocc::reference_determinants;
+use crate::qmc::AliasTable;
 use crate::qmc::excitgen::OrthogonalUniformGenerator;
-use crate::qmc::{AliasTable, FriAmplitude, KeyedUpdate};
 
-/// Excitor `(z, D)` of reference block `z`, identified by the occupations of its determinant
-/// `|D\rangle = \hat\tau|{}^z\Psi\rangle` in the parent frame of `z`. The block's reference has
-/// no holes. It is keyed by the block rather than a `DeterminantState`, since several blocks may
-/// share one parent frame.
-pub(super) type ExcitorState = (usize, u128, u128);
+/// Flat index of an excitor `(z, D)` of reference block `z`, with
+/// `|D\rangle = \hat\tau|{}^z\Psi\rangle` in the parent frame of `z`: the offset of block `z`,
+/// then `0` for its reference or `1 + r` for its projection row `r`. Every excitor lies in its
+/// block's rows, since spawns never leave the cluster rank, and the block is part of the index
+/// because several blocks may share one parent frame.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(super) struct ExcitorIndex(pub(super) usize);
 
 /// One excitation `\hat\tau_{z\mu}` of a reference block, with the sign convention
 /// `\hat\tau_{z\mu}|{}^z\Psi\rangle = +|D_\mu\rangle` so that its population is the coefficient
@@ -133,6 +133,11 @@ pub(super) struct ReferenceSpaces {
     pub(super) references: Vec<DeterminantState>,
     /// Projection rows of every block with ranks `1..=cluster_rank`.
     pub(super) rows: Vec<Vec<DeterminantState>>,
+    /// Flat index of every block's reference, then the total number of excitors.
+    offsets: Vec<usize>,
+    /// Position within its block, `0` for the reference and `1 + r` for row `r`, of every
+    /// excitor's occupations.
+    positions: Vec<FastMap<(u128, u128), usize>>,
     /// Number of spatial orbitals of every block.
     pub(super) norb: Vec<usize>,
     /// Uniform connection generator of every block.
@@ -162,6 +167,8 @@ impl ReferenceSpaces {
         let mut spaces = Self {
             references: Vec::with_capacity(m),
             rows: Vec::with_capacity(m),
+            offsets: vec![0],
+            positions: Vec::with_capacity(m),
             norb: Vec::with_capacity(m),
             generators: Vec::with_capacity(m),
             cluster_rank: options.cluster_rank,
@@ -195,9 +202,79 @@ impl ReferenceSpaces {
             spaces
                 .generators
                 .push(OrthogonalUniformGenerator::new((oa, ob), &mocache[parent]));
+
+            // Flat indices: the reference first, then the rows in order.
+            let rows = &spaces.rows[z];
+            let positions = std::iter::once((oa, ob))
+                .chain(rows.iter().map(|row| (row.alpha, row.beta)))
+                .enumerate()
+                .map(|(position, occupations)| (occupations, position))
+                .collect();
+            spaces.positions.push(positions);
+            spaces.offsets.push(spaces.offsets[z] + 1 + rows.len());
         }
         spaces.expansion_rank = options.expansion_rank.unwrap_or(nelec).min(nelec);
         spaces
+    }
+
+    /// Return the flat index of the excitor of a block with the given occupations.
+    /// # Arguments:
+    /// - `self`: Spaces of every reference block.
+    /// - `block`: Reference block `z`.
+    /// - `occupations`: Alpha and beta occupations of the excitor's determinant.
+    /// # Returns:
+    /// - `ExcitorIndex`: Flat index of the excitor.
+    /// # Panics
+    /// - Panics if the occupations are neither the block's reference nor one of its rows.
+    pub(super) fn index(
+        &self,
+        block: usize,
+        occupations: (u128, u128),
+    ) -> ExcitorIndex {
+        ExcitorIndex(self.offsets[block] + self.positions[block][&occupations])
+    }
+
+    /// Return the block of an excitor.
+    /// # Arguments:
+    /// - `self`: Spaces of every reference block.
+    /// - `index`: Flat excitor index.
+    /// # Returns:
+    /// - `usize`: Reference block `z` of the excitor.
+    pub(super) fn block(
+        &self,
+        index: ExcitorIndex,
+    ) -> usize {
+        self.offsets.partition_point(|&offset| offset <= index.0) - 1
+    }
+
+    /// Return the determinant of an excitor in the parent frame of its block.
+    /// # Arguments:
+    /// - `self`: Spaces of every reference block.
+    /// - `index`: Flat excitor index.
+    /// # Returns:
+    /// - `DeterminantState`: The block's reference or one of its rows.
+    pub(super) fn determinant(
+        &self,
+        index: ExcitorIndex,
+    ) -> DeterminantState {
+        let block = self.block(index);
+        match index.0 - self.offsets[block] {
+            0 => self.references[block],
+            position => self.rows[block][position - 1],
+        }
+    }
+
+    /// Return whether an excitor is its block's reference.
+    /// # Arguments:
+    /// - `self`: Spaces of every reference block.
+    /// - `index`: Flat excitor index.
+    /// # Returns:
+    /// - `bool`: Whether the index is the first of its block.
+    pub(super) fn is_reference(
+        &self,
+        index: ExcitorIndex,
+    ) -> bool {
+        self.offsets.binary_search(&index.0).is_ok()
     }
 }
 
@@ -232,88 +309,5 @@ impl Block {
     /// - `f64`: Excitor population 1-norm.
     pub(super) fn nex(&self) -> f64 {
         self.selection.total()
-    }
-}
-
-/// Sparse population change of one excitor communicated across MPI ranks. The occupations are
-/// split into 64-bit words for MPI transport.
-#[repr(C)]
-#[derive(Copy, Clone, Default, Equivalence)]
-pub(super) struct ExcitorUpdate {
-    /// Reference block.
-    block: u64,
-    /// Low and high words of the alpha occupation.
-    alpha: [u64; 2],
-    /// Low and high words of the beta occupation.
-    beta: [u64; 2],
-    /// Signed population change.
-    pub(super) dn: f64,
-}
-
-impl ExcitorUpdate {
-    /// Encode one population change.
-    /// # Arguments:
-    /// - `key`: Excitor receiving the change.
-    /// - `dn`: Signed population change.
-    /// # Returns:
-    /// - `ExcitorUpdate`: MPI-safe update.
-    pub(super) fn new(
-        key: ExcitorState,
-        dn: f64,
-    ) -> Self {
-        let words = |x: u128| [x as u64, (x >> 64) as u64];
-        Self {
-            block: key.0 as u64,
-            alpha: words(key.1),
-            beta: words(key.2),
-            dn,
-        }
-    }
-
-    /// Decode the excitor receiving the change.
-    /// # Arguments:
-    /// - `self`: Update.
-    /// # Returns:
-    /// - `ExcitorState`: Reference block and occupations.
-    pub(super) fn excitor(&self) -> ExcitorState {
-        let join = |w: [u64; 2]| w[0] as u128 | ((w[1] as u128) << 64);
-        (self.block as usize, join(self.alpha), join(self.beta))
-    }
-}
-
-impl FriAmplitude for ExcitorUpdate {
-    /// Return the population change.
-    /// # Arguments:
-    /// - `self`: Update.
-    /// # Returns:
-    /// - `f64`: Signed population change.
-    fn amplitude(&self) -> f64 {
-        self.dn
-    }
-
-    /// Replace the population change.
-    /// # Arguments:
-    /// - `self`: Update.
-    /// - `amplitude`: Replacement population change.
-    /// # Returns:
-    /// - `()`: Updates `dn` in place.
-    fn set_amplitude(
-        &mut self,
-        amplitude: f64,
-    ) {
-        self.dn = amplitude;
-    }
-}
-
-impl KeyedUpdate for ExcitorUpdate {
-    type Key = (u64, [u64; 2], [u64; 2]);
-
-    /// Return the excitor key of the update.
-    /// # Arguments:
-    /// - `self`: Update.
-    /// # Returns:
-    /// - `Self::Key`: Block and occupation words.
-    fn key(&self) -> Self::Key {
-        (self.block, self.alpha, self.beta)
     }
 }

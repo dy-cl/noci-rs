@@ -29,8 +29,7 @@ mod shift;
 
 // Crate-visible type re-exports.
 pub(crate) use alias::AliasTable;
-pub(crate) use exchange::{ExchangeScratch, KeyedUpdate, PopulationUpdate};
-pub(crate) use fri::FriAmplitude;
+pub(crate) use exchange::{ExchangeScratch, PopulationUpdate};
 pub(crate) use rng::QmcRng;
 pub(crate) use run::Propagator;
 
