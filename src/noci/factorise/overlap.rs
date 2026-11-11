@@ -1119,6 +1119,7 @@ impl SpinFactorisation {
     /// `Build target parent blocks for the rank-local rows receiving S\Delta.`
     /// Each block records active target spin strings and same-parent occupation groups.
     /// # Arguments:
+    /// - `self`: Shared retained determinant spin factorisation.
     /// - `targets`: Global determinant index for each rank-local population row.
     /// - `data`: Shared NOCI data used to read determinant parents and occupations.
     /// # Returns:
@@ -1880,7 +1881,7 @@ impl SpinFactorisation {
             .iter()
             .map(|&b| self.parents[target.parent].breps[b])
             .collect::<Vec<_>>();
-        // Gather the active auxiliary source representatives in prepared form.
+        // Gather the payloads of the active auxiliary source spin strings.
         let strings = auxiliary.parent_spin_strings(source.parent);
         let source_areps = SpinStringSources::new(
             &source
@@ -2240,7 +2241,7 @@ impl SpinFactorisation {
 /// kernel is used when applicable, with the scalar overlap evaluator as the fallback.
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
-/// - `reps`: Prepared target representatives and source representatives in packed evaluation
+/// - `reps`: Target spin-string payloads and source spin strings in packed evaluation
 ///   order.
 /// - `rows`: Target-row range to fill.
 /// - `target_left`: Whether target determinants belong to the left Wick reference.
@@ -2281,7 +2282,7 @@ fn build_spin_overlap_factors(
 /// ranks and available CPU features.
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
-/// - `reps`: Prepared target representative and source representatives in packed evaluation
+/// - `reps`: Target spin-string payload and source spin strings in packed evaluation
 ///   order.
 /// - `target_left`: Whether the target determinant belongs to the left Wick reference.
 /// - `alpha`: Whether to evaluate alpha-alpha or beta-beta overlap factors.
@@ -2373,6 +2374,7 @@ impl ParentUpdates {
 
     /// `Add one sparse D^P_{ab} entry and record active spin IDs on first occurrence.`
     /// # Arguments:
+    /// - `self`: Retained parent-local update storage.
     /// - `det`: `Source determinant \Omega.`
     /// - `a`: `Source-parent local a spin-string ID a_\Omega.`
     /// - `b`: `Source-parent local b spin-string ID b_\Omega.`
@@ -2498,7 +2500,7 @@ impl AuxiliaryParentUpdates {
     /// # Arguments:
     /// - `self`: Parent-local auxiliary source block.
     /// # Returns
-    /// - `()`: Removes sparse entries and invalidates active spin string positions.
+    /// - `()`: Removes sparse entries and invalidates active spin-string positions.
     fn clear(&mut self) {
         for &aid in &self.aids {
             self.apos[aid] = usize::MAX;

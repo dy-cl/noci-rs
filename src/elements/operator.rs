@@ -63,7 +63,7 @@ pub(crate) trait PairOperator<T: NOCIScalar> {
     /// - `data`: Shared data required for NOCI matrix-element evaluation.
     /// - `parent`: Shared orthonormal parent of every pair in the batch.
     /// - `occupations`: Ket alpha and beta occupations of each pair.
-    /// - `connections`: Reduced bra-ket excitation of each pair.
+    /// - `connections`: Bra data measured from the ket of each pair.
     /// - `values`: Matrix elements in batch order.
     /// # Returns:
     /// - `()`: Writes every matrix element of the batch into `values`.
@@ -174,7 +174,7 @@ impl<T: NOCIScalar> PairOperator<T> for Overlap {
     /// - `data`: Unused, as orthogonal overlaps need no integrals.
     /// - `parent`: Unused, as orthogonal overlaps need no integrals.
     /// - `occupations`: Unused, as orthogonal overlaps depend only on the connections.
-    /// - `connections`: Reduced bra-ket excitation of each pair.
+    /// - `connections`: Bra data measured from the ket of each pair.
     /// - `values`: Overlaps in batch order.
     /// # Returns:
     /// - `()`: Writes every overlap of the batch into `values`.
@@ -286,7 +286,7 @@ impl<T: NOCIScalar> PairOperator<T> for Fock<'_, T> {
     /// - `data`: Unused, as the Fock MO caches hold the integrals.
     /// - `parent`: Shared orthonormal parent of the batch.
     /// - `occupations`: Ket alpha and beta occupations of each pair.
-    /// - `connections`: Reduced bra-ket excitation of each pair.
+    /// - `connections`: Bra data measured from the ket of each pair.
     /// - `values`: Shifted Fock elements in batch order.
     /// # Returns:
     /// - `()`: Writes every element of the batch into `values`.
@@ -409,7 +409,7 @@ impl<T: NOCIScalar> PairOperator<T> for HamiltonianOverlap {
     /// - `data`: Shared data holding the AO data and parent MO caches.
     /// - `parent`: Shared orthonormal parent of the batch.
     /// - `occupations`: Ket alpha and beta occupations of each pair.
-    /// - `connections`: Reduced bra-ket excitation of each pair.
+    /// - `connections`: Bra data measured from the ket of each pair.
     /// - `values`: Hamiltonian and overlap elements in batch order.
     /// # Returns:
     /// - `()`: Writes every `(H, S)` pair of the batch into `values`.

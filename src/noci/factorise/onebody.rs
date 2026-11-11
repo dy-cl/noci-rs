@@ -1322,7 +1322,7 @@ fn apply_orthogonal_beta_singles<T, R>(
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
 /// - `data`: Shared NOCI determinant data.
-/// - `target_reps`: Reduced target spin representatives.
+/// - `target_reps`: Target spin-string payloads.
 /// - `sources`: Source representatives in packed evaluation order.
 /// - `rows`: Target-row range to fill.
 /// - `flags`: Whether targets are left determinants and whether to build alpha factors.
@@ -1366,7 +1366,7 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
 /// - `data`: Shared NOCI determinant data used by the generic fallback.
-/// - `target`: Reduced target spin representative.
+/// - `target`: Target spin-string payload.
 /// - `sources`: Source representatives in packed evaluation order.
 /// - `flags`: Whether target is left determinant and whether to evaluate alpha factors.
 /// - `scratch`: Reusable spin-resolved Wick evaluator workspace.

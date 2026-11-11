@@ -124,6 +124,8 @@ pub struct GNOCCMCOptions {
 
 impl Default for GNOCCMCOptions {
     /// Return default GNOCCMC options.
+    /// # Arguments:
+    /// - None.
     /// # Returns:
     /// - `Self`: GNOCCMC options.
     fn default() -> Self {

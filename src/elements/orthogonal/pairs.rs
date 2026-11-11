@@ -69,7 +69,7 @@ pub(crate) struct OrthogonalHamiltonianScratch {
     groups: Vec<Vec<usize>>,
     /// Source occupations of the requests of one parent.
     occupations: Vec<(u128, u128)>,
-    /// Reduced connections of the requests of one parent.
+    /// Connection data of the requests of one parent.
     states: Vec<DeterminantData>,
     /// Hamiltonian elements of the requests of one parent.
     values: Vec<f64>,

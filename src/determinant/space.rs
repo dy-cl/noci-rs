@@ -1,4 +1,6 @@
 // determinant/space.rs
+//! The retained NOCI determinant space: parent frames, the interned spin strings of every parent
+//! and the spin-string pair behind each `NOCIIndex`.
 
 // Standard library imports.
 use std::sync::Arc;

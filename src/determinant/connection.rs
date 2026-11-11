@@ -1,4 +1,6 @@
 // determinant/connection.rs
+//! Connections between determinants of one parent frame, `ConnectionState`, which yield the
+//! `DeterminantData` of the child measured from its source.
 
 // Crate-root imports.
 use crate::basis::excitation_phase_bits;

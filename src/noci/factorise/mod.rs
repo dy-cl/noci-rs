@@ -29,11 +29,11 @@ pub(crate) struct FactorEntry {
 /// Parent-local determinant space in the shared spin factorisation.
 #[derive(Default)]
 pub(super) struct ParentSpinSpace {
-    /// Prepared representative for each parent-local alpha spin string.
+    /// Payload of each parent-local alpha spin string.
     pub(super) areps: Vec<SpinStringData>,
     /// Alpha representatives in packed Wick evaluation order.
     pub(super) a_sources: SpinStringSources,
-    /// Prepared representative for each parent-local beta spin string.
+    /// Payload of each parent-local beta spin string.
     pub(super) breps: Vec<SpinStringData>,
     /// Beta representatives in packed Wick evaluation order.
     pub(super) b_sources: SpinStringSources,
@@ -186,7 +186,7 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
         parent.entries_by_b[bid].push(det);
     }
 
-    // Materialise the prepared representatives and their packed evaluation orders.
+    // Materialise the spin-string payloads and their packed evaluation orders.
     for (parent_id, parent) in parents.iter_mut().enumerate() {
         let strings = space.parent_spin_strings(parent_id);
         parent.areps = strings.alpha.iter().map(|string| string.data).collect();

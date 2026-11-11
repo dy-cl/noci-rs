@@ -14,7 +14,7 @@ use super::dispatch::dispatch_orthogonal_ranks;
 /// Orthonormality of the parent orbitals restricts the fixed rank `(R_\alpha,R_\beta)` to the
 /// diagonal sector `(0,0)`; every other supported rank returns zero.
 /// # Arguments:
-/// - `state`: Reduced phase and fixed-rank excitation labels connecting source to child.
+/// - `state`: Child data measured from the source: phases and fixed-rank excitation labels.
 /// # Returns
 /// - `T`: Orthogonal Slater-Condon overlap matrix element.
 #[inline(always)]
@@ -34,9 +34,9 @@ pub(crate) fn xw_overlap_orthogonal<T: NOCIScalar>(state: &DeterminantData) -> T
 }
 
 /// Evaluate a fixed-rank orthogonal Slater-Condon overlap matrix element.
-/// Only the diagonal sector survives, giving `S_{xx} = p` for the reduced phase `p`.
+/// Only the diagonal sector survives, giving `S_{xx} = p` for the determinant phase `p`.
 /// # Arguments:
-/// - `state`: Reduced phase and fixed-rank orbital labels.
+/// - `state`: Child data measured from the source: phases and fixed-rank orbital labels.
 /// # Returns
 /// - `T`: Fixed-rank overlap matrix element.
 #[inline(always)]
@@ -44,7 +44,7 @@ fn xw_overlap_orthogonal_const<T: NOCIScalar, const RA: usize, const RB: usize>(
     state: &DeterminantData
 ) -> T {
     if RA == 0 && RB == 0 {
-        // Diagonal element: identical occupations overlap with the reduced phase.
+        // Diagonal element: identical occupations overlap with the determinant phase.
         // `S_{xx} = p`.
         return T::from_real(state.phase());
     }
@@ -69,7 +69,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalOverlap {
     /// # Arguments:
     /// - `self`: Overlap operator.
     /// - `occupation`: Source alpha and beta occupation bitstrings, unused by the overlap.
-    /// - `state`: Reduced phase and fixed-rank excitation labels connecting source to child.
+    /// - `state`: Child data measured from the source: phases and fixed-rank excitation labels.
     /// # Returns
     /// - `T`: Orthogonal overlap matrix element.
     fn value(
@@ -84,7 +84,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalOverlap {
     /// multiplication of packed one.
     /// # Arguments:
     /// - `self`: Overlap operator.
-    /// - `states`: Reduced excitation labels and phases of every lane.
+    /// - `states`: Data of every lane: fixed-rank excitation labels and phases.
     /// # Returns
     /// - `[T; N]`: Overlap of every lane.
     /// # Safety

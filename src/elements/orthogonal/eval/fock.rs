@@ -17,7 +17,7 @@ use super::dispatch::dispatch_orthogonal_ranks;
 /// # Arguments:
 /// - `cache`: Parent-specific orthogonal MO Fock matrices.
 /// - `source`: Source alpha and beta occupation bitstrings.
-/// - `state`: Reduced phase and fixed-rank excitation labels connecting source to child.
+/// - `state`: Child data measured from the source: phases and fixed-rank excitation labels.
 /// # Returns
 /// - `T`: Orthogonal Slater-Condon Fock matrix element.
 #[inline(always)]
@@ -47,7 +47,7 @@ pub(crate) fn xw_fock_orthogonal<T: NOCIScalar>(
 /// # Arguments:
 /// - `cache`: Parent-specific alpha and beta MO Fock matrices.
 /// - `source`: Source alpha and beta occupation bitstrings.
-/// - `state`: Reduced phase and fixed-rank orbital labels.
+/// - `state`: Child data measured from the source: phases and fixed-rank orbital labels.
 /// # Returns
 /// - `T`: Fixed-rank Fock matrix element.
 #[inline(always)]
@@ -121,7 +121,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalFock<'_, T> {
     /// # Arguments:
     /// - `self`: Fock operator of the parent.
     /// - `occupation`: Source alpha and beta occupation bitstrings.
-    /// - `state`: Reduced phase and fixed-rank excitation labels connecting source to child.
+    /// - `state`: Child data measured from the source: phases and fixed-rank excitation labels.
     /// # Returns
     /// - `T`: Orthogonal Slater-Condon Fock matrix element.
     fn value(
@@ -136,7 +136,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalFock<'_, T> {
     /// one indexed gather and one lane-wise real phase multiplication.
     /// # Arguments:
     /// - `self`: Fock operator of the parent.
-    /// - `states`: Reduced excitation labels and phases of every lane.
+    /// - `states`: Data of every lane: fixed-rank excitation labels and phases.
     /// # Returns
     /// - `[T; N]`: Fock matrix element of every lane.
     /// # Safety
