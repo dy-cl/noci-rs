@@ -37,7 +37,7 @@ const TASKSPERTHREAD: usize = 4;
 /// Salt of the rank-local population-rounding stream.
 const ROUNDSALT: u64 = 0x8EBC6AF09C88C6E3;
 
-/// Multiplier giving each iteration its own excitor-to-rank assignment.
+/// Multiplier giving each report its own excitor-to-rank assignment.
 const ASSIGNSTRIDE: u64 = 0xD1B54A32D192ED03;
 
 /// Salt of the rank-local spawn-compression stream.
@@ -52,12 +52,12 @@ enum Task {
     Coupling(usize, usize),
 }
 
-/// Rank owning an excitor during one iteration. The assignment is redrawn every iteration from
-/// a salt shared by all ranks, so that over the assignment any `s` excitors share a rank with
+/// Rank owning an excitor during one report. The assignment is redrawn every report from a salt
+/// shared by all ranks, so that over the assignment any `s` excitors share a rank with
 /// probability `P^{-(s-1)}`.
 /// # Arguments:
 /// - `key`: Excitor.
-/// - `assignment`: Salt of the iteration's assignment.
+/// - `assignment`: Salt of the report's assignment.
 /// - `nranks`: Number of ranks `P`.
 /// # Returns:
 /// - `usize`: Owning rank.
@@ -420,45 +420,27 @@ fn sum_tasks(
 
 /// Spawn the coupling between references,
 /// `-\sum_{x \ne y}G_{xy}\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}|\Phi_x\rangle`
-/// for every excitor `\mu` of every block `y`, scaled by `N_y`. The sampled projections
-/// `q^x_y(\nu) = N_x\langle D_\nu|\Phi_x\rangle` of every task are weighted by
-/// `\tilde G_{xy} = G_{xy}N_y/N_x` and summed per row `\nu`, completed over ranks, and acted on
-/// from the left by `e^{-\hat T_y}` with this rank's excitors of `y`.
+/// for every excitor `\mu` of every block `y`, scaled by `N_y`. The report's projections
+/// `\sum_{x \ne y}\tilde G_{xy}q^x_y(\nu)`, summed over its cycles per row `\nu`, are completed
+/// over ranks and acted on from the left by `e^{-\hat T_y}` with this rank's excitors of `y`.
 /// # Arguments:
-/// - `workers`: Storage of the step's tasks.
-/// - `gt`: Scaled effective Hamiltonian `\tilde G`.
 /// - `current`: Block populations of this rank.
 /// - `spaces`: Projection and expansion spaces of every reference block.
 /// - `comm`: MPI communicator and exchange scratch.
-/// - `coupled`: Reusable map of this rank's weighted projections.
+/// - `coupled`: This rank's weighted projections of the report.
 /// - `merged`: Spawns per unit time, receiving the coupling.
 /// # Returns:
 /// - `()`: Adds the coupling to `merged`.
 fn spawn_coupling<C: Communicator>(
-    workers: &[JMTaskPropagation],
-    gt: &Array2<f64>,
     current: &[Block],
     spaces: &ReferenceSpaces,
     comm: (&C, &mut ExchangeScratch<ExcitorUpdate>),
-    coupled: &mut FastMap<ExcitorState, f64>,
+    coupled: &FastMap<ExcitorState, f64>,
     merged: &mut FastMap<ExcitorState, f64>,
 ) {
     let (world, exchange) = comm;
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
-    let m = current.len();
-
-    // `\sum_{x \ne y}\tilde G_{xy}q^x_y(\nu)` keyed by block `y` and row `\nu`.
-    coupled.clear();
-    for worker in workers {
-        for y in 0..m {
-            for x in (0..m).filter(|&x| x != y) {
-                for (&(alpha, beta), &v) in &worker.projections.q[y][x] {
-                    *coupled.entry((y, alpha, beta)).or_insert(0.0) += gt[(x, y)] * v;
-                }
-            }
-        }
-    }
 
     // Every rank needs the complete projection, since its excitors of `y` act on all rows.
     let q = coupled
@@ -623,10 +605,13 @@ fn population_stats(
 /// `\bar H \leftarrow \lambda\bar H+H^e` of the report blocks so far, with
 /// `\lambda = 1 - 1/\text{memory\_effective}`, so that one noisy
 /// block with a nearly singular `S^e` cannot make `G` diverge.
+/// As in NOCIQMC, the `n_\text{cyc}` cycles of a report sample the same frozen populations and
+/// accumulate their spawns and coupling projections, and the report applies the accumulated
+/// change with the death term as one step of `n_\text{cyc}\Delta\tau`.
 /// The populations are distributed over the MPI ranks by a hash of the excitor redrawn every
-/// iteration: each rank forms clusters from its own excitors with the weight `P^{s-1}`, its
-/// spawns and the excitors changing owner are exchanged in one step, and annihilation happens on
-/// the owner. Within a rank the attempts, the left action and the sorts run on Rayon threads.
+/// report: each rank forms clusters from its own excitors with the weight `P^{s-1}`, its spawns
+/// and the excitors changing owner are exchanged once per report, and annihilation happens on the
+/// owner. Within a rank the attempts, the left action and the sorts run on Rayon threads.
 /// # Arguments:
 /// - `data`: NOCI data over the reference determinants.
 /// - `options`: JM-NOCCMC options with stochastic settings.
@@ -665,7 +650,7 @@ pub(crate) fn jm_qmc_step(
     let mut base = qmc.seed.unwrap_or_else(rand::random);
     world.process_at_rank(0).broadcast_into(&mut base);
     let local = rank_seed(base, irank);
-    let assignment = |iteration: usize| base ^ (iteration as u64).wrapping_mul(ASSIGNSTRIDE);
+    let assignment = |report: usize| base ^ (report as u64).wrapping_mul(ASSIGNSTRIDE);
 
     // Fixed spaces of every block, and the test for a block's reference among the excitor keys.
     let spaces = ReferenceSpaces::new(data, options);
@@ -695,6 +680,7 @@ pub(crate) fn jm_qmc_step(
     let mut exchange = ExchangeScratch::new(nranks);
     let mut workers = Vec::<JMTaskPropagation>::new();
     let mut merged = FastMap::<ExcitorState, f64>::default();
+    let mut spawns = FastMap::<ExcitorState, f64>::default();
     let mut coupled = FastMap::<ExcitorState, f64>::default();
     let mut running = Effective::new(m);
     let mut eproj = f64::NAN;
@@ -702,37 +688,39 @@ pub(crate) fn jm_qmc_step(
     for report in 0..qmc.nreports {
         let mut block = Effective::new(m);
         let mut projected = (0.0, 0.0);
+        let ranks = nranks as f64;
 
+        // The populations are frozen through the report: global reference populations and excitor
+        // norms, then this rank's block view.
+        let mut totals = vec![0.0; 2 * m];
+        for (key, &n) in &populations {
+            if is_reference(key) {
+                totals[key.0] += n;
+            } else {
+                totals[m + key.0] += n.abs();
+            }
+        }
+        let totals = all_reduce_array1(world, Array1::from_vec(totals)).to_vec();
+        let nref = totals[..m].to_vec();
+        let current = blocks(&spaces, &populations, &nref, ranks);
+
+        // Effective Hamiltonian of the unnormalised correlated references
+        // `|\tilde\Phi_x\rangle = N_x|\Phi_x\rangle`, `\tilde G_{xy} = G_{xy}N_y/N_x`, whose row sums
+        // `g_x = (GN)_x/N_x` are the growth rates of the reference populations.
+        let gt = Array2::from_shape_fn(lagged.dim(), |(x, y)| lagged[(x, y)] * nref[y] / nref[x]);
+
+        // Every block's attempts, one per unit of its population, shared evenly between ranks.
+        let attempts = (0..m)
+            .map(|z| ((nref[z].abs() + totals[m + z]) / ranks).ceil().max(1.0))
+            .collect::<Vec<_>>();
+
+        spawns.clear();
+        coupled.clear();
         for cycle in 0..qmc.ncycles {
             let iteration = report * qmc.ncycles + cycle;
-            let ranks = nranks as f64;
 
-            // Global reference populations and excitor norms, then this rank's block view.
-            let mut totals = vec![0.0; 2 * m];
-            for (key, &n) in &populations {
-                if is_reference(key) {
-                    totals[key.0] += n;
-                } else {
-                    totals[m + key.0] += n.abs();
-                }
-            }
-            let totals = all_reduce_array1(world, Array1::from_vec(totals)).to_vec();
-            let nref = totals[..m].to_vec();
-            let current = blocks(&spaces, &populations, &nref, ranks);
-
-            // Effective Hamiltonian of the unnormalised correlated references
-            // `|\tilde\Phi_x\rangle = N_x|\Phi_x\rangle`, `\tilde G_{xy} = G_{xy}N_y/N_x`, whose row sums
-            // `g_x = (GN)_x/N_x` are the growth rates of the reference populations.
-            let gt =
-                Array2::from_shape_fn(lagged.dim(), |(x, y)| lagged[(x, y)] * nref[y] / nref[x]);
-
-            // Every block's attempts, one per unit of its population, shared evenly between ranks.
-            let attempts = (0..m)
-                .map(|z| ((nref[z].abs() + totals[m + z]) / ranks).ceil().max(1.0))
-                .collect::<Vec<_>>();
-
-            // Linked and coupling spawns per unit time, with the step's energies and effective
-            // elements.
+            // Linked and coupling attempts per unit time, with the cycle's energies and effective
+            // elements, accumulated over the report.
             let ntasks = run_tasks(
                 data,
                 &spaces,
@@ -742,29 +730,22 @@ pub(crate) fn jm_qmc_step(
                 &mut workers,
             );
             let sums = sum_tasks(&workers[..ntasks], m, &mut merged);
-            if m > 1 {
-                spawn_coupling(
-                    &workers[..ntasks],
-                    &gt,
-                    &current,
-                    &spaces,
-                    (world, &mut exchange),
-                    &mut coupled,
-                    &mut merged,
-                );
+            for (&key, &dn) in &merged {
+                *spawns.entry(key).or_insert(0.0) += dn;
             }
 
-            // Annihilate this rank's spawns and round small ones stochastically.
-            let mut updates = merged
-                .iter()
-                .map(|(&key, &dn)| ExcitorUpdate::new(key, dt * dn))
-                .collect::<Vec<_>>();
-            updates.par_sort_unstable_by_key(|u| u.excitor());
-            coalesce(&mut updates);
-            let mut rng = stream(local, SPAWNSALT, iteration as u64);
-            compress_sparse(&mut updates, qmc.fri.spawn_cutoff, &mut rng);
+            // `\sum_{x \ne y}\tilde G_{xy}q^x_y(\nu)` keyed by block `y` and row `\nu`.
+            for worker in &workers[..ntasks] {
+                for y in 0..m {
+                    for x in (0..m).filter(|&x| x != y) {
+                        for (&(alpha, beta), &v) in &worker.projections.q[y][x] {
+                            *coupled.entry((y, alpha, beta)).or_insert(0.0) += gt[(x, y)] * v;
+                        }
+                    }
+                }
+            }
 
-            // Sum the step's effective overlap and Hamiltonian over ranks, normalised by `N_x`.
+            // Sum the cycle's effective overlap and Hamiltonian over ranks, normalised by `N_x`.
             let sums = all_reduce_array1(world, Array1::from_vec(sums)).to_vec();
 
             // Projected energy onto the fixed trial `\langle\Psi_T| = \sum_z c_z\langle{}^z\Psi|`:
@@ -779,7 +760,7 @@ pub(crate) fn jm_qmc_step(
                 }
             }
 
-            // This step's `S^e_{yx}` and `H^e_{yx}` per unit `N_x`, added to the report block.
+            // This cycle's `S^e_{yx}` and `H^e_{yx}` per unit `N_x`, added to the report block.
             for x in 0..m {
                 block.se[(x, x)] += 1.0;
                 block.he[(x, x)] += sums[x] / nref[x];
@@ -788,27 +769,51 @@ pub(crate) fn jm_qmc_step(
                     block.he[(y, x)] += sums[m + m * m + y * m + x] / nref[x];
                 }
             }
+        }
 
-            // Fixed-point-preserving death `-\Delta\tau(g_x-E_s)n` on every owned population.
-            let growth = (0..m).map(|x| gt.row(x).sum()).collect::<Vec<_>>();
-            for (key, n) in populations.iter_mut() {
-                *n *= 1.0 - dt * (growth[key.0] - shift);
-            }
-
-            // Spawns to their owners and annihilation, then rounding of small excitors.
-            exchange_populations(
-                &mut populations,
-                updates,
-                assignment(iteration + 1),
+        // The coupling of the report's summed projections joins the spawns.
+        if m > 1 {
+            spawn_coupling(
+                &current,
+                &spaces,
                 (world, &mut exchange),
-            );
-            round_populations(
-                &mut populations,
-                &is_reference,
-                qmc.fri.population_cutoff,
-                stream(local, ROUNDSALT, iteration as u64),
+                &coupled,
+                &mut spawns,
             );
         }
+
+        // Annihilate this rank's spawns of the report and round small ones stochastically.
+        let mut updates = spawns
+            .iter()
+            .map(|(&key, &dn)| ExcitorUpdate::new(key, dt * dn))
+            .collect::<Vec<_>>();
+        updates.par_sort_unstable_by_key(|u| u.excitor());
+        coalesce(&mut updates);
+        let mut rng = stream(local, SPAWNSALT, report as u64);
+        compress_sparse(&mut updates, qmc.fri.spawn_cutoff, &mut rng);
+
+        // Fixed-point-preserving death `-n_\text{cyc}\Delta\tau(g_x-E_s)n` on every owned
+        // population, the report's step of the frozen populations.
+        let growth = (0..m).map(|x| gt.row(x).sum()).collect::<Vec<_>>();
+        let step = qmc.ncycles as f64 * dt;
+        for (key, n) in populations.iter_mut() {
+            *n *= 1.0 - step * (growth[key.0] - shift);
+        }
+
+        // Spawns and populations to their owners under the next report's assignment, annihilation,
+        // then rounding of small excitors.
+        exchange_populations(
+            &mut populations,
+            updates,
+            assignment(report + 1),
+            (world, &mut exchange),
+        );
+        round_populations(
+            &mut populations,
+            &is_reference,
+            qmc.fri.population_cutoff,
+            stream(local, ROUNDSALT, report as u64),
+        );
 
         // Lagged effective Hamiltonian from the running sums with forgetting.
         running.scale(1.0 - 1.0 / options.memory_effective);
