@@ -1,7 +1,8 @@
 // elements/orthogonal/eval/mod.rs
 
 //! Scalar and SIMD fixed-rank orthogonal overlap, Fock, and Hamiltonian kernels, one file per
-//! operator family, with the shared parent-local batches in `batch.rs`.
+//! operator family, with the shared parent-local batches in `batch.rs` on the lane batching of
+//! `elements/batch.rs`.
 
 mod batch;
 mod dispatch;

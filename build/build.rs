@@ -472,20 +472,8 @@ fn dispatch_source(maxexcit: usize) -> String {
     write_pair_macro(&mut src, "dispatch_spin_ranks", &pairs);
     write_hamiltonian_macro(&mut src, "dispatch_hamiltonian_ranks", &hamiltonian);
 
-    let _ = writeln!(
-        src,
-        "pub(super) const HAMNRANKS: usize = {};",
-        hamiltonian.len()
-    );
     let _ = writeln!(src, "pub(super) const HAMRADIX: usize = {hamradix};");
     let _ = writeln!(src, "pub(super) const HAMSPACE: usize = {hamspace};");
-    src.push_str("pub(super) const HAMRANKS: [(usize, usize, usize, usize); HAMNRANKS] = [\n");
-
-    for &(rxa, rwa, rxb, rwb) in &hamiltonian {
-        let _ = writeln!(src, "    ({rxa}, {rwa}, {rxb}, {rwb}),");
-    }
-
-    src.push_str("];\n");
 
     src
 }

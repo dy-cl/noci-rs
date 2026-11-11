@@ -5,14 +5,19 @@
 Organise methods by family first and approach second, above three shared layers:
 
 1. `determinant/`: parent orbital frames, determinant identities and the determinant spaces.
+   Determinants and spin strings each have a handle (`…Index`), an identity (`…State`) and a
+   payload measured from a reference (`…Data`): `NOCIIndex`, `DeterminantState` and
+   `DeterminantData`; `NOCISpinStringIndex`, `SpinStringState` and `SpinStringData`. A connection
+   (`ConnectionState`) yields the `DeterminantData` of its child measured from its source.
 2. `elements/`: every matrix element and reduced density matrix between determinants.
    `operator.rs` defines each operator by its evaluation in every engine, and `pairs.rs`
-   dispatches each determinant pair to one engine: `orthogonal/`, `naive/` (generalised
-   Slater-Condon) or `nonorthogonalwicks/`. Both SIMD engines have one evaluator file per operator
-   family in their `eval/` folder and a `batch.rs` that owns the batching for every family: the
-   orthogonal families implement `OrthogonalElement` for parent-local batches, and the Wick
-   families implement `SpinFactor` for rows of same-spin factors. A family supplies only its scalar
-   and packed fixed-rank evaluators.
+   dispatches each `DetPair` to one engine: `orthogonal/`, `naive/` (generalised Slater-Condon)
+   or `nonorthogonalwicks/`. Both SIMD engines have one evaluator file per operator family in
+   their `eval/` folder: the orthogonal families implement `OrthogonalElement` and the Wick
+   families implement `SpinFactor`, each supplying only its scalar and packed fixed-rank
+   evaluators. Every packed evaluator, orthogonal connections, same-spin factor rows, two-spin
+   Wick pairs and RDMs, implements `LaneBatch` in `elements/batch.rs`, which owns the width
+   dispatch, the packets, their padding and the write of the genuine lanes.
 3. `qmc/`: stochastic machinery independent of the population representation: seeded random
    streams, MPI ownership, exchange and annihilation of keyed updates, FRI compression, the
    population-control shift, stop requests, and excitation generators within one parent frame

@@ -2,7 +2,7 @@
 
 //! Prepared and batched extended nonorthogonal Wick evaluators, one file per operator family:
 //! `overlap.rs`, `onebody.rs` and `hamiltonian.rs`, with the shared same-spin factor rows in
-//! `batch.rs`.
+//! `batch.rs`; every packed evaluator runs on the lane batching of `elements/batch.rs`.
 
 mod batch;
 mod dispatch;

@@ -4,7 +4,10 @@
 use crate::NOCIScalar;
 use crate::determinant::DeterminantData;
 #[cfg(target_arch = "x86_64")]
-use crate::maths::{Lanes, Simd, adjugate_transpose_simd_const, det_simd_const, lanes};
+use crate::elements::LaneKernel;
+use crate::elements::{LaneBatch, group_lanes, xw_lanes};
+#[cfg(target_arch = "x86_64")]
+use crate::maths::{Simd, adjugate_transpose_simd_const, det_simd_const};
 use crate::maths::{
     adjugate_transpose_const, adjugate_transpose_dynamic, det_const, det_dynamic,
     second_minor_const, second_minor_dynamic,
@@ -16,8 +19,7 @@ use crate::{Excitation, ExcitationCache, ExcitationSpinCache};
 use super::super::scratch::WickScratchSpin;
 use super::super::view::WicksPairView;
 use super::dispatch::{
-    HAMNRANKS, HAMRADIX, HAMRANKS, HAMSPACE, dispatch_hamiltonian_ranks,
-    dispatch_hamiltonian_ranks_inner,
+    HAMRADIX, HAMSPACE, dispatch_hamiltonian_ranks, dispatch_hamiltonian_ranks_inner,
 };
 use super::helpers::{DetBranches, DetIndex, Minor, ReplacementLayout};
 use super::helpers::{
@@ -139,7 +141,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 /// prepared scalar evaluator.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `requests`: Output positions with their prepared bra and ket determinants.
+/// - `requests`: Output positions with their bra and ket determinant data.
 /// - `enuc`: Nuclear repulsion energy.
 /// - `scratch`: Reusable Wick workspace for scalar generic-rank evaluation.
 /// - `tol`: Numerical tolerance used by generic determinant and adjugate evaluation.
@@ -187,188 +189,164 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                 return;
             }
 
-            // Fixed-rank `m = 0` requests can be packetised by the four excitation ranks and
-            // dispatched to the widest supported SIMD kernel.
-            #[cfg(target_arch = "x86_64")]
-            if w.aa.m == 0
-                && w.bb.m == 0
-                && let Some(lanes) = lanes()
-            {
-                unsafe {
-                    match lanes {
-                        Lanes::Four => xw_hamiltonian_overlap_prepared_simd(
-                            w,
-                            requests,
-                            (enuc, tol),
-                            scratch,
-                            out,
-                            xw_hamiltonian_overlap_m0_prepared_x4::<T>,
-                        ),
-                        Lanes::Eight => xw_hamiltonian_overlap_prepared_simd(
-                            w,
-                            requests,
-                            (enuc, tol),
-                            scratch,
-                            out,
-                            xw_hamiltonian_overlap_m0_prepared_x8::<T>,
-                        ),
+            // Requests are grouped by their four excitation ranks so every packet shares one
+            // fixed-rank determinant, cofactor, same-spin second-minor and mixed-spin cofactor
+            // expression; ranks beyond the generated table share one scalar group.
+            let keys: Vec<usize> = requests
+                .iter()
+                .map(|(_, x, wdet)| {
+                    let (rxa, rwa) = (
+                        usize::from(x.alpha.cache.rank),
+                        usize::from(wdet.alpha.cache.rank),
+                    );
+                    let (rxb, rwb) = (
+                        usize::from(x.beta.cache.rank),
+                        usize::from(wdet.beta.cache.rank),
+                    );
+                    if rxa.max(rwa).max(rxb).max(rwb) < HAMRADIX {
+                        ((rxa * HAMRADIX + rwa) * HAMRADIX + rxb) * HAMRADIX + rwb
+                    } else {
+                        HAMSPACE
                     }
-                }
-                return;
-            }
+                })
+                .collect();
+            let (order, groups) = group_lanes(&keys, HAMSPACE + 1);
+            let lanes: Vec<(DeterminantData, DeterminantData)> = order
+                .iter()
+                .map(|&request| (requests[request].1, requests[request].2))
+                .collect();
 
-            // Without a SIMD kernel every request uses the prepared scalar evaluator; `output`
-            // preserves the original request order.
-            for (output, x, wdet) in requests {
-                out[*output] = xw_hamiltonian_overlap_prepared(w, (x, wdet), enuc, scratch, tol);
-            }
+            let mut batch = HamiltonianLanes {
+                w,
+                enuc,
+                tol,
+                scratch,
+                requests,
+                order: &order,
+                out,
+            };
+            xw_lanes(&mut batch, &lanes, &groups);
         }
     )
 }
 
-/// Evaluate one real or complex SIMD Hamiltonian/overlap request group.
-/// Requests are separated by all four reference-resolved spin ranks, so every packet uses one
-/// fixed-rank determinant, cofactor, same-spin second-minor and mixed-spin cofactor expression.
-/// Incomplete packets are padded with a valid lane and unsupported ranks use the scalar evaluator.
-/// # Arguments:
-/// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `requests`: Output positions and determinant pairs belonging to this reference pair.
-/// - `parameters`: Nuclear repulsion energy and scalar-fallback numerical tolerance.
-/// - `scratch`: Reusable scalar fallback workspace.
-/// - `out`: Real or complex Hamiltonian and overlap outputs.
-/// - `kernel`: Fixed-width real or complex SIMD rank dispatcher.
-/// # Returns:
-/// - `()`: Writes every request into `out`.
-/// # Safety:
-/// - The caller must provide a kernel supported by the current CPU.
-#[cfg(target_arch = "x86_64")]
-#[allow(clippy::type_complexity)]
-unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
-    w: &WicksPairView<'_, T>,
-    requests: &[(usize, DeterminantData, DeterminantData)],
-    parameters: (f64, f64),
-    scratch: &mut WickScratchSpin<T>,
-    out: &mut [(T, T)],
-    kernel: for<'a> unsafe fn(
-        &WicksPairView<'a, T>,
-        (usize, usize, usize, usize),
-        (&[ExcitationCache; N], &[ExcitationCache; N]),
-        &[f64; N],
-        f64,
-        (&mut [T; N], &mut [T; N]),
-    ),
-) {
-    let (enuc, tol) = parameters;
+/// Batch of Hamiltonian and overlap requests of one ordered reference pair, grouped by their four
+/// excitation ranks.
+struct HamiltonianLanes<'a, T: NOCIScalar> {
+    /// Wick intermediates of the ordered reference pair.
+    w: &'a WicksPairView<'a, T>,
+    /// Nuclear repulsion energy.
+    enuc: f64,
+    /// Numerical tolerance of the scalar evaluator.
+    tol: f64,
+    /// Reusable Wick workspace for scalar evaluation.
+    scratch: &'a mut WickScratchSpin<T>,
+    /// Output positions with their bra and ket determinants.
+    requests: &'a [(usize, DeterminantData, DeterminantData)],
+    /// Request of every lane.
+    order: &'a [usize],
+    /// Hamiltonian and overlap results in output order.
+    out: &'a mut [(T, T)],
+}
 
-    let mut rank_bins = [usize::MAX; HAMSPACE];
+impl<T: NOCIScalar> LaneBatch for HamiltonianLanes<'_, T> {
+    type Lane = (DeterminantData, DeterminantData);
+    type Out = (T, T);
 
-    for (bin, &(rxa, rwa, rxb, rwb)) in HAMRANKS.iter().enumerate() {
-        let key = ((rxa * HAMRADIX + rwa) * HAMRADIX + rxb) * HAMRADIX + rwb;
-        rank_bins[key] = bin;
+    /// Evaluate the Hamiltonian and overlap of one determinant pair through the prepared scalar
+    /// path.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `_`: Position of the lane, unused by the scalar path.
+    /// - `lane`: Bra and ket determinants relative to their references.
+    /// # Returns
+    /// - `(T, T)`: Hamiltonian and overlap matrix elements `(H, S)`.
+    fn scalar(
+        &mut self,
+        _: usize,
+        lane: &(DeterminantData, DeterminantData),
+    ) -> (T, T) {
+        let (x, wdet) = lane;
+        xw_hamiltonian_overlap_prepared(self.w, (x, wdet), self.enuc, self.scratch, self.tol)
     }
 
-    let mut x_bins = [[ExcitationCache::default(); N]; HAMNRANKS];
-    let mut w_bins = [[ExcitationCache::default(); N]; HAMNRANKS];
-    let mut phases = [[1.0f64; N]; HAMNRANKS];
-    let mut outputs = [[0usize; N]; HAMNRANKS];
-    let mut counts = [0usize; HAMNRANKS];
+    /// Write the Hamiltonian and overlap of one lane to the output of its request.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `position`: Position of the lane in rank order.
+    /// - `value`: Hamiltonian and overlap matrix elements `(H, S)`.
+    /// # Returns
+    /// - `()`: Writes one entry of `out`.
+    fn write(
+        &mut self,
+        position: usize,
+        value: (T, T),
+    ) {
+        self.out[self.requests[self.order[position]].0] = value;
+    }
 
-    // Bin requests by `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})` so every SIMD packet
-    // shares one fixed-rank determinant/cofactor expression.
-    unsafe {
-        for (output, x, wdet) in requests {
-            let output = *output;
-            let x_cache = ExcitationCache {
-                alpha: x.alpha.cache,
-                beta: x.beta.cache,
-            };
-            let w_cache = ExcitationCache {
-                alpha: wdet.alpha.cache,
-                beta: wdet.beta.cache,
-            };
-            let ranks = (
-                usize::from(x_cache.alpha.rank),
-                usize::from(w_cache.alpha.rank),
-                usize::from(x_cache.beta.rank),
-                usize::from(w_cache.beta.rank),
-            );
-            let bin = if ranks.0 < HAMRADIX
-                && ranks.1 < HAMRADIX
-                && ranks.2 < HAMRADIX
-                && ranks.3 < HAMRADIX
-            {
-                let key =
-                    ((ranks.0 * HAMRADIX + ranks.1) * HAMRADIX + ranks.2) * HAMRADIX + ranks.3;
-                rank_bins[key]
-            } else {
-                usize::MAX
-            };
-
-            if bin != usize::MAX {
-                let count = counts[bin];
-                x_bins[bin][count] = x_cache;
-                w_bins[bin][count] = w_cache;
-                phases[bin][count] = x.phase() * wdet.phase();
-                outputs[bin][count] = output;
-                counts[bin] += 1;
-
-                if counts[bin] == N {
-                    // Complete packet: evaluate all lanes with one fixed-rank kernel, then scatter
-                    // results back to their original output positions.
-                    let mut h = [T::from_real(0.0); N];
-                    let mut s = [T::from_real(0.0); N];
-                    kernel(
-                        w,
-                        HAMRANKS[bin],
-                        (&x_bins[bin], &w_bins[bin]),
-                        &phases[bin],
-                        enuc,
-                        (&mut h, &mut s),
-                    );
-
-                    for lane in 0..N {
-                        out[outputs[bin][lane]] = (h[lane], s[lane]);
-                    }
-                    counts[bin] = 0;
-                }
-            } else {
-                // Unsupported rank: preserve correctness through the scalar prepared evaluator.
-                out[output] = xw_hamiltonian_overlap_prepared(w, (x, wdet), enuc, scratch, tol);
-            }
+    /// Select the four-lane kernel of a group of equal excitation ranks when
+    /// `m_\alpha = m_\beta = 0`.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `lane`: First determinant pair of the group.
+    /// # Returns
+    /// - `Option<LaneKernel<Self, 4>>`: Kernel of the group, or `None` for scalar evaluation.
+    #[cfg(target_arch = "x86_64")]
+    fn kernel_x4(
+        &self,
+        lane: &(DeterminantData, DeterminantData),
+    ) -> Option<LaneKernel<Self, 4>> {
+        if self.w.aa.m != 0 || self.w.bb.m != 0 {
+            return None;
         }
+        let (x, w) = lane;
+        let ranks = (
+            usize::from(x.alpha.cache.rank),
+            usize::from(w.alpha.cache.rank),
+            usize::from(x.beta.cache.rank),
+            usize::from(w.beta.cache.rank),
+        );
+        dispatch_hamiltonian_ranks!(
+            ranks,
+            |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| Some(
+                packet_x4::<T, RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB>
+                    as LaneKernel<Self, 4>
+            ),
+            None,
+        )
+    }
 
-        for bin in 0..counts.len() {
-            let count = counts[bin];
-            if count == 0 {
-                continue;
-            }
-
-            let fill_x = x_bins[bin][0];
-            let fill_w = w_bins[bin][0];
-            let fill_phase = phases[bin][0];
-            // Pad incomplete packets with a valid lane only for SIMD evaluation; write back only
-            // the genuine `count` requests.
-            for lane in count..N {
-                x_bins[bin][lane] = fill_x;
-                w_bins[bin][lane] = fill_w;
-                phases[bin][lane] = fill_phase;
-            }
-
-            let mut h = [T::from_real(0.0); N];
-            let mut s = [T::from_real(0.0); N];
-            kernel(
-                w,
-                HAMRANKS[bin],
-                (&x_bins[bin], &w_bins[bin]),
-                &phases[bin],
-                enuc,
-                (&mut h, &mut s),
-            );
-
-            for lane in 0..count {
-                out[outputs[bin][lane]] = (h[lane], s[lane]);
-            }
+    /// Select the eight-lane kernel of a group of equal excitation ranks when
+    /// `m_\alpha = m_\beta = 0`.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `lane`: First determinant pair of the group.
+    /// # Returns
+    /// - `Option<LaneKernel<Self, 8>>`: Kernel of the group, or `None` for scalar evaluation.
+    #[cfg(target_arch = "x86_64")]
+    fn kernel_x8(
+        &self,
+        lane: &(DeterminantData, DeterminantData),
+    ) -> Option<LaneKernel<Self, 8>> {
+        if self.w.aa.m != 0 || self.w.bb.m != 0 {
+            return None;
         }
+        let (x, w) = lane;
+        let ranks = (
+            usize::from(x.alpha.cache.rank),
+            usize::from(w.alpha.cache.rank),
+            usize::from(x.beta.cache.rank),
+            usize::from(w.beta.cache.rank),
+        );
+        dispatch_hamiltonian_ranks!(
+            ranks,
+            |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| Some(
+                packet_x8::<T, RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB>
+                    as LaneKernel<Self, 8>
+            ),
+            None,
+        )
     }
 }
 
@@ -1042,116 +1020,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
     V::store(V::mul(pref, det_ab), s);
 }
 
-/// Dispatch four Hamiltonian/overlap values to one fixed-rank AVX2/FMA kernel.
+/// Evaluate one four-lane packet of fixed-rank Hamiltonian and overlap values with AVX2/FMA.
 /// # Arguments:
-/// - `w`: Wick intermediates.
-/// - `ranks`: Reference-resolved excitation ranks.
-/// - `ex`: Bra and ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `out`: Hamiltonian and overlap outputs.
+/// - `batch`: Batch holding the Wick intermediates and the nuclear repulsion energy.
+/// - `lanes`: Bra and ket determinants of every lane.
 /// # Returns
-/// - `()`: Writes four matrix-element pairs.
+/// - `[(T, T); 4]`: Hamiltonian and overlap of every lane.
 /// # Safety
-/// - The current CPU must support AVX2/FMA; cached ranks must match `ranks`.
+/// - The current CPU must support AVX2/FMA; cached labels must match the fixed ranks.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_x4<T: NOCIScalar>(
-    w: &WicksPairView<'_, T>,
-    ranks: (usize, usize, usize, usize),
-    ex: (&[ExcitationCache; 4], &[ExcitationCache; 4]),
-    excitation_phase: &[f64; 4],
-    enuc: f64,
-    out: (&mut [T; 4], &mut [T; 4]),
-) {
-    let (x_ex, w_ex) = ex;
-    let (h, s) = out;
-    dispatch_hamiltonian_ranks!(
-        ranks,
-        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
-            xw_hamiltonian_overlap_m0_prepared_x4_const::<
-                T,
-                RXA,
-                RWA,
-                LA,
-                DA,
-                MA,
-                MDA,
-                RXB,
-                RWB,
-                LB,
-                DB,
-                MB,
-                MDB,
-            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-        },
-        (),
-    )
-}
-
-/// Dispatch eight Hamiltonian/overlap values to one fixed-rank AVX-512F kernel.
-/// # Arguments:
-/// - `w`: Wick intermediates.
-/// - `ranks`: Reference-resolved excitation ranks.
-/// - `ex`: Bra and ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `out`: Hamiltonian and overlap outputs.
-/// # Returns
-/// - `()`: Writes eight matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX-512F; cached ranks must match `ranks`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_x8<T: NOCIScalar>(
-    w: &WicksPairView<'_, T>,
-    ranks: (usize, usize, usize, usize),
-    ex: (&[ExcitationCache; 8], &[ExcitationCache; 8]),
-    excitation_phase: &[f64; 8],
-    enuc: f64,
-    out: (&mut [T; 8], &mut [T; 8]),
-) {
-    let (x_ex, w_ex) = ex;
-    let (h, s) = out;
-    dispatch_hamiltonian_ranks!(
-        ranks,
-        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
-            xw_hamiltonian_overlap_m0_prepared_x8_const::<
-                T,
-                RXA,
-                RWA,
-                LA,
-                DA,
-                MA,
-                MDA,
-                RXB,
-                RWB,
-                LB,
-                DB,
-                MB,
-                MDB,
-            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-        },
-        (),
-    )
-}
-
-/// Evaluate four fixed-rank Hamiltonian/overlap values with AVX2/FMA.
-/// # Arguments:
-/// - `w`: Wick intermediates.
-/// - `x_ex`: Bra excitation caches.
-/// - `w_ex`: Ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian outputs.
-/// - `s`: Overlap outputs.
-/// # Returns
-/// - `()`: Writes four matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX2/FMA; cached labels must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_x4_const<
+unsafe fn packet_x4<
     T: NOCIScalar,
     const RXA: usize,
     const RWA: usize,
@@ -1166,14 +1045,28 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_x4_const<
     const MB: usize,
     const MDB: usize,
 >(
-    w: &WicksPairView<'_, T>,
-    x_ex: &[ExcitationCache; 4],
-    w_ex: &[ExcitationCache; 4],
-    excitation_phase: &[f64; 4],
-    enuc: f64,
-    h: &mut [T; 4],
-    s: &mut [T; 4],
-) {
+    batch: &HamiltonianLanes<'_, T>,
+    lanes: &[(DeterminantData, DeterminantData); 4],
+) -> [(T, T); 4] {
+    // Gather the excitation caches and the phases `p_x p_w` of every lane.
+    let mut x_ex = [ExcitationCache::default(); 4];
+    let mut w_ex = [ExcitationCache::default(); 4];
+    let mut phases = [0.0; 4];
+    for (lane, (x, w)) in lanes.iter().enumerate() {
+        x_ex[lane] = ExcitationCache {
+            alpha: x.alpha.cache,
+            beta: x.beta.cache,
+        };
+        w_ex[lane] = ExcitationCache {
+            alpha: w.alpha.cache,
+            beta: w.beta.cache,
+        };
+        phases[lane] = x.phase() * w.phase();
+    }
+
+    // Evaluate `H` and `S` of every lane with one fixed-rank expression.
+    let mut h = [T::from_real(0.0); 4];
+    let mut s = [T::from_real(0.0); 4];
     unsafe {
         xw_hamiltonian_overlap_m0_prepared_simd_const::<
             T,
@@ -1191,26 +1084,28 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_x4_const<
             DB,
             MB,
             MDB,
-        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
+        >(batch.w, &x_ex, &w_ex, &phases, batch.enuc, &mut h, &mut s);
     }
+
+    // Pair the Hamiltonian and overlap of every lane.
+    let mut out = [(T::from_real(0.0), T::from_real(0.0)); 4];
+    for (lane, value) in out.iter_mut().enumerate() {
+        *value = (h[lane], s[lane]);
+    }
+    out
 }
 
-/// Evaluate eight fixed-rank Hamiltonian/overlap values with AVX-512F.
+/// Evaluate one eight-lane packet of fixed-rank Hamiltonian and overlap values with AVX-512F.
 /// # Arguments:
-/// - `w`: Wick intermediates.
-/// - `x_ex`: Bra excitation caches.
-/// - `w_ex`: Ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian outputs.
-/// - `s`: Overlap outputs.
+/// - `batch`: Batch holding the Wick intermediates and the nuclear repulsion energy.
+/// - `lanes`: Bra and ket determinants of every lane.
 /// # Returns
-/// - `()`: Writes eight matrix-element pairs.
+/// - `[(T, T); 8]`: Hamiltonian and overlap of every lane.
 /// # Safety
-/// - The current CPU must support AVX-512F; cached labels must match fixed ranks.
+/// - The current CPU must support AVX-512F; cached labels must match the fixed ranks.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_x8_const<
+unsafe fn packet_x8<
     T: NOCIScalar,
     const RXA: usize,
     const RWA: usize,
@@ -1225,14 +1120,28 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_x8_const<
     const MB: usize,
     const MDB: usize,
 >(
-    w: &WicksPairView<'_, T>,
-    x_ex: &[ExcitationCache; 8],
-    w_ex: &[ExcitationCache; 8],
-    excitation_phase: &[f64; 8],
-    enuc: f64,
-    h: &mut [T; 8],
-    s: &mut [T; 8],
-) {
+    batch: &HamiltonianLanes<'_, T>,
+    lanes: &[(DeterminantData, DeterminantData); 8],
+) -> [(T, T); 8] {
+    // Gather the excitation caches and the phases `p_x p_w` of every lane.
+    let mut x_ex = [ExcitationCache::default(); 8];
+    let mut w_ex = [ExcitationCache::default(); 8];
+    let mut phases = [0.0; 8];
+    for (lane, (x, w)) in lanes.iter().enumerate() {
+        x_ex[lane] = ExcitationCache {
+            alpha: x.alpha.cache,
+            beta: x.beta.cache,
+        };
+        w_ex[lane] = ExcitationCache {
+            alpha: w.alpha.cache,
+            beta: w.beta.cache,
+        };
+        phases[lane] = x.phase() * w.phase();
+    }
+
+    // Evaluate `H` and `S` of every lane with one fixed-rank expression.
+    let mut h = [T::from_real(0.0); 8];
+    let mut s = [T::from_real(0.0); 8];
     unsafe {
         xw_hamiltonian_overlap_m0_prepared_simd_const::<
             T,
@@ -1250,8 +1159,15 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_x8_const<
             DB,
             MB,
             MDB,
-        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
+        >(batch.w, &x_ex, &w_ex, &phases, batch.enuc, &mut h, &mut s);
     }
+
+    // Pair the Hamiltonian and overlap of every lane.
+    let mut out = [(T::from_real(0.0), T::from_real(0.0)); 8];
+    for (lane, value) in out.iter_mut().enumerate() {
+        *value = (h[lane], s[lane]);
+    }
+    out
 }
 
 /// Evaluate an arbitrary contraction-rank Hamiltonian and overlap for

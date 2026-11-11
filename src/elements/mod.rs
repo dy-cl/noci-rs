@@ -11,12 +11,14 @@
 //! - `nonorthogonalwicks`: the extended nonorthogonal Wick theorem for nonorthogonal pairs.
 //!
 //! `operator` defines the overlap, shifted Fock and Hamiltonian operators by their evaluation in
-//! each engine, and `pairs` routes every pair of a batch to its engine for any operator; `rdm`
+//! each engine, and `pairs` routes every pair of a batch to its engine for any operator; `batch`
+//! evaluates the grouped lanes of every packed evaluator of both SIMD engines in packets; `rdm`
 //! assembles the reduced density matrices of NOCI states from the pair densities. Both method
 //! families, `noci` and `nocc`, evaluate their matrix elements here.
 
 pub mod nonorthogonalwicks;
 
+mod batch;
 mod cache;
 mod naive;
 mod operator;
@@ -33,6 +35,9 @@ pub use cache::build_mo_cache;
 pub use nonorthogonalwicks::build_wicks_shared;
 
 // Crate-visible type re-exports.
+pub(crate) use batch::LaneBatch;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use batch::LaneKernel;
 pub(crate) use operator::{Fock, HamiltonianOverlap, Overlap};
 pub(crate) use orthogonal::OrthogonalHamiltonianScratch;
 #[cfg(feature = "gnocc")]
@@ -40,6 +45,7 @@ pub(crate) use rdm::{RDM1, RDM2, RDM3, RDM4};
 pub(crate) use types::{DetPair, FockData};
 
 // Crate-visible function re-exports.
+pub(crate) use batch::{group_lanes, xw_lanes};
 pub(crate) use cache::build_fock_mo_cache;
 pub(crate) use naive::{build_s_pair, build_s_pair_floored, occ_coeffs, pair_density};
 pub(crate) use nonorthogonalwicks::update_wicks_fock;
