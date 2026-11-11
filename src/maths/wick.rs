@@ -11,7 +11,6 @@ use ndarray_linalg::{Determinant, FactorizeInto, InverseInto, SVD};
 
 // Crate-root imports.
 use crate::NOCIScalar;
-#[cfg(target_arch = "x86_64")]
 use crate::maths::Simd;
 
 /// Calculate a runtime-rank determinant coefficient for an occupation bitstring.
@@ -145,40 +144,6 @@ pub fn build_d_dynamic<T: Copy>(
             for j in (i + 1)..l {
                 let col = *cols.get_unchecked(j) as isize;
                 *d.get_unchecked_mut(base + j) = *yptr.offset(yr + col * ystr[1]);
-            }
-        }
-    }
-}
-
-/// Select each column of a rank-`L` matrix from `det0` or `det1`.
-/// Bit `c` selects the source of column `c`.
-/// Column selection only copies `T`, so the same implementation accepts scalar or packed values.
-/// # Arguments:
-/// - `d`: Mixed row-major matrix to write.
-/// - `det0`: Matrix supplying columns whose bits are zero.
-/// - `det1`: Matrix supplying columns whose bits are one.
-/// - `bits`: Packed column-selection bitstring.
-/// # Returns
-/// - `()`: Writes the mixed matrix into `d`.
-#[inline(always)]
-pub fn mix_columns_const<T: Copy, const L: usize>(
-    d: &mut [T],
-    det0: &[T],
-    det1: &[T],
-    bits: u64,
-) {
-    unsafe {
-        // Visit in row-major order so each selection bit controls one complete source column.
-        for row in 0..L {
-            let base = row * L;
-
-            for col in 0..L {
-                let index = base + col;
-                *d.get_unchecked_mut(index) = if ((bits >> col) & 1) != 0 {
-                    *det1.get_unchecked(index)
-                } else {
-                    *det0.get_unchecked(index)
-                };
             }
         }
     }
@@ -426,83 +391,14 @@ pub fn second_minor_dynamic<T: Copy>(
     }
 }
 
-/// Compute `det(A)` for a compile-time `N x N` matrix using the Faddeev-LeVerrier recurrence.
-/// # Arguments:
-/// - `matrix`: Row-major matrix entries.
-/// # Returns
-/// - `T`: Determinant of `A`.
-#[inline(always)]
-pub fn det_const<T: NOCIScalar, const N: usize, const D: usize>(matrix: &[T]) -> T {
-    // The empty determinant is the multiplicative identity.
-    if N == 0 {
-        return T::from_real(1.0);
-    }
-
-    let zero = T::from_real(0.0);
-    let one = T::from_real(1.0);
-    let mut b = [zero; D];
-    let mut product = [zero; D];
-
-    // Start the recurrence with `B_0 = I`.
-    for i in 0..N {
-        b[i * N + i] = one;
-    }
-
-    for k in 1..=N {
-        // Form `A B_{k-1}`. Const ranks let LLVM unroll these matrix products without pivot or
-        // matrix-order branches.
-        product.fill(zero);
-
-        for row in 0..N {
-            for col in 0..N {
-                let mut value = zero;
-
-                for inner in 0..N {
-                    value += matrix[row * N + inner] * b[inner * N + col];
-                }
-
-                product[row * N + col] = value;
-            }
-        }
-
-        // `c_k = -tr(A B_{k-1}) / k` is the next characteristic-polynomial coefficient.
-        let mut trace = zero;
-
-        for i in 0..N {
-            trace += product[i * N + i];
-        }
-
-        let coefficient = T::from_real(-1.0 / k as f64) * trace;
-
-        // The final coefficient differs from `det(A)` by `(-1)^N`.
-        if k == N {
-            return if (N & 1) == 0 {
-                coefficient
-            } else {
-                -coefficient
-            };
-        }
-
-        // Advance with `B_k = A B_{k-1} + c_k I`.
-        b.copy_from_slice(&product);
-
-        for i in 0..N {
-            b[i * N + i] += coefficient;
-        }
-    }
-
-    unreachable!()
-}
-
 /// Compute independent determinants of packed compile-time `N x N` matrices using the
 /// Faddeev-LeVerrier recurrence.
 /// # Arguments:
 /// - `matrix`: Row-major packed matrix entries.
 /// # Returns
 /// - `V`: Packed determinants, one independent determinant per SIMD lane.
-#[cfg(target_arch = "x86_64")]
 #[inline(always)]
-pub(crate) fn det_simd_const<V: Simd<LANES>, const LANES: usize, const N: usize, const D: usize>(
+pub(crate) fn det_const<V: Simd<LANES>, const LANES: usize, const N: usize, const D: usize>(
     matrix: &[V]
 ) -> V {
     // Every lane follows the scalar recurrence independently, including the empty determinant.
@@ -688,98 +584,6 @@ fn det_lu_in_place<T: NOCIScalar>(
     }
 }
 
-/// Compute `det(A)` and the cofactor matrix of a compile-time `N x N` matrix using the
-/// Faddeev-LeVerrier recurrence.
-/// The output convention is
-/// `cof[A]_{rc} = (-1)^{r+c} det A[r|c] = adj(A)_{cr}`.
-/// # Arguments:
-/// - `cof`: Row-major cofactor matrix to write.
-/// - `matrix`: Row-major matrix entries.
-/// # Returns
-/// - `T`: Determinant of `A`.
-#[inline(always)]
-pub fn adjugate_transpose_const<T: NOCIScalar, const N: usize, const D: usize>(
-    cof: &mut [T],
-    matrix: &[T],
-) -> T {
-    // The order-zero determinant is one and has no stored cofactor entries.
-    if N == 0 {
-        return T::from_real(1.0);
-    }
-
-    let zero = T::from_real(0.0);
-    let one = T::from_real(1.0);
-    let mut b = [zero; D];
-    let mut product = [zero; D];
-
-    // Initialise `B_0 = I`; the penultimate recurrence matrix yields the adjugate.
-    for i in 0..N {
-        b[i * N + i] = one;
-    }
-
-    // Deleting the only row and column leaves the empty determinant.
-    if N == 1 {
-        cof[0] = one;
-    }
-
-    for k in 1..=N {
-        // Form `A B_{k-1}` with the same recurrence used by `det_const`.
-        product.fill(zero);
-
-        for row in 0..N {
-            for col in 0..N {
-                let mut value = zero;
-
-                for inner in 0..N {
-                    value += matrix[row * N + inner] * b[inner * N + col];
-                }
-
-                product[row * N + col] = value;
-            }
-        }
-
-        // Obtain the next characteristic-polynomial coefficient from the trace.
-        let mut trace = zero;
-
-        for i in 0..N {
-            trace += product[i * N + i];
-        }
-
-        let coefficient = T::from_real(-1.0 / k as f64) * trace;
-
-        // The last coefficient gives the determinant after applying `(-1)^N`.
-        if k == N {
-            return if (N & 1) == 0 {
-                coefficient
-            } else {
-                -coefficient
-            };
-        }
-
-        // Advance `B_k = A B_{k-1} + c_k I`.
-        b.copy_from_slice(&product);
-
-        for i in 0..N {
-            b[i * N + i] += coefficient;
-        }
-
-        // `(-1)^(N-1) B_{N-1}` is `adj(A)`; transpose while writing the repository's cofactor
-        // convention `cof[A]_{rc} = adj(A)_{cr}`.
-        if k + 1 == N {
-            let sign = if ((N - 1) & 1) == 0 { 1.0 } else { -1.0 };
-            let sign = T::from_real(sign);
-
-            for row in 0..N {
-                for col in 0..N {
-                    cof[row * N + col] = sign * b[col * N + row];
-                }
-            }
-        }
-    }
-
-    unreachable!()
-}
-
 /// Compute independent determinants and cofactor matrices of packed compile-time `N x N` matrices
 /// using the Faddeev-LeVerrier recurrence.
 /// # Arguments:
@@ -787,9 +591,8 @@ pub fn adjugate_transpose_const<T: NOCIScalar, const N: usize, const D: usize>(
 /// - `matrix`: Row-major packed matrix entries.
 /// # Returns
 /// - `V`: Packed determinants, one independent determinant per SIMD lane.
-#[cfg(target_arch = "x86_64")]
 #[inline(always)]
-pub(crate) fn adjugate_transpose_simd_const<
+pub(crate) fn adjugate_transpose_const<
     V: Simd<LANES>,
     const LANES: usize,
     const N: usize,

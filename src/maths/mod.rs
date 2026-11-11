@@ -24,7 +24,6 @@ pub mod eri;
 pub mod gemm;
 pub mod gmres;
 pub mod linalg;
-#[cfg(target_arch = "x86_64")]
 pub mod simd;
 pub mod wick;
 
@@ -35,8 +34,9 @@ pub use linalg::*;
 pub use wick::*;
 
 // Restricted type re-exports.
+pub(crate) use simd::{C64x1, F64x1, Simd};
 #[cfg(target_arch = "x86_64")]
-pub(crate) use simd::{C64x4, C64x8, F64x4, F64x8, Lanes, Simd};
+pub(crate) use simd::{C64x4, C64x8, F64x4, F64x8, Lanes};
 
 // Restricted function re-exports.
 #[cfg(target_arch = "x86_64")]

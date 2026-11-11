@@ -4,20 +4,15 @@
 use crate::ExcitationSpin;
 use crate::NOCIScalar;
 use crate::determinant::SpinStringData;
-#[cfg(target_arch = "x86_64")]
-use crate::maths::{Simd, adjugate_transpose_simd_const};
 use crate::maths::{
-    adjugate_transpose_const, adjugate_transpose_dynamic, build_d_const, build_d_dynamic,
-    det_dynamic,
+    Simd, adjugate_transpose_const, adjugate_transpose_dynamic, build_d_dynamic, det_dynamic,
 };
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-#[cfg(target_arch = "x86_64")]
-use super::batch::Packet;
-use super::batch::SpinFactor;
+use super::batch::{Packet, SpinFactor};
 use super::dispatch::{dispatch_pair_ranks, dispatch_spin_ranks};
 use super::helpers::{
     adjugate_transpose_generic, bit, column_replacement_correction, mix_dets_same,
@@ -63,7 +58,6 @@ impl SpinFactor<2> for OneBodyFactor {
     ///   excitation phases.
     /// # Safety
     /// - Cached labels must match `RX` and `RW`, and the caller must establish CPU support for `V`.
-    #[cfg(target_arch = "x86_64")]
     #[inline(always)]
     unsafe fn packed<
         T: NOCIScalar,
@@ -99,7 +93,7 @@ impl SpinFactor<2> for OneBodyFactor {
                 // Reuse `\operatorname{cof}[\mathbf D_{\mathrm{ov}}]` for every one-body replacement:
                 // `F = \tilde S(F_0\det\mathbf D_{\mathrm{ov}}`
                 // `-\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z})`.
-                let determinant = adjugate_transpose_simd_const::<V, LANES, L, D>(&mut cof, &d);
+                let determinant = adjugate_transpose_const::<V, LANES, L, D>(&mut cof, &d);
                 let mut replacement = V::zero();
                 for eta in 0..L {
                     for z in 0..L {
@@ -165,8 +159,8 @@ pub(crate) fn xw_onebody_prepared<T: NOCIScalar>(
 
 /// Prepare and evaluate the overlap and generalised-Fock matrix element together when `m = 0`.
 /// `Every contraction uses m_i = 0, so the total excitation rank L = L_x + L_w determines one`
-/// `contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0). Fixed-rank prepared kernels are`
-/// `used for L = 1,\ldots,4; arbitrary ranks construct the generic determinant once and then apply`
+/// `contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0). Generated ranks use the packed`
+/// `kernel with one lane; arbitrary ranks construct the generic determinant once and then apply`
 /// `the general cofactor form. For L = 0, the overlap is {}^{xw}\tilde S and only`
 /// `{}^x F_0^{(0)} contributes to F.`
 /// # Arguments:
@@ -194,130 +188,22 @@ fn xw_onebody_m0_prepared<T: NOCIScalar>(
             let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
             (pref, pref * w.f0f[0])
         } else {
+            // Fixed ranks evaluate the packed kernel with one lane, the ket as its varying
+            // determinant.
             dispatch_spin_ranks!(
                 (rx, rw),
-                |RX, RW, L, D| xw_onebody_m0_prepared_const::<T, RX, RW, L, D>(
-                    w, x_ex, w_ex, scratch, tol,
-                ),
+                |RX, RW, L, D| {
+                    let (fixed, varying) = (x_ex.cache(), [w_ex.cache()]);
+                    let packet = Packet::new(w, &fixed, &varying);
+                    let [[s], [f]] = unsafe {
+                        OneBodyFactor::packed::<T, T::Packed1, 1, RX, RW, L, D, true>(w, &packet)
+                    };
+                    (s, f)
+                },
                 xw_onebody_m0_gen_prepared(w, x_ex, w_ex, scratch, rx + rw, tol),
             )
         }
     })
-}
-
-/// Prepare and evaluate the fixed-rank `L` overlap and generalised-Fock matrix element for `m = 0`.
-/// `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}.`
-/// `F = {}^{xw}\tilde S[{}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}}`
-/// `- \sum_{\eta,z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}\mathcal F_{\eta z}^{(0,0)}].`
-/// `For L = 1 and \mathbf D_{\mathrm{ov}} = [D_{00}], this reduces to`
-/// `F = {}^{xw}\tilde S[{}^x F_0^{(0)}D_{00} - \mathcal F_{r_0c_0}^{(0,0)}].`
-/// `For L = 2, the replacement contribution is`
-/// `\det\mathbf D_{\mathrm{ov}}^{0\rightarrow\mathcal F_0}`
-/// `+ \det\mathbf D_{\mathrm{ov}}^{1\rightarrow\mathcal F_1}.`
-/// # Arguments:
-/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `x_ex`: Excitation defining the bra determinant.
-/// - `w_ex`: Excitation defining the ket determinant.
-/// - `scratch`: Scratch storage receiving determinant labels, determinant entries and cofactors.
-/// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
-/// # Returns
-/// - `(T, T)`: Same-spin `(overlap, generalised-Fock matrix element)` for fixed `L` and `m = 0`.
-#[inline(always)]
-fn xw_onebody_m0_prepared_const<
-    T: NOCIScalar,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
->(
-    w: &SameSpinView<'_, T>,
-    x_ex: &ExcitationSpin,
-    w_ex: &ExcitationSpin,
-    scratch: &mut WickScratch<T>,
-    tol: f64,
-) -> (T, T) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_onebody_m0_const,
-        {
-            // Allocate the rank-`L` determinant, label, and cofactor storage.
-            scratch.ensure_same(L);
-
-            // Map bra labels into `V_x x O_x` and ket labels into `O_w x V_w`.
-            let nocc = w.nocc;
-            let nvirt = w.nmo - nocc;
-            let rows = scratch.rows.as_mut_slice();
-            let cols = scratch.cols.as_mut_slice();
-            let mut x_holes = x_ex.holes;
-            let mut x_parts = x_ex.parts;
-            for i in 0..RX {
-                cols[i] = x_holes.trailing_zeros() as usize;
-                rows[i] = x_parts.trailing_zeros() as usize - nocc;
-                x_holes &= x_holes - 1;
-                x_parts &= x_parts - 1;
-            }
-
-            let mut w_holes = w_ex.holes;
-            let mut w_parts = w_ex.parts;
-            for i in 0..RW {
-                rows[RX + i] = nvirt + w_holes.trailing_zeros() as usize;
-                cols[RX + i] = w_parts.trailing_zeros() as usize;
-                w_holes &= w_holes - 1;
-                w_parts &= w_parts - 1;
-            }
-
-            // For `m = 0`, every column uses the `m_i = 0` fundamental contractions:
-            // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
-            // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
-            let x0 = w.x(0);
-            let y0 = w.y(0);
-            build_d_const::<T, L>(
-                scratch.det0.as_mut_slice(),
-                &x0,
-                &y0,
-                scratch.rows.as_slice(),
-                scratch.cols.as_slice(),
-            );
-
-            let det0 = &scratch.det0.as_slice()[..D];
-            let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
-
-            // Evaluate `\det\mathbf D_{\mathrm{ov}}` and
-            // `\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z} = (-1)^{\eta+z}`
-            // `\det\mathbf D_{\mathrm{ov}}[\eta|z]`.
-            // for the overlap part and the one-body column replacements.
-            let det = adjugate_transpose_const::<T, L, D>(
-                &mut scratch.adjt_det.as_mut_slice()[..D],
-                det0,
-            );
-            if det.abs() > tol {
-                let n = w.n();
-                let fsl = w.ff_t_slice(0, 0);
-                let rows = scratch.rows.as_slice();
-                let cols = scratch.cols.as_slice();
-                let cof = scratch.adjt_det.as_slice();
-                let mut repl = <T as From<f64>>::from(0.0);
-
-                // Laplace expansion of the inserted one-body row gives
-                // `\sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal F}_z}`
-                // ` = \sum_{\eta z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}`
-                // `\mathcal F_{\eta z}`.
-                for z in 0..L {
-                    let base = cols[z] * n;
-
-                    for eta in 0..L {
-                        repl += cof[eta * L + z] * fsl[base + rows[eta]];
-                    }
-                }
-
-                // Return `\tilde S\det\mathbf D_{\mathrm{ov}}` and
-                // `\tilde S(F_0\det\mathbf D_{\mathrm{ov}}`
-                // `- \sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z})`.
-                (pref * det, pref * (det * w.f0f[0] - repl))
-            } else {
-                (<T as From<f64>>::from(0.0), <T as From<f64>>::from(0.0))
-            }
-        }
-    )
 }
 
 /// Prepare and evaluate the generic-rank overlap and generalised-Fock matrix element for `m = 0`.

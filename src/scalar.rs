@@ -8,8 +8,9 @@ use num_complex::Complex64;
 use serde::{Deserialize, Serialize};
 
 // Crate-root imports.
+use crate::maths::{C64x1, F64x1, Simd};
 #[cfg(target_arch = "x86_64")]
-use crate::maths::{C64x4, C64x8, F64x4, F64x8, Simd};
+use crate::maths::{C64x4, C64x8, F64x4, F64x8};
 use crate::maths::{
     ERIScalar, einsum_ba_ab_complex, einsum_ba_ab_complex_real, einsum_ba_ab_real,
     einsum_ba_abcd_cd_complex, einsum_ba_abcd_cd_complex_real, einsum_ba_abcd_cd_real,
@@ -81,6 +82,9 @@ impl HSCFState {
 
 /// Scalar type accepted by generic NOCI matrix-element code.
 pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
+    /// One-lane packed counterpart, through which the packed kernels evaluate a single element.
+    type Packed1: Simd<1, Scalar = Self>;
+
     /// Four-lane AVX2 packed counterpart used by SIMD matrix-element kernels.
     #[cfg(target_arch = "x86_64")]
     type Packed4: Simd<4, Scalar = Self>;
@@ -152,6 +156,7 @@ pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
 }
 
 impl NOCIScalar for f64 {
+    type Packed1 = F64x1;
     #[cfg(target_arch = "x86_64")]
     type Packed4 = F64x4;
     #[cfg(target_arch = "x86_64")]
@@ -236,6 +241,7 @@ impl NOCIScalar for f64 {
 }
 
 impl NOCIScalar for Complex64 {
+    type Packed1 = C64x1;
     #[cfg(target_arch = "x86_64")]
     type Packed4 = C64x4;
     #[cfg(target_arch = "x86_64")]

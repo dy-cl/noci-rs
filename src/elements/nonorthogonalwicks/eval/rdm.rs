@@ -10,9 +10,7 @@ use crate::config::MAXEXCIT;
 #[cfg(target_arch = "x86_64")]
 use crate::elements::LaneKernel;
 use crate::elements::{LaneBatch, xw_lanes};
-#[cfg(target_arch = "x86_64")]
-use crate::maths::{Simd, det_simd_const};
-use crate::maths::{det_const, det_dynamic, mix_columns_dynamic};
+use crate::maths::{Simd, det_const, det_dynamic, mix_columns_dynamic};
 use crate::time_call;
 
 // Parent/sibling imports.
@@ -259,9 +257,8 @@ impl<T: NOCIScalar, const K: usize> RdmLanes<'_, T, K> {
 /// - `()`: Writes `LANES` transition-density values.
 /// # Safety
 /// - Indices must be valid and caller must establish `V` CPU support.
-#[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn xw_rdmk_same_m0_prepared_simd_const<
+unsafe fn xw_rdmk_same_m0_const<
     T: NOCIScalar,
     V: Simd<LANES, Scalar = T>,
     const LANES: usize,
@@ -339,7 +336,7 @@ unsafe fn xw_rdmk_same_m0_prepared_simd_const<
     }
 
     // Multiply each determinant by `{}^{xw}\tilde S`, then apply tolerance lane by lane.
-    let value = det_simd_const::<V, LANES, D, DD>(&determinant);
+    let value = det_const::<V, LANES, D, DD>(&determinant);
     let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
     let mut lanes = [T::from_real(0.0); LANES];
     V::store(V::mul(pref, value), &mut lanes);
@@ -465,7 +462,7 @@ unsafe fn xw_rdmk_same_m0_prepared_x4_const<
     out: &mut [T; 4],
 ) {
     unsafe {
-        xw_rdmk_same_m0_prepared_simd_const::<T, T::Packed4, 4, K, RX, RW, L, D, DD>(
+        xw_rdmk_same_m0_const::<T, T::Packed4, 4, K, RX, RW, L, D, DD>(
             w,
             ex,
             fundamental,
@@ -507,7 +504,7 @@ unsafe fn xw_rdmk_same_m0_prepared_x8_const<
     out: &mut [T; 8],
 ) {
     unsafe {
-        xw_rdmk_same_m0_prepared_simd_const::<T, T::Packed8, 8, K, RX, RW, L, D, DD>(
+        xw_rdmk_same_m0_const::<T, T::Packed8, 8, K, RX, RW, L, D, DD>(
             w,
             ex,
             fundamental,
@@ -592,17 +589,27 @@ fn xw_rdmk_same_m0_prepared<T: NOCIScalar, const K: usize>(
             dispatch_rdm_ranks!(
                 K,
                 (rx, rw),
-                |K, RX, RW, L, D, DD| xw_rdmk_same_m0_prepared_const::<T, K, RX, RW, L, D, DD>(
-                    w,
-                    ex,
-                    (fundamental.0, fundamental.1, fundamental.3),
+                |K, RX, RW, L, D, DD| {
                     // SAFETY: `dispatch_rdm_ranks!` selects this arm only when the caller's const
                     // `K` equals the arm-local literal `K`, so the two array-reference layouts are
                     // identical.
-                    unsafe { &*std::ptr::from_ref(request).cast::<([usize; K], [usize; K])>() },
-                    scratch,
-                    tol,
-                ),
+                    let request =
+                        unsafe { &*std::ptr::from_ref(request).cast::<([usize; K], [usize; K])>() };
+
+                    // Generated ranks evaluate the packed kernel with one lane.
+                    let mut value = [T::from_real(0.0)];
+                    unsafe {
+                        xw_rdmk_same_m0_const::<T, T::Packed1, 1, K, RX, RW, L, D, DD>(
+                            w,
+                            ex,
+                            (fundamental.0, fundamental.1, fundamental.3),
+                            std::array::from_ref(request),
+                            tol,
+                            &mut value,
+                        )
+                    };
+                    value[0]
+                },
                 xw_rdmk_same_m0_gen_prepared(
                     w,
                     ex,
@@ -612,102 +619,6 @@ fn xw_rdmk_same_m0_prepared<T: NOCIScalar, const K: usize>(
                     tol,
                 ),
             )
-        }
-    )
-}
-
-/// Evaluate one fixed-rank same-spin rank-`K` RDM determinant for `m = 0`.
-/// The augmented matrix has dimension `D = K + L`, with `X^{(0)}` on and below the diagonal and in
-/// the external `K x K` block, and `Y^{(0)}` elsewhere above it, so the external operators form
-/// the creators-first string `a^\dagger_{p_1}\cdots a^\dagger_{p_K} a_{q_K}\cdots a_{q_1}`. Its
-/// first `K` labels are external RDM indices; its remaining labels use the
-/// contraction-space ordering `V_x \cup O_w` by `O_x \cup V_w` for ranks `(RX,RW)`.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `ex`: Excitations defining the bra and ket determinants respectively.
-/// - `fundamental`: Extended `X^{(0)}`, `Y^{(0)}`, and their row dimension.
-/// - `request`: Const-sized creation and annihilation index arrays.
-/// - `scratch`: Reusable determinant storage.
-/// - `tol`: Numerical threshold applied to the determinant contribution.
-/// # Returns
-/// - `T`: `{}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-#[inline(always)]
-fn xw_rdmk_same_m0_prepared_const<
-    T: NOCIScalar,
-    const K: usize,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const DD: usize,
->(
-    w: &SameSpinView<'_, T>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], usize),
-    request: &([usize; K], [usize; K]),
-    scratch: &mut WickScratch<T>,
-    tol: f64,
-) -> T {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared_const,
-        {
-            // Place external RDM labels first, followed by bra and ket excitation labels. This is
-            // the operator ordering defining `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-            scratch.ensure_same(D);
-            let rows = scratch.rows.as_mut_slice();
-            let cols = scratch.cols.as_mut_slice();
-            for i in 0..K {
-                rows[i] = w.nmo + request.0[i];
-                cols[i] = w.nmo + request.1[i];
-            }
-
-            let (x_ex, w_ex) = ex;
-            let nocc = w.nocc;
-            let nvirt = w.nmo - nocc;
-            let mut x_holes = x_ex.holes;
-            let mut x_parts = x_ex.parts;
-            for i in 0..RX {
-                cols[K + i] = x_holes.trailing_zeros() as usize;
-                rows[K + i] = x_parts.trailing_zeros() as usize - nocc;
-                x_holes &= x_holes - 1;
-                x_parts &= x_parts - 1;
-            }
-            let mut w_holes = w_ex.holes;
-            let mut w_parts = w_ex.parts;
-            for i in 0..RW {
-                rows[K + RX + i] = nvirt + w_holes.trailing_zeros() as usize;
-                cols[K + RX + i] = w_parts.trailing_zeros() as usize;
-                w_holes &= w_holes - 1;
-                w_parts &= w_parts - 1;
-            }
-
-            let (x0, y0, ext_n) = fundamental;
-            let d = &mut scratch.det0.as_mut_slice()[..DD];
-
-            // Build augmented `m_i = 0` determinant `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-            // Entries use `X^{(0)}` where the row creator stands left of the column annihilator in the
-            // operator string, and `Y^{(0)}` otherwise. The external string is creators first,
-            // `a^\dagger_{p_1}\cdots a^\dagger_{p_K} a_{q_K}\cdots a_{q_1}`, so its whole `K x K` block uses
-            // `X^{(0)}`; the remaining entries take `X^{(0)}` on and below the diagonal.
-            for i in 0..D {
-                let row = rows[i] * ext_n;
-                for j in 0..D {
-                    d[i * D + j] = if i >= j || j < K {
-                        x0[row + cols[j]]
-                    } else {
-                        y0[row + cols[j]]
-                    };
-                }
-            }
-
-            // Apply reduced reference overlap and numerical threshold to determinant contribution.
-            let zero = <T as From<f64>>::from(0.0);
-            let value = det_const::<T, D, DD>(d);
-            if value.abs() > tol {
-                w.phase * <T as From<f64>>::from(w.tilde_s_prod) * value
-            } else {
-                zero
-            }
         }
     )
 }

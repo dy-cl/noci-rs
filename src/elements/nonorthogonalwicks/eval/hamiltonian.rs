@@ -6,14 +6,12 @@ use crate::determinant::DeterminantData;
 #[cfg(target_arch = "x86_64")]
 use crate::elements::LaneKernel;
 use crate::elements::{LaneBatch, group_lanes, xw_lanes};
-#[cfg(target_arch = "x86_64")]
-use crate::maths::{Simd, adjugate_transpose_simd_const, det_simd_const};
 use crate::maths::{
-    adjugate_transpose_const, adjugate_transpose_dynamic, det_const, det_dynamic,
+    Simd, adjugate_transpose_const, adjugate_transpose_dynamic, det_const, det_dynamic,
     second_minor_const, second_minor_dynamic,
 };
 use crate::time_call;
-use crate::{Excitation, ExcitationCache, ExcitationSpinCache};
+use crate::{Excitation, ExcitationCache};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratchSpin;
@@ -348,8 +346,8 @@ impl<T: NOCIScalar> LaneBatch for HamiltonianLanes<'_, T> {
     }
 }
 
-/// Dispatch an `m_\alpha = m_\beta = 0` Hamiltonian and overlap matrix element to a generated
-/// fixed-rank scalar kernel.
+/// Dispatch an `m_\alpha = m_\beta = 0` Hamiltonian and overlap matrix element to the generated
+/// fixed-rank packed kernel with one lane.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
 /// - `ranks`: Bra/ket alpha and beta ranks `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})`.
@@ -374,332 +372,38 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
             dispatch_hamiltonian_ranks!(
                 ranks,
                 |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| {
-                    Some(xw_hamiltonian_overlap_m0_prepared_const::<
-                        T,
-                        RXA,
-                        RWA,
-                        LA,
-                        DA,
-                        MA,
-                        MDA,
-                        RXB,
-                        RWB,
-                        LB,
-                        DB,
-                        MB,
-                        MDB,
-                    >(w, x_ex, w_ex, excitation_phase, enuc))
+                    let (mut h, mut s) = ([T::from_real(0.0)], [T::from_real(0.0)]);
+                    unsafe {
+                        xw_hamiltonian_overlap_m0_const::<
+                            T,
+                            T::Packed1,
+                            1,
+                            RXA,
+                            RWA,
+                            LA,
+                            DA,
+                            MA,
+                            MDA,
+                            RXB,
+                            RWB,
+                            LB,
+                            DB,
+                            MB,
+                            MDB,
+                        >(
+                            w,
+                            &[*x_ex],
+                            &[*w_ex],
+                            &[excitation_phase],
+                            enuc,
+                            &mut h,
+                            &mut s,
+                        )
+                    };
+                    Some((h[0], s[0]))
                 },
                 None,
             )
-        }
-    )
-}
-
-/// Construct fixed-rank Hamiltonian contraction labels from cached excitation data.
-/// # Arguments:
-/// - `x_ex`: Cached bra same-spin excitation.
-/// - `w_ex`: Cached ket same-spin excitation.
-/// - `nocc`: Number of occupied orbitals.
-/// - `nvirt`: Number of virtual orbitals.
-/// - `rows`: Output contraction-row labels.
-/// - `cols`: Output contraction-column labels.
-/// # Returns:
-/// - `()`: Writes `RX + RW` row and column labels.
-#[inline(always)]
-fn construct_hamiltonian_indices<const RX: usize, const RW: usize, const L: usize>(
-    x_ex: &ExcitationSpinCache,
-    w_ex: &ExcitationSpinCache,
-    nocc: usize,
-    nvirt: usize,
-    rows: &mut [usize; L],
-    cols: &mut [usize; L],
-) {
-    // Bra-reference pairs occupy the `V_x x O_x` block.
-    for i in 0..RX {
-        rows[i] = usize::from(x_ex.particles[i]) - nocc;
-        cols[i] = usize::from(x_ex.holes[i]);
-    }
-
-    // Ket-reference pairs append the `O_w x V_w` block.
-    for i in 0..RW {
-        rows[RX + i] = nvirt + usize::from(w_ex.holes[i]);
-        cols[RX + i] = usize::from(w_ex.particles[i]);
-    }
-}
-
-/// Evaluate the fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap for
-/// `m_\alpha = m_\beta = 0`.
-/// The contraction determinants, cofactors and required second minors are evaluated
-/// directly for this rank pair and reused by all Hamiltonian contributions.
-/// For each spin sector `\sigma`, the overlap determinant is
-/// `D^\sigma_{ij} = X^{(0)}_{r_i c_j}` for `i >= j` and
-/// `D^\sigma_{ij} = Y^{(0)}_{r_i c_j}` for `i < j`.
-/// The overlap contribution is
-/// `S = p\det\mathbf D_{\alpha,\mathrm{ov}}\det\mathbf D_{\beta,\mathrm{ov}}`, with
-/// `p` the excitation phase times the two reduced reference-overlap factors.
-/// The one-body contribution in each spin sector is the `m = 0` form
-/// `F^\sigma = F^\sigma_0\det\mathbf D_{\sigma,\mathrm{ov}}`
-/// `- \sum_z\det\mathbf D_{\sigma,\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal F}_z}`.
-/// The same-spin two-body contribution uses the three Laplace classes:
-/// `V^\sigma_0\det\mathbf D_{\sigma,\mathrm{ov}}`;
-/// `-2\sum_z\det\mathbf D_{\sigma,\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal V}_z}`,
-/// and the second-minor contraction
-/// `\sum_{z<y}\sum_{\eta<\xi}\phi_{\eta\xi}^{zy}`
-/// `\mathcal J^\sigma_{\eta z,\xi y}\det\mathbf D_{\sigma,\mathrm{ov}}[\eta,\xi|z,y]`.
-/// The mixed-spin contribution is
-/// `V^{\alpha\beta}_0\det\mathbf D_{\alpha,\mathrm{ov}}\det\mathbf D_{\beta,\mathrm{ov}}`
-/// minus the alpha and beta one-column replacements, plus the cofactor contraction
-/// `\sum_{z,y}\sum_{\eta,\xi}\operatorname{cof}[\mathbf D_{\alpha,\mathrm{ov}}]_{\eta z}`
-/// `\mathcal{II}_{\eta z,\xi y}`
-/// `\operatorname{cof}[\mathbf D_{\beta,\mathrm{ov}}]_{\xi y}`.
-/// # Arguments:
-/// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `x_ex`: Predecoded bra excitation ranks and orbital labels.
-/// - `w_ex`: Predecoded ket excitation ranks and orbital labels.
-/// - `excitation_phase`: Product of the alpha- and beta-spin excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// # Returns:
-/// - `(T, T)`: Hamiltonian and overlap matrix elements `(H, S)`.
-#[inline(never)]
-fn xw_hamiltonian_overlap_m0_prepared_const<
-    T: NOCIScalar,
-    const RXA: usize,
-    const RWA: usize,
-    const LA: usize,
-    const DA: usize,
-    const MA: usize,
-    const MDA: usize,
-    const RXB: usize,
-    const RWB: usize,
-    const LB: usize,
-    const DB: usize,
-    const MB: usize,
-    const MDB: usize,
->(
-    w: &WicksPairView<'_, T>,
-    x_ex: &ExcitationCache,
-    w_ex: &ExcitationCache,
-    excitation_phase: f64,
-    enuc: f64,
-) -> (T, T) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_const,
-        {
-            // Build alpha-spin `\mathbf D_{\alpha,\mathrm{ov}}`, its determinant/cofactors, and
-            // labels `(r_\eta,c_z) \in (V_x\cup O_w)\times(O_x\cup V_w)`.
-            let zero = T::from_real(0.0);
-            let half = T::from_real(0.5);
-            let mut rows_a = [0usize; LA];
-            let mut cols_a = [0usize; LA];
-            let mut d_a = [zero; DA];
-            let mut cof_a = [zero; DA];
-            let n_a = w.aa.n();
-            let nocc_a = w.aa.nocc;
-            let nvirt_a = w.aa.nmo - nocc_a;
-            construct_hamiltonian_indices::<RXA, RWA, LA>(
-                &x_ex.alpha,
-                &w_ex.alpha,
-                nocc_a,
-                nvirt_a,
-                &mut rows_a,
-                &mut cols_a,
-            );
-
-            let x0_a = w.aa.x_slice(0);
-            let y0_a = w.aa.y_slice(0);
-
-            // `D^\alpha_{\eta z}=X^{(0)}_{r_\eta c_z}` for `\eta\geq z`, otherwise
-            // `D^\alpha_{\eta z}=Y^{(0)}_{r_\eta c_z}`.
-            for i in 0..LA {
-                let row = rows_a[i] * n_a;
-                for j in 0..LA {
-                    d_a[i * LA + j] = if i >= j {
-                        x0_a[row + cols_a[j]]
-                    } else {
-                        y0_a[row + cols_a[j]]
-                    };
-                }
-            }
-
-            // Same-spin two-column class:
-            // `\sum_{z<y}\sum_{\eta<\xi}\phi_{\eta\xi}^{zy}`
-            // `\mathcal J^\alpha_{\eta z,\xi y}\det\mathbf D_\alpha[\eta,\xi|z,y]`.
-            let det_a = adjugate_transpose_const::<T, LA, DA>(&mut cof_a, &d_a);
-            let mut j_a = zero;
-            let jsl_a = w.aa.j_slice(0);
-            let n2_a = n_a * n_a;
-            let n3_a = n2_a * n_a;
-            for eta in 0..LA {
-                for xi in (eta + 1)..LA {
-                    for z in 0..LA {
-                        for y in (z + 1)..LA {
-                            let mut minor = [zero; MDA];
-                            second_minor_const::<T, LA>(&mut minor, &d_a, eta, xi, z, y);
-                            let second = det_const::<T, MA, MDA>(&minor);
-                            let direct_base =
-                                rows_a[eta] * n3_a + cols_a[z] * n2_a + rows_a[xi] * n_a;
-                            let exchange_base =
-                                rows_a[eta] * n3_a + cols_a[y] * n2_a + rows_a[xi] * n_a;
-                            let term = second
-                                * (jsl_a[direct_base + cols_a[y]]
-                                    - jsl_a[exchange_base + cols_a[z]]);
-                            if ((eta + xi + z + y) & 1) == 0 {
-                                j_a += term;
-                            } else {
-                                j_a -= term;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // One-column alpha contribution combines one-body and same-spin two-body intermediates:
-            // `\sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
-            // `\mathcal H^\alpha_{\eta z}`.
-            let mut replacement_a = zero;
-            let hcol0_a = w.aa.hcol0_t_slice();
-            for z in 0..LA {
-                let base = cols_a[z] * n_a;
-                for eta in 0..LA {
-                    replacement_a += cof_a[eta * LA + z] * hcol0_a[base + rows_a[eta]];
-                }
-            }
-
-            // Repeat determinant, `\mathcal J`, and one-column stages for beta spin.
-            let mut rows_b = [0usize; LB];
-            let mut cols_b = [0usize; LB];
-            let mut d_b = [zero; DB];
-            let mut cof_b = [zero; DB];
-            let n_b = w.bb.n();
-            let nocc_b = w.bb.nocc;
-            let nvirt_b = w.bb.nmo - nocc_b;
-            construct_hamiltonian_indices::<RXB, RWB, LB>(
-                &x_ex.beta,
-                &w_ex.beta,
-                nocc_b,
-                nvirt_b,
-                &mut rows_b,
-                &mut cols_b,
-            );
-
-            let x0_b = w.bb.x_slice(0);
-            let y0_b = w.bb.y_slice(0);
-
-            // `D^\beta_{\eta z}=X^{(0)}_{r_\eta c_z}` on/below diagonal and `Y^{(0)}` above it.
-            for i in 0..LB {
-                let row = rows_b[i] * n_b;
-                for j in 0..LB {
-                    d_b[i * LB + j] = if i >= j {
-                        x0_b[row + cols_b[j]]
-                    } else {
-                        y0_b[row + cols_b[j]]
-                    };
-                }
-            }
-
-            // Contract beta second minors with stored same-spin `\mathcal J^\beta` intermediates.
-            let det_b = adjugate_transpose_const::<T, LB, DB>(&mut cof_b, &d_b);
-            let mut j_b = zero;
-            let jsl_b = w.bb.j_slice(0);
-            let n2_b = n_b * n_b;
-            let n3_b = n2_b * n_b;
-            for eta in 0..LB {
-                for xi in (eta + 1)..LB {
-                    for z in 0..LB {
-                        for y in (z + 1)..LB {
-                            let mut minor = [zero; MDB];
-                            second_minor_const::<T, LB>(&mut minor, &d_b, eta, xi, z, y);
-                            let second = det_const::<T, MB, MDB>(&minor);
-                            let direct_base =
-                                rows_b[eta] * n3_b + cols_b[z] * n2_b + rows_b[xi] * n_b;
-                            let exchange_base =
-                                rows_b[eta] * n3_b + cols_b[y] * n2_b + rows_b[xi] * n_b;
-                            let term = second
-                                * (jsl_b[direct_base + cols_b[y]]
-                                    - jsl_b[exchange_base + cols_b[z]]);
-                            if ((eta + xi + z + y) & 1) == 0 {
-                                j_b += term;
-                            } else {
-                                j_b -= term;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Contract beta cofactors with precombined one-column Hamiltonian intermediates.
-            let mut replacement_b = zero;
-            let hcol0_b = w.bb.hcol0_t_slice();
-            for z in 0..LB {
-                let base = cols_b[z] * n_b;
-                for eta in 0..LB {
-                    replacement_b += cof_b[eta * LB + z] * hcol0_b[base + rows_b[eta]];
-                }
-            }
-
-            // Different-spin two-column class:
-            // `\sum_{\eta z\xi y}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
-            // `\mathcal{II}_{\eta z,\xi y}\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
-            let mut ii_term = zero;
-            let iisl = w.ab.iiab_slice(0, 0, 0, 0);
-            let n = w.ab.n();
-            let n2 = n * n;
-            let n3 = n2 * n;
-            if LA <= LB {
-                for z in 0..LA {
-                    for eta in 0..LA {
-                        let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
-                        let mut inner = zero;
-                        for y in 0..LB {
-                            for xi in 0..LB {
-                                inner +=
-                                    cof_b[xi * LB + y] * iisl[base_a + rows_b[xi] * n + cols_b[y]];
-                            }
-                        }
-                        ii_term += cof_a[eta * LA + z] * inner;
-                    }
-                }
-            } else {
-                for y in 0..LB {
-                    for xi in 0..LB {
-                        let suffix_b = rows_b[xi] * n + cols_b[y];
-                        let mut inner = zero;
-                        for z in 0..LA {
-                            for eta in 0..LA {
-                                let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
-                                inner += cof_a[eta * LA + z] * iisl[base_a + suffix_b];
-                            }
-                        }
-                        ii_term += cof_b[xi * LB + y] * inner;
-                    }
-                }
-            }
-
-            // Combine scalar, one-column, same-spin two-column, and mixed-spin two-column classes.
-            // `g_0` contains `E_\mathrm{nuc}+F^\alpha_0+F^\beta_0`
-            // `+\tfrac12(V^{\alpha\alpha}_0+V^{\beta\beta}_0)+V^{\alpha\beta}_0`.
-            let det_ab = det_a * det_b;
-            let g0 = T::from_real(enuc)
-                + w.aa.f0h[0]
-                + half * w.aa.v0[0]
-                + w.bb.f0h[0]
-                + half * w.bb.v0[0]
-                + w.ab.vab0[0][0];
-            let mut core = g0 * det_ab;
-            core -= det_b * replacement_a;
-            core -= det_a * replacement_b;
-            core += j_a * det_b;
-            core += j_b * det_a;
-            core += ii_term;
-
-            // Apply excitation phase and reduced overlaps only after forming unscaled `(H,S)`.
-            let pref = T::from_real(excitation_phase)
-                * w.aa.phase
-                * T::from_real(w.aa.tilde_s_prod)
-                * w.bb.phase
-                * T::from_real(w.bb.tilde_s_prod);
-            (pref * core, pref * det_ab)
         }
     )
 }
@@ -721,9 +425,8 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
 /// - `()`: Writes `LANES` Hamiltonian and overlap values.
 /// # Safety
 /// - Cached labels must match fixed ranks; caller must establish `V` CPU support.
-#[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
+unsafe fn xw_hamiltonian_overlap_m0_const<
     T: NOCIScalar,
     V: Simd<LANES, Scalar = T>,
     const LANES: usize,
@@ -789,7 +492,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
             d_a[i * LA + j] = V::load(&values);
         }
     }
-    let det_a = adjugate_transpose_simd_const::<V, LANES, LA, DA>(&mut cof_a, &d_a);
+    let det_a = adjugate_transpose_const::<V, LANES, LA, DA>(&mut cof_a, &d_a);
 
     let mut j_a = zero;
     let jsl_a = w.aa.j_slice(0);
@@ -804,7 +507,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
                 for y in (z + 1)..LA {
                     let mut minor = [zero; MDA];
                     second_minor_const::<V, LA>(&mut minor, &d_a, eta, xi, z, y);
-                    let second = det_simd_const::<V, LANES, MA, MDA>(&minor);
+                    let second = det_const::<V, LANES, MA, MDA>(&minor);
                     let mut direct = [T::from_real(0.0); LANES];
                     let mut exchange = [T::from_real(0.0); LANES];
                     for lane in 0..LANES {
@@ -882,7 +585,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
             d_b[i * LB + j] = V::load(&values);
         }
     }
-    let det_b = adjugate_transpose_simd_const::<V, LANES, LB, DB>(&mut cof_b, &d_b);
+    let det_b = adjugate_transpose_const::<V, LANES, LB, DB>(&mut cof_b, &d_b);
 
     let mut j_b = zero;
     let jsl_b = w.bb.j_slice(0);
@@ -896,7 +599,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
                 for y in (z + 1)..LB {
                     let mut minor = [zero; MDB];
                     second_minor_const::<V, LB>(&mut minor, &d_b, eta, xi, z, y);
-                    let second = det_simd_const::<V, LANES, MB, MDB>(&minor);
+                    let second = det_const::<V, LANES, MB, MDB>(&minor);
                     let mut direct = [T::from_real(0.0); LANES];
                     let mut exchange = [T::from_real(0.0); LANES];
                     for lane in 0..LANES {
@@ -1066,7 +769,7 @@ unsafe fn packet_x4<
     let mut h = [T::from_real(0.0); 4];
     let mut s = [T::from_real(0.0); 4];
     unsafe {
-        xw_hamiltonian_overlap_m0_prepared_simd_const::<
+        xw_hamiltonian_overlap_m0_const::<
             T,
             T::Packed4,
             4,
@@ -1141,7 +844,7 @@ unsafe fn packet_x8<
     let mut h = [T::from_real(0.0); 8];
     let mut s = [T::from_real(0.0); 8];
     unsafe {
-        xw_hamiltonian_overlap_m0_prepared_simd_const::<
+        xw_hamiltonian_overlap_m0_const::<
             T,
             T::Packed8,
             8,

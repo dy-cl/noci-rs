@@ -4,17 +4,13 @@
 use crate::ExcitationSpin;
 use crate::NOCIScalar;
 use crate::determinant::SpinStringData;
-#[cfg(target_arch = "x86_64")]
-use crate::maths::{Simd, det_simd_const};
-use crate::maths::{det_const, det_dynamic};
+use crate::maths::{Simd, det_const, det_dynamic};
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-#[cfg(target_arch = "x86_64")]
-use super::batch::Packet;
-use super::batch::SpinFactor;
+use super::batch::{Packet, SpinFactor};
 use super::dispatch::{dispatch_pair_ranks, dispatch_spin_ranks};
 use super::helpers::mix_dets_same;
 use super::prepare::{construct_determinant_indices, prepare_same};
@@ -147,7 +143,6 @@ impl SpinFactor<1> for OverlapFactor {
     /// - `[[T; LANES]; 1]`: Overlap of every lane, excluding the excitation phases.
     /// # Safety
     /// - Cached labels must match `RX` and `RW`, and the caller must establish CPU support for `V`.
-    #[cfg(target_arch = "x86_64")]
     #[inline(always)]
     unsafe fn packed<
         T: NOCIScalar,
@@ -176,7 +171,7 @@ impl SpinFactor<1> for OverlapFactor {
 
         // `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`; `w.phase` carries the orbital-pairing
         // sign.
-        let determinant = det_simd_const::<V, LANES, L, D>(&d);
+        let determinant = det_const::<V, LANES, L, D>(&d);
         let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
         let mut overlap = [T::from_real(0.0); LANES];
         V::store(V::mul(determinant, pref), &mut overlap);
@@ -214,81 +209,18 @@ pub(crate) fn xw_overlap_m0_direct<T: NOCIScalar>(
         return pref;
     }
 
+    // Fixed ranks evaluate the packed kernel with one lane, the ket as its varying determinant.
     dispatch_spin_ranks!(
         (rx, rw),
-        |RX, RW, L, D| xw_overlap_m0_direct_const::<T, RX, RW, L, D>(w, l_ex, g_ex),
+        |RX, RW, L, D| {
+            let (fixed, varying) = (l_ex.cache(), [g_ex.cache()]);
+            let packet = Packet::new(w, &fixed, &varying);
+            unsafe {
+                OverlapFactor::packed::<T, T::Packed1, 1, RX, RW, L, D, true>(w, &packet)[0][0]
+            }
+        },
         xw_overlap_m0_direct_gen(w, l_ex, g_ex, l),
     )
-}
-
-/// Evaluate one direct all-`m_i = 0` overlap with compile-time `(RX,RW,L)`:
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`.
-/// The direct path constructs
-/// `D_{ij}^{(0)} = X_{r_i c_j}^{(0)}` for `i >= j` and
-/// `D_{ij}^{(0)} = Y_{r_i c_j}^{(0)}` for `i < j`, then evaluates the fixed-rank determinant.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `x_ex`: Excitation defining the bra determinant.
-/// - `w_ex`: Excitation defining the ket determinant.
-/// # Returns
-/// - `T`: Same-spin overlap contribution.
-#[inline(always)]
-fn xw_overlap_m0_direct_const<
-    T: NOCIScalar,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
->(
-    w: &SameSpinView<'_, T>,
-    x_ex: &ExcitationSpin,
-    w_ex: &ExcitationSpin,
-) -> T {
-    // Map fixed-rank bra and ket excitations onto the ordered determinant label spaces
-    // `(V_x \cup O_w) x (O_x \cup V_w)`.
-    let nocc = w.nocc;
-    let nvirt = w.nmo - nocc;
-    let mut rows = [0usize; L];
-    let mut cols = [0usize; L];
-    let mut x_holes = x_ex.holes;
-    let mut x_parts = x_ex.parts;
-    for i in 0..RX {
-        cols[i] = x_holes.trailing_zeros() as usize;
-        rows[i] = x_parts.trailing_zeros() as usize - nocc;
-        x_holes &= x_holes - 1;
-        x_parts &= x_parts - 1;
-    }
-
-    let mut w_holes = w_ex.holes;
-    let mut w_parts = w_ex.parts;
-    for i in 0..RW {
-        rows[RX + i] = nvirt + w_holes.trailing_zeros() as usize;
-        cols[RX + i] = w_parts.trailing_zeros() as usize;
-        w_holes &= w_holes - 1;
-        w_parts &= w_parts - 1;
-    }
-
-    let n = w.n();
-    let x0 = w.x_slice(0);
-    let y0 = w.y_slice(0);
-    let zero = <T as From<f64>>::from(0.0);
-    let mut d = [zero; D];
-
-    // Build `\mathbf D_{\mathrm{ov}}(0,\ldots,0)` from the fixed contraction labels, then
-    // evaluate `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`.
-    for i in 0..L {
-        let row = rows[i] * n;
-
-        for j in 0..L {
-            d[i * L + j] = if i >= j {
-                x0[row + cols[j]]
-            } else {
-                y0[row + cols[j]]
-            };
-        }
-    }
-
-    w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det_const::<T, L, D>(&d)
 }
 
 /// Evaluate one direct all-`m_i = 0` overlap for ranks outside the const-dispatch table:

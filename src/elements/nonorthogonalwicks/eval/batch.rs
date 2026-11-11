@@ -16,7 +16,6 @@ use crate::determinant::SpinStringData;
 #[cfg(target_arch = "x86_64")]
 use crate::elements::LaneKernel;
 use crate::elements::{LaneBatch, xw_lanes};
-#[cfg(target_arch = "x86_64")]
 use crate::maths::Simd;
 
 // Parent/sibling imports.
@@ -53,7 +52,6 @@ pub(crate) trait SpinFactor<const K: usize> {
     /// - `[[T; LANES]; K]`: Factors of every lane.
     /// # Safety
     /// - Cached labels must match `RX` and `RW`, and the caller must establish CPU support for `V`.
-    #[cfg(target_arch = "x86_64")]
     unsafe fn packed<
         T: NOCIScalar,
         V: Simd<LANES, Scalar = T>,
@@ -153,7 +151,6 @@ pub(crate) struct SpinFactorRow<'a, T, const K: usize> {
 /// Contraction labels of one packet. The fixed determinant is shared by every lane and the varying
 /// determinants, one per lane, share their holes, so an entry of the contraction determinant is
 /// shared by every lane whenever its labels come from the fixed determinant or from the holes.
-#[cfg(target_arch = "x86_64")]
 pub(crate) struct Packet<'a, const LANES: usize> {
     /// Excitation cache shared by every lane.
     fixed: &'a ExcitationSpinCache,
@@ -167,7 +164,6 @@ pub(crate) struct Packet<'a, const LANES: usize> {
     n: usize,
 }
 
-#[cfg(target_arch = "x86_64")]
 impl<'a, const LANES: usize> Packet<'a, LANES> {
     /// Collect the contraction labels of one packet.
     /// # Arguments:
@@ -176,7 +172,7 @@ impl<'a, const LANES: usize> Packet<'a, LANES> {
     /// - `varying`: Excitation cache of every lane.
     /// # Returns
     /// - `Self`: Contraction labels of the packet.
-    fn new<T: NOCIScalar>(
+    pub(crate) fn new<T: NOCIScalar>(
         w: &SameSpinView<'_, T>,
         fixed: &'a ExcitationSpinCache,
         varying: &'a [ExcitationSpinCache; LANES],
