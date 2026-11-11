@@ -598,13 +598,9 @@ pub fn print_report(
         );
     }
 
-    if let Some(e_jm) = res.e_jmnoccmc_stoch {
-        println!(
-            "State(JM-NOCCMC-stochastic): E: {}, [E - {}]: {}",
-            e_jm,
-            label,
-            e_jm - e0
-        );
+    if res.e_jmnoccmc_stoch.is_some() {
+        // Stochastic estimates require external blocking analysis for uncertainties.
+        println!("State(JM-NOCCMC-stochastic): Blocking analysis must be performed");
     }
 
     if !res.hstates.is_empty() {

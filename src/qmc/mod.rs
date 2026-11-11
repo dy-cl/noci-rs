@@ -41,7 +41,7 @@ pub(crate) use fri::{
     compress_sparse, cutoff_candidate, pivotal_push, resolve_pivotal, target_cutoff,
 };
 pub(crate) use ownership::{owner, owner_words};
-pub(crate) use report::{print_table_header, print_table_row, stop_requested};
+pub(crate) use report::{print_table_header, print_table_row};
 pub(crate) use rng::{rank_seed, stream};
 pub(crate) use run::run;
 pub(crate) use shift::update_shift;
