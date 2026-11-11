@@ -748,7 +748,7 @@ fn snoci_h4_sto_3g_1_5_ang_double_excitation_pair_wicks() {
     let left = (0..candidates.len())
         .map(NOCIIndex)
         .find(|&index| {
-            candidates.state(index).parent == 0
+            candidates.parent(index) == 0
                 && rank(
                     0,
                     candidates.occupations(index).0,
@@ -759,7 +759,7 @@ fn snoci_h4_sto_3g_1_5_ang_double_excitation_pair_wicks() {
     let right = (0..candidates.len())
         .map(NOCIIndex)
         .find(|&index| {
-            candidates.state(index).parent == 1
+            candidates.parent(index) == 1
                 && rank(
                     1,
                     candidates.occupations(index).0,
@@ -817,7 +817,7 @@ fn snoci_h4_sto_3g_1_5_ang_double_excitation_pair_wicks() {
     let left_wicks = (0..candidates_wicks.len())
         .map(NOCIIndex)
         .find(|&index| {
-            candidates_wicks.state(index).parent == 0
+            candidates_wicks.parent(index) == 0
                 && rank_wicks(
                     0,
                     candidates_wicks.occupations(index).0,
@@ -828,7 +828,7 @@ fn snoci_h4_sto_3g_1_5_ang_double_excitation_pair_wicks() {
     let right_wicks = (0..candidates_wicks.len())
         .map(NOCIIndex)
         .find(|&index| {
-            candidates_wicks.state(index).parent == 1
+            candidates_wicks.parent(index) == 1
                 && rank_wicks(
                     1,
                     candidates_wicks.occupations(index).0,

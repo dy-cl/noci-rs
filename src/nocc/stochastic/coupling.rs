@@ -20,12 +20,12 @@ use rand::Rng;
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::determinant::{ExcitedDeterminant, ExcitedState};
+use crate::determinant::DeterminantState;
 use crate::hash::FastMap;
 use crate::qmc::QmcRng;
 
 // Parent/sibling imports.
-use super::population::{Block, Excitor, ExcitorKey, rank};
+use super::population::{Block, Excitor, ExcitorState, rank};
 use super::state::CouplingBatchedRequest;
 
 /// Number of non-reference projection rows drawn per cluster and coupled block.
@@ -85,11 +85,11 @@ impl Projections {
 /// # Returns:
 /// - `()`: Queues the cluster's requests.
 pub(super) fn project_cluster(
-    rows: &[Vec<ExcitedState>],
+    rows: &[Vec<DeterminantState>],
     x: usize,
-    cluster: (ExcitedState, f64),
+    cluster: (DeterminantState, f64),
     rng: &mut QmcRng,
-    queue: (&mut Vec<ExcitedState>, &mut Vec<CouplingBatchedRequest>),
+    queue: (&mut Vec<DeterminantState>, &mut Vec<CouplingBatchedRequest>),
 ) {
     let (det, weight) = cluster;
     let (clusters, requests) = queue;
@@ -141,14 +141,14 @@ pub(super) fn project_cluster(
 /// - `cluster_rank`: Highest excitation rank of the cluster operator.
 /// - `distribution`: Number of ranks `P` and whether this rank adds the empty set.
 /// # Returns:
-/// - `Vec<(ExcitorKey, f64)>`: Population changes per unit time.
+/// - `Vec<(ExcitorState, f64)>`: Population changes per unit time.
 pub(super) fn left_action(
     block: &Block,
     index: usize,
     q: &[((u128, u128), f64)],
     cluster_rank: usize,
     distribution: (f64, bool),
-) -> Vec<(ExcitorKey, f64)> {
+) -> Vec<(ExcitorState, f64)> {
     let reference = &block.reference;
     let (ranks, empty) = distribution;
 
@@ -168,7 +168,7 @@ pub(super) fn left_action(
     q.par_iter()
         .filter(|(_, value)| *value != 0.0)
         .fold(Vec::new, |mut out, &((alpha, beta), value)| {
-            let nu = ExcitedDeterminant {
+            let nu = DeterminantState {
                 parent: reference.parent,
                 alpha,
                 beta,
@@ -210,10 +210,10 @@ pub(super) fn left_action(
 /// - `()`: Appends one change per nonempty set with a nonvanishing image.
 fn apply_negative_exponential(
     amplitudes: &[(Excitor, f64, usize)],
-    row: (ExcitedDeterminant, usize, f64),
+    row: (DeterminantState, usize, f64),
     index: usize,
     cluster_rank: usize,
-    out: &mut Vec<(ExcitorKey, f64)>,
+    out: &mut Vec<(ExcitorState, f64)>,
 ) {
     let mut stack = vec![(row.0, row.1, row.2, 0)];
     while let Some((det, r, coefficient, start)) = stack.pop() {

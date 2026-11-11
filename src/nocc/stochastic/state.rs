@@ -1,14 +1,14 @@
 // nocc/stochastic/state.rs
 
 // Crate-root imports.
-use crate::determinant::{ExcitedDeterminant, ExcitedState};
+use crate::determinant::DeterminantState;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{DetPair, HamiltonianOverlap, NOCIData, Overlap, calculate_pairs};
 use crate::hash::FastMap;
 
 // Parent/sibling imports.
 use super::coupling::Projections;
-use super::population::{Excitor, ExcitorKey, ReferenceSpaces};
+use super::population::{Excitor, ExcitorState, ReferenceSpaces};
 
 /// Destination of one batched same-reference Hamiltonian term.
 #[derive(Clone, Copy)]
@@ -16,7 +16,7 @@ pub(super) enum Target {
     /// Contribution to `N_zH^e_{zz}` of block `z`.
     Energy(usize),
     /// Population change per unit time of one excitor.
-    Excitor(ExcitorKey),
+    Excitor(ExcitorState),
 }
 
 /// Batched same-reference request: `coefficient\,\langle\text{bra}|\hat H|\text{ket}\rangle` is
@@ -27,9 +27,9 @@ pub(super) struct LinkedBatchedRequest {
     /// Weight, sign and inverse proposal probability multiplying the element.
     pub(super) coefficient: f64,
     /// Bra determinant.
-    pub(super) bra: ExcitedDeterminant,
+    pub(super) bra: DeterminantState,
     /// Ket determinant.
-    pub(super) ket: ExcitedDeterminant,
+    pub(super) ket: DeterminantState,
 }
 
 /// Batched coupling request projecting one sampled cluster of block `x` onto one row of block `y`:
@@ -52,7 +52,7 @@ pub(super) struct CouplingBatchedRequest {
 /// queued during the attempts and resolved together, as in the NOCIQMC propagation workers.
 pub(super) struct JMTaskPropagation {
     /// Population changes per unit time, summed per excitor.
-    pub(super) spawns: FastMap<ExcitorKey, f64>,
+    pub(super) spawns: FastMap<ExcitorState, f64>,
     /// Contribution to `N_z H^e_{zz}` of each block.
     pub(super) energy: Vec<f64>,
     /// Coupling projections.
@@ -62,11 +62,11 @@ pub(super) struct JMTaskPropagation {
     /// Queued same-reference requests.
     pub(super) linked_requests: Vec<LinkedBatchedRequest>,
     /// Prepared cluster determinants of the queued coupling requests.
-    pub(super) coupling_clusters: Vec<ExcitedState>,
+    pub(super) coupling_clusters: Vec<DeterminantState>,
     /// Queued coupling requests.
     pub(super) coupling_requests: Vec<CouplingBatchedRequest>,
     /// Determinant pairs of the queued same-reference requests.
-    linked_pairs: Vec<DetPair<ExcitedDeterminant>>,
+    linked_pairs: Vec<DetPair>,
     /// Hamiltonian and overlap elements aligned with `linked_pairs`.
     linked_hs: Vec<(f64, f64)>,
     /// Hamiltonian and overlap elements of the reference-row coupling requests.
@@ -175,10 +175,10 @@ impl JMTaskPropagation {
         let mut hs_pairs = Vec::new();
         let mut s_pairs = Vec::new();
         for request in &self.coupling_requests {
-            let ket = &clusters[request.cluster];
+            let ket = clusters[request.cluster];
             match request.row {
-                None => hs_pairs.push(DetPair::new(&spaces.states[request.y], ket)),
-                Some(r) => s_pairs.push(DetPair::new(&spaces.rows[request.y][r], ket)),
+                None => hs_pairs.push(DetPair::new(spaces.references[request.y], ket)),
+                Some(r) => s_pairs.push(DetPair::new(spaces.rows[request.y][r], ket)),
             }
         }
         self.coupling_hs.clear();
@@ -219,7 +219,7 @@ impl JMTaskPropagation {
                     let s = self.coupling_s[is];
                     is += 1;
                     if s != 0.0 {
-                        let nu = &spaces.rows[y][r].det;
+                        let nu = &spaces.rows[y][r];
                         *out.q[y][x].entry((nu.alpha, nu.beta)).or_insert(0.0) += w * s;
                     }
                 }

@@ -8,10 +8,11 @@
 //! its engine evaluations with its own counters.
 
 // Crate-root imports.
-use crate::determinant::ExcitedState;
-use crate::elements::{DetPair, FockData, NOCIData, PairDeterminant};
+use crate::NOCIScalar;
+use crate::determinant::DeterminantData;
+use crate::determinant::DeterminantState;
+use crate::elements::{DetPair, FockData, NOCIData};
 use crate::time_call;
-use crate::{NOCIScalar, ReducedTwoSpinState};
 
 // Parent/sibling imports.
 use super::naive::{calculate_fs_pair_naive, calculate_hs_pair_naive, calculate_s_pair_naive};
@@ -71,7 +72,7 @@ pub(crate) trait PairOperator<T: NOCIScalar> {
         data: &NOCIData<'_, T>,
         parent: usize,
         occupations: &[(u128, u128)],
-        connections: &[ReducedTwoSpinState],
+        connections: &[DeterminantData],
         values: &mut [Self::Out],
     );
 
@@ -86,11 +87,11 @@ pub(crate) trait PairOperator<T: NOCIScalar> {
     /// - `out`: Matrix elements indexed by output position.
     /// # Returns:
     /// - `()`: Writes every requested matrix element into `out`.
-    fn wicks<D: PairDeterminant<T>>(
+    fn wicks(
         &self,
         data: &NOCIData<'_, T>,
         w: &WicksPairView<'_, T>,
-        requests: &[(usize, DetPair<D>)],
+        requests: &[(usize, DetPair)],
         scratch: &mut WickScratchSpin<T>,
         out: &mut [Self::Out],
     );
@@ -99,15 +100,15 @@ pub(crate) trait PairOperator<T: NOCIScalar> {
     /// # Arguments:
     /// - `self`: Operator.
     /// - `data`: Shared data required for NOCI matrix-element evaluation.
-    /// - `bra`: Prepared bra determinant.
-    /// - `ket`: Prepared ket determinant.
+    /// - `bra`: Bra determinant.
+    /// - `ket`: Ket determinant.
     /// # Returns:
     /// - `Self::Out`: Matrix element of the pair.
     fn naive(
         &self,
         data: &NOCIData<'_, T>,
-        bra: &ExcitedState,
-        ket: &ExcitedState,
+        bra: &DeterminantState,
+        ket: &DeterminantState,
     ) -> Self::Out;
 
     /// Measure the discrepancy between two evaluations of one matrix element.
@@ -182,7 +183,7 @@ impl<T: NOCIScalar> PairOperator<T> for Overlap {
         _data: &NOCIData<'_, T>,
         _parent: usize,
         occupations: &[(u128, u128)],
-        connections: &[ReducedTwoSpinState],
+        connections: &[DeterminantData],
         values: &mut [T],
     ) {
         time_call!(crate::timers::noci::add_calculate_s_pair_orthogonal, {
@@ -200,11 +201,11 @@ impl<T: NOCIScalar> PairOperator<T> for Overlap {
     /// - `out`: Overlaps indexed by output position.
     /// # Returns:
     /// - `()`: Writes every requested overlap into `out`.
-    fn wicks<D: PairDeterminant<T>>(
+    fn wicks(
         &self,
         data: &NOCIData<'_, T>,
         w: &WicksPairView<'_, T>,
-        requests: &[(usize, DetPair<D>)],
+        requests: &[(usize, DetPair)],
         scratch: &mut WickScratchSpin<T>,
         out: &mut [T],
     ) {
@@ -220,15 +221,15 @@ impl<T: NOCIScalar> PairOperator<T> for Overlap {
     /// # Arguments:
     /// - `self`: Overlap operator.
     /// - `data`: Shared data required for NOCI matrix-element evaluation.
-    /// - `bra`: Prepared bra determinant.
-    /// - `ket`: Prepared ket determinant.
+    /// - `bra`: Bra determinant.
+    /// - `ket`: Ket determinant.
     /// # Returns:
     /// - `T`: Overlap of the pair.
     fn naive(
         &self,
         data: &NOCIData<'_, T>,
-        bra: &ExcitedState,
-        ket: &ExcitedState,
+        bra: &DeterminantState,
+        ket: &DeterminantState,
     ) -> T {
         time_call!(crate::timers::noci::add_calculate_s_pair_naive, {
             calculate_s_pair_naive(data, bra, ket)
@@ -294,7 +295,7 @@ impl<T: NOCIScalar> PairOperator<T> for Fock<'_, T> {
         _data: &NOCIData<'_, T>,
         parent: usize,
         occupations: &[(u128, u128)],
-        connections: &[ReducedTwoSpinState],
+        connections: &[DeterminantData],
         values: &mut [T],
     ) {
         time_call!(crate::timers::noci::add_calculate_f_pair_orthogonal, {
@@ -321,11 +322,11 @@ impl<T: NOCIScalar> PairOperator<T> for Fock<'_, T> {
     /// - `out`: Shifted Fock elements indexed by output position.
     /// # Returns:
     /// - `()`: Writes every requested element into `out`.
-    fn wicks<D: PairDeterminant<T>>(
+    fn wicks(
         &self,
         data: &NOCIData<'_, T>,
         w: &WicksPairView<'_, T>,
-        requests: &[(usize, DetPair<D>)],
+        requests: &[(usize, DetPair)],
         scratch: &mut WickScratchSpin<T>,
         out: &mut [T],
     ) {
@@ -341,15 +342,15 @@ impl<T: NOCIScalar> PairOperator<T> for Fock<'_, T> {
     /// # Arguments:
     /// - `self`: Shifted Fock operator.
     /// - `data`: Shared data required for NOCI matrix-element evaluation.
-    /// - `bra`: Prepared bra determinant.
-    /// - `ket`: Prepared ket determinant.
+    /// - `bra`: Bra determinant.
+    /// - `ket`: Ket determinant.
     /// # Returns:
     /// - `T`: Shifted Fock element of the pair.
     fn naive(
         &self,
         data: &NOCIData<'_, T>,
-        bra: &ExcitedState,
-        ket: &ExcitedState,
+        bra: &DeterminantState,
+        ket: &DeterminantState,
     ) -> T {
         time_call!(crate::timers::noci::add_calculate_f_pair_naive, {
             let (f, s) = calculate_fs_pair_naive(self.fock, data, bra, ket);
@@ -417,7 +418,7 @@ impl<T: NOCIScalar> PairOperator<T> for HamiltonianOverlap {
         data: &NOCIData<'_, T>,
         parent: usize,
         occupations: &[(u128, u128)],
-        connections: &[ReducedTwoSpinState],
+        connections: &[DeterminantData],
         values: &mut [(T, T)],
     ) {
         time_call!(crate::timers::noci::add_calculate_hs_pair_orthogonal, {
@@ -450,25 +451,20 @@ impl<T: NOCIScalar> PairOperator<T> for HamiltonianOverlap {
     /// - `out`: Hamiltonian and overlap elements indexed by output position.
     /// # Returns:
     /// - `()`: Writes every requested `(H, S)` pair into `out`.
-    fn wicks<D: PairDeterminant<T>>(
+    fn wicks(
         &self,
         data: &NOCIData<'_, T>,
         w: &WicksPairView<'_, T>,
-        requests: &[(usize, DetPair<D>)],
+        requests: &[(usize, DetPair)],
         scratch: &mut WickScratchSpin<T>,
         out: &mut [(T, T)],
     ) {
         time_call!(crate::timers::noci::add_calculate_hs_pair_wicks, {
-            // The two-spin kernel needs every request's determinants in prepared form.
+            // The two-spin kernel reads every request's determinants relative to their parents.
+            let parents = data.space.parents();
             let states: Vec<_> = requests
                 .iter()
-                .map(|&(output, pair)| {
-                    (
-                        output,
-                        pair.ldet.state(data.space),
-                        pair.gdet.state(data.space),
-                    )
-                })
+                .map(|&(output, pair)| (output, pair.bra.data(parents), pair.ket.data(parents)))
                 .collect();
             xw_hamiltonian_overlap_prepared_batched(
                 w,
@@ -485,15 +481,15 @@ impl<T: NOCIScalar> PairOperator<T> for HamiltonianOverlap {
     /// # Arguments:
     /// - `self`: Hamiltonian and overlap operator.
     /// - `data`: Shared data required for NOCI matrix-element evaluation.
-    /// - `bra`: Prepared bra determinant.
-    /// - `ket`: Prepared ket determinant.
+    /// - `bra`: Bra determinant.
+    /// - `ket`: Ket determinant.
     /// # Returns:
     /// - `(T, T)`: Hamiltonian and overlap elements of the pair.
     fn naive(
         &self,
         data: &NOCIData<'_, T>,
-        bra: &ExcitedState,
-        ket: &ExcitedState,
+        bra: &DeterminantState,
+        ket: &DeterminantState,
     ) -> (T, T) {
         time_call!(crate::timers::noci::add_calculate_hs_pair_naive, {
             calculate_hs_pair_naive(data, bra, ket)

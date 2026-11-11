@@ -2,7 +2,7 @@
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::determinant::ExcitedState;
+use crate::determinant::DeterminantData;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::{Lanes, Simd, adjugate_transpose_simd_const, det_simd_const, lanes};
 use crate::maths::{
@@ -37,7 +37,7 @@ use super::prepare::prepare_same;
 /// `H_{2,\alpha\beta}` together so determinants, cofactors and second minors are reused.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `states`: Prepared bra and ket determinants.
+/// - `states`: Bra and ket determinants relative to their references.
 /// - `enuc`: Nuclear repulsion energy.
 /// - `scratch`: Reusable Wick workspace for generic-rank and nonzero-`m` evaluation.
 /// - `tol`: Numerical tolerance used by generic determinant and adjugate evaluation.
@@ -46,7 +46,7 @@ use super::prepare::prepare_same;
 #[inline(always)]
 pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    states: (&ExcitedState, &ExcitedState),
+    states: (&DeterminantData, &DeterminantData),
     enuc: f64,
     scratch: &mut WickScratchSpin<T>,
     tol: f64,
@@ -70,10 +70,23 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
                 });
             }
 
+            // The kernels read both spins' masks and caches of each determinant together.
             let (x, wdet) = states;
-            let (x_ex, w_ex) = (&x.excitation, &wdet.excitation);
-            let (x_cache, w_cache) = (&x.reduced.excitation_cache, &wdet.reduced.excitation_cache);
-            let excitation_phase = x.reduced.phase * wdet.reduced.phase;
+            let spins = |d: &DeterminantData| {
+                (
+                    Excitation {
+                        alpha: d.alpha.excitation,
+                        beta: d.beta.excitation,
+                    },
+                    ExcitationCache {
+                        alpha: d.alpha.cache,
+                        beta: d.beta.cache,
+                    },
+                )
+            };
+            let ((x_ex, x_cache), (w_ex, w_cache)) = (spins(x), spins(wdet));
+            let (x_ex, w_ex, x_cache, w_cache) = (&x_ex, &w_ex, &x_cache, &w_cache);
+            let excitation_phase = x.phase() * wdet.phase();
 
             // For `m_\alpha=m_\beta=0`, try fixed-rank determinant/cofactor formulas before the
             // generic evaluator. Any other zero-overlap distribution requires the general path.
@@ -135,7 +148,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 /// - `()`: Writes every matrix element in `requests` into `out`.
 pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    requests: &[(usize, ExcitedState, ExcitedState)],
+    requests: &[(usize, DeterminantData, DeterminantData)],
     enuc: f64,
     scratch: &mut WickScratchSpin<T>,
     tol: f64,
@@ -232,7 +245,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
 #[allow(clippy::type_complexity)]
 unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
     w: &WicksPairView<'_, T>,
-    requests: &[(usize, ExcitedState, ExcitedState)],
+    requests: &[(usize, DeterminantData, DeterminantData)],
     parameters: (f64, f64),
     scratch: &mut WickScratchSpin<T>,
     out: &mut [(T, T)],
@@ -265,8 +278,14 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
     unsafe {
         for (output, x, wdet) in requests {
             let output = *output;
-            let x_cache = x.reduced.excitation_cache;
-            let w_cache = wdet.reduced.excitation_cache;
+            let x_cache = ExcitationCache {
+                alpha: x.alpha.cache,
+                beta: x.beta.cache,
+            };
+            let w_cache = ExcitationCache {
+                alpha: wdet.alpha.cache,
+                beta: wdet.beta.cache,
+            };
             let ranks = (
                 usize::from(x_cache.alpha.rank),
                 usize::from(w_cache.alpha.rank),
@@ -289,7 +308,7 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
                 let count = counts[bin];
                 x_bins[bin][count] = x_cache;
                 w_bins[bin][count] = w_cache;
-                phases[bin][count] = x.reduced.phase * wdet.reduced.phase;
+                phases[bin][count] = x.phase() * wdet.phase();
                 outputs[bin][count] = output;
                 counts[bin] += 1;
 

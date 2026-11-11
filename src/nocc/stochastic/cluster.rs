@@ -4,7 +4,7 @@
 use rand::Rng;
 
 // Crate-root imports.
-use crate::determinant::ExcitedDeterminant;
+use crate::determinant::DeterminantState;
 use crate::qmc::QmcRng;
 
 // Parent/sibling imports.
@@ -190,12 +190,12 @@ pub(super) fn select_coupling_cluster(
 /// - `reference`: Block reference.
 /// - `excitors`: Cluster excitors, which commute.
 /// # Returns:
-/// - `Option<(ExcitedDeterminant, f64)>`: Collapsed determinant and sign, or `None` if the
+/// - `Option<(DeterminantState, f64)>`: Collapsed determinant and sign, or `None` if the
 ///   product vanishes.
 pub(super) fn collapse(
-    reference: &ExcitedDeterminant,
+    reference: &DeterminantState,
     excitors: &[Excitor],
-) -> Option<(ExcitedDeterminant, f64)> {
+) -> Option<(DeterminantState, f64)> {
     excitors
         .iter()
         .try_fold((*reference, 1.0), |(det, sign), excitor| {

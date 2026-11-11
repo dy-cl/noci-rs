@@ -11,7 +11,7 @@ use crate::elements::{DetPair, NOCIData};
 use crate::{ExcitationSpin, NOCIScalar};
 
 // Parent/sibling imports.
-use super::super::rdm::{RDM1, RDM2, RDM3, RDM4, resolve_rdm_determinant};
+use super::super::rdm::{RDM1, RDM2, RDM3, RDM4};
 use super::{
     SameSpinView, WickScratch, WickScratchSpin, xw_overlap_prepared, xw_rdmk_same_prepared_batched,
 };
@@ -164,18 +164,19 @@ pub(in crate::elements) fn rdm1_pair_wicks<T: NOCIScalar>(
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, RDM1<T>) {
     // Resolve the determinant pair, AO dimension, and ordered parent-pair Wick data.
-    let ldet = resolve_rdm_determinant(data.space, pair.ldet);
-    let gdet = resolve_rdm_determinant(data.space, pair.gdet);
+    let parents = data.space.parents();
+    let (lp, gp) = (&parents[pair.bra.parent], &parents[pair.ket.parent]);
+    let (ldet, gdet) = (pair.bra.data(parents), pair.ket.data(parents));
     let n = data.ao.h.nrows();
 
     let wicks = data.wicks.unwrap();
-    let w = wicks.pair(ldet.parent, gdet.parent);
+    let w = wicks.pair(pair.bra.parent, pair.ket.parent);
 
     // Cache spin excitations and determine which zero-overlap distributions can contribute.
-    let ex_la = &ldet.excitation.alpha;
-    let ex_ga = &gdet.excitation.alpha;
-    let ex_lb = &ldet.excitation.beta;
-    let ex_gb = &gdet.excitation.beta;
+    let ex_la = &ldet.alpha.excitation;
+    let ex_ga = &gdet.alpha.excitation;
+    let ex_lb = &ldet.beta.excitation;
+    let ex_gb = &gdet.beta.excitation;
 
     let la = ex_la.holes.count_ones() as usize + ex_ga.holes.count_ones() as usize;
     let lb = ex_lb.holes.count_ones() as usize + ex_gb.holes.count_ones() as usize;
@@ -186,8 +187,8 @@ pub(in crate::elements) fn rdm1_pair_wicks<T: NOCIScalar>(
     let do1b = w.bb.m <= lb + 1;
 
     // Prepare surviving spin overlap determinants and retain their excitation phases.
-    let pha = <T as From<f64>>::from(ldet.pha * gdet.pha);
-    let phb = <T as From<f64>>::from(ldet.phb * gdet.phb);
+    let pha = <T as From<f64>>::from(ldet.alpha.phase * gdet.alpha.phase);
+    let phb = <T as From<f64>>::from(ldet.beta.phase * gdet.beta.phase);
     let det_phase = pha * phb;
 
     let mut sa = <T as From<f64>>::from(0.0);
@@ -217,7 +218,7 @@ pub(in crate::elements) fn rdm1_pair_wicks<T: NOCIScalar>(
         xw_rdmk_same_prepared_batched::<T, 1>(
             &w.aa,
             (ex_la, ex_ga),
-            (ldet.ca.as_ref(), gdet.ca.as_ref()),
+            (lp.ca.as_ref(), gp.ca.as_ref()),
             &requests,
             &mut scratch.aa,
             data.tol,
@@ -235,7 +236,7 @@ pub(in crate::elements) fn rdm1_pair_wicks<T: NOCIScalar>(
         xw_rdmk_same_prepared_batched::<T, 1>(
             &w.bb,
             (ex_lb, ex_gb),
-            (ldet.cb.as_ref(), gdet.cb.as_ref()),
+            (lp.cb.as_ref(), gp.cb.as_ref()),
             &requests,
             &mut scratch.bb,
             data.tol,
@@ -269,17 +270,18 @@ pub(in crate::elements) fn rdm2_pair_wicks<T: NOCIScalar>(
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, RDM2<T>) {
     // Resolve the determinant pair, parent Wick data, and excitation ranks.
-    let ldet = resolve_rdm_determinant(data.space, pair.ldet);
-    let gdet = resolve_rdm_determinant(data.space, pair.gdet);
+    let parents = data.space.parents();
+    let (lp, gp) = (&parents[pair.bra.parent], &parents[pair.ket.parent]);
+    let (ldet, gdet) = (pair.bra.data(parents), pair.ket.data(parents));
     let n = data.ao.h.nrows();
 
     let wicks = data.wicks.unwrap();
-    let w = wicks.pair(ldet.parent, gdet.parent);
+    let w = wicks.pair(pair.bra.parent, pair.ket.parent);
 
-    let ex_la = &ldet.excitation.alpha;
-    let ex_ga = &gdet.excitation.alpha;
-    let ex_lb = &ldet.excitation.beta;
-    let ex_gb = &gdet.excitation.beta;
+    let ex_la = &ldet.alpha.excitation;
+    let ex_ga = &gdet.alpha.excitation;
+    let ex_lb = &ldet.beta.excitation;
+    let ex_gb = &gdet.beta.excitation;
 
     let la = ex_la.holes.count_ones() as usize + ex_ga.holes.count_ones() as usize;
     let lb = ex_lb.holes.count_ones() as usize + ex_gb.holes.count_ones() as usize;
@@ -293,8 +295,8 @@ pub(in crate::elements) fn rdm2_pair_wicks<T: NOCIScalar>(
     let do2ab = w.aa.m <= la + 1 && w.bb.m <= lb + 1;
 
     // Prepare each spin sector only when its overlap contraction can survive.
-    let pha = <T as From<f64>>::from(ldet.pha * gdet.pha);
-    let phb = <T as From<f64>>::from(ldet.phb * gdet.phb);
+    let pha = <T as From<f64>>::from(ldet.alpha.phase * gdet.alpha.phase);
+    let phb = <T as From<f64>>::from(ldet.beta.phase * gdet.beta.phase);
     let det_phase = pha * phb;
 
     let mut sa = <T as From<f64>>::from(0.0);
@@ -324,7 +326,7 @@ pub(in crate::elements) fn rdm2_pair_wicks<T: NOCIScalar>(
         xw_rdmk_same_prepared_batched::<T, 1>(
             &w.aa,
             (ex_la, ex_ga),
-            (ldet.ca.as_ref(), gdet.ca.as_ref()),
+            (lp.ca.as_ref(), gp.ca.as_ref()),
             &requests1,
             &mut scratch.aa,
             data.tol,
@@ -340,7 +342,7 @@ pub(in crate::elements) fn rdm2_pair_wicks<T: NOCIScalar>(
         xw_rdmk_same_prepared_batched::<T, 1>(
             &w.bb,
             (ex_lb, ex_gb),
-            (ldet.cb.as_ref(), gdet.cb.as_ref()),
+            (lp.cb.as_ref(), gp.cb.as_ref()),
             &requests1,
             &mut scratch.bb,
             data.tol,
@@ -383,7 +385,7 @@ pub(in crate::elements) fn rdm2_pair_wicks<T: NOCIScalar>(
             xw_rdmk_same_prepared_batched::<T, 2>(
                 &w.aa,
                 (ex_la, ex_ga),
-                (ldet.ca.as_ref(), gdet.ca.as_ref()),
+                (lp.ca.as_ref(), gp.ca.as_ref()),
                 &requests2,
                 &mut scratch.aa,
                 data.tol,
@@ -428,7 +430,7 @@ pub(in crate::elements) fn rdm2_pair_wicks<T: NOCIScalar>(
             xw_rdmk_same_prepared_batched::<T, 2>(
                 &w.bb,
                 (ex_lb, ex_gb),
-                (ldet.cb.as_ref(), gdet.cb.as_ref()),
+                (lp.cb.as_ref(), gp.cb.as_ref()),
                 &requests2,
                 &mut scratch.bb,
                 data.tol,
@@ -484,28 +486,31 @@ pub(in crate::elements) fn rdm3_pair_wicks<T: NOCIScalar>(
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, RDM3<T>) {
     // Resolve the determinant pair and its parent-pair Wick intermediates.
-    let ldet = resolve_rdm_determinant(data.space, pair.ldet);
-    let gdet = resolve_rdm_determinant(data.space, pair.gdet);
+    let parents = data.space.parents();
+    let (lp, gp) = (&parents[pair.bra.parent], &parents[pair.ket.parent]);
+    let (ldet, gdet) = (pair.bra.data(parents), pair.ket.data(parents));
     let n = active.len();
 
     let wicks = data.wicks.unwrap();
-    let w = wicks.pair(ldet.parent, gdet.parent);
+    let w = wicks.pair(pair.bra.parent, pair.ket.parent);
 
     // Evaluate spin-sector overlaps and the determinant excitation phase.
     let sa = xw_overlap_prepared(
         &w.aa,
-        &ldet.excitation.alpha,
-        &gdet.excitation.alpha,
+        &ldet.alpha.excitation,
+        &gdet.alpha.excitation,
         &mut scratch.aa,
     );
     let sb = xw_overlap_prepared(
         &w.bb,
-        &ldet.excitation.beta,
-        &gdet.excitation.beta,
+        &ldet.beta.excitation,
+        &gdet.beta.excitation,
         &mut scratch.bb,
     );
 
-    let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
+    let det_phase = <T as From<f64>>::from(
+        (ldet.alpha.phase * gdet.alpha.phase) * (ldet.beta.phase * gdet.beta.phase),
+    );
     let sxw = det_phase * sa * sb;
 
     // Allocate the active-space tensor and shared arguments for mixed-spin contractions.
@@ -514,15 +519,15 @@ pub(in crate::elements) fn rdm3_pair_wicks<T: NOCIScalar>(
         data: vec![<T as From<f64>>::from(0.0); n.pow(6)],
     };
     let coeff = (
-        (ldet.ca.as_ref(), gdet.ca.as_ref()),
-        (ldet.cb.as_ref(), gdet.cb.as_ref()),
+        (lp.ca.as_ref(), gp.ca.as_ref()),
+        (lp.cb.as_ref(), gp.cb.as_ref()),
     );
 
     // Evaluate every same-spin transition density once per rank and combine them into each
     // spin-free element over all `2^3` spin assignments.
     let alpha = same_spin_transition_rdms(
         &w.aa,
-        (&ldet.excitation.alpha, &gdet.excitation.alpha),
+        (&ldet.alpha.excitation, &gdet.alpha.excitation),
         coeff.0,
         active,
         sa,
@@ -532,7 +537,7 @@ pub(in crate::elements) fn rdm3_pair_wicks<T: NOCIScalar>(
     );
     let beta = same_spin_transition_rdms(
         &w.bb,
-        (&ldet.excitation.beta, &gdet.excitation.beta),
+        (&ldet.beta.excitation, &gdet.beta.excitation),
         coeff.1,
         active,
         sb,
@@ -585,28 +590,31 @@ pub(in crate::elements) fn rdm4_pair_wicks<T: NOCIScalar>(
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, RDM4<T>) {
     // Resolve the determinant pair and its parent-pair Wick intermediates.
-    let ldet = resolve_rdm_determinant(data.space, pair.ldet);
-    let gdet = resolve_rdm_determinant(data.space, pair.gdet);
+    let parents = data.space.parents();
+    let (lp, gp) = (&parents[pair.bra.parent], &parents[pair.ket.parent]);
+    let (ldet, gdet) = (pair.bra.data(parents), pair.ket.data(parents));
     let n = active.len();
 
     let wicks = data.wicks.unwrap();
-    let w = wicks.pair(ldet.parent, gdet.parent);
+    let w = wicks.pair(pair.bra.parent, pair.ket.parent);
 
     // Evaluate spin-sector overlaps and the determinant excitation phase.
     let sa = xw_overlap_prepared(
         &w.aa,
-        &ldet.excitation.alpha,
-        &gdet.excitation.alpha,
+        &ldet.alpha.excitation,
+        &gdet.alpha.excitation,
         &mut scratch.aa,
     );
     let sb = xw_overlap_prepared(
         &w.bb,
-        &ldet.excitation.beta,
-        &gdet.excitation.beta,
+        &ldet.beta.excitation,
+        &gdet.beta.excitation,
         &mut scratch.bb,
     );
 
-    let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
+    let det_phase = <T as From<f64>>::from(
+        (ldet.alpha.phase * gdet.alpha.phase) * (ldet.beta.phase * gdet.beta.phase),
+    );
     let sxw = det_phase * sa * sb;
 
     // Allocate the active-space tensor and shared arguments for mixed-spin contractions.
@@ -615,15 +623,15 @@ pub(in crate::elements) fn rdm4_pair_wicks<T: NOCIScalar>(
         data: vec![<T as From<f64>>::from(0.0); n.pow(8)],
     };
     let coeff = (
-        (ldet.ca.as_ref(), gdet.ca.as_ref()),
-        (ldet.cb.as_ref(), gdet.cb.as_ref()),
+        (lp.ca.as_ref(), gp.ca.as_ref()),
+        (lp.cb.as_ref(), gp.cb.as_ref()),
     );
 
     // Evaluate every same-spin transition density once per rank and combine them into each
     // spin-free element over all `2^4` spin assignments.
     let alpha = same_spin_transition_rdms(
         &w.aa,
-        (&ldet.excitation.alpha, &gdet.excitation.alpha),
+        (&ldet.alpha.excitation, &gdet.alpha.excitation),
         coeff.0,
         active,
         sa,
@@ -633,7 +641,7 @@ pub(in crate::elements) fn rdm4_pair_wicks<T: NOCIScalar>(
     );
     let beta = same_spin_transition_rdms(
         &w.bb,
-        (&ldet.excitation.beta, &gdet.excitation.beta),
+        (&ldet.beta.excitation, &gdet.beta.excitation),
         coeff.1,
         active,
         sb,

@@ -12,11 +12,12 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::determinant::{ExcitedSpinState, NOCIIndex, NOCISpace, NOCISpinIndex};
+use crate::determinant::{NOCIIndex, NOCISpace, NOCISpinStringIndex, SpinStringData};
 use crate::elements::calculate_f_pair_orthogonal;
 use crate::elements::calculate_s_pair_orthogonal;
 use crate::elements::nonorthogonalwicks::{
-    OneBodyFactor, SpinFactorRow, SpinSources, WickScratchSpin, WicksPairView, xw_spin_factor_row,
+    OneBodyFactor, SpinFactorRow, SpinStringSources, WickScratchSpin, WicksPairView,
+    xw_spin_factor_row,
 };
 use crate::elements::{FockData, FockMOCache, NOCIData};
 use crate::input::SNOCIStorage;
@@ -73,7 +74,7 @@ struct TransientOneBodyBlock {
 struct OrthogonalTarget {
     /// Global determinant index `I`.
     det: usize,
-    /// Parent-local alpha component `a_I`.
+    /// Parent-local alpha spin string `a_I`.
     a: usize,
 }
 
@@ -87,9 +88,9 @@ struct OrthogonalOccupationGroup {
 struct OrthogonalOneBodyBlock {
     /// Parent `P`.
     parent: usize,
-    /// Numerical group keyed by canonical alpha/beta component IDs.
-    opos: HashMap<(NOCISpinIndex, NOCISpinIndex), usize>,
-    /// Determinants grouped by the same canonical component pair.
+    /// Numerical group keyed by canonical alpha/beta spin-string IDs.
+    opos: HashMap<(NOCISpinStringIndex, NOCISpinStringIndex), usize>,
+    /// Determinants grouped by the same canonical spin-string pair.
     groups: Vec<OrthogonalOccupationGroup>,
 }
 
@@ -466,14 +467,14 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let (worker, nworker) = partition;
 
         // Identical occupations contribute `(F + \lambda S)_{II} x_I` to
-        // every retained target sharing the source spin components.
+        // every retained target sharing the source spin strings.
         for entry in &source_parent.entries {
             let xe = x[entry.det];
             if xe == zero {
                 continue;
             }
             let source = NOCIIndex(entry.det);
-            let source_state = space.state(source);
+            let source_state = space.spin_string_pair(source);
             let group = &block.groups[block.opos[&(source_state.aid, source_state.bid)]];
             for target in &group.targets {
                 if target.a % nworker == worker {
@@ -728,7 +729,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             scratch.first_s.resize(first_len, zero);
         }
 
-        // Generate one alpha factor row per target alpha component and consume it
+        // Generate one alpha factor row per target alpha spin string and consume it
         // immediately into the first-stage F and S intermediates.
         scratch
             .first_f
@@ -776,8 +777,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             );
 
         // A beta row is shared by every target determinant with the same beta
-        // component. Generate it once, consume it completely, then reuse the row
-        // buffers for the next component.
+        // spin string. Generate it once, consume it completely, then reuse the row
+        // buffers for the next spin string.
         let update_groups = (0..ntb)
             .into_par_iter()
             .map_init(
@@ -803,7 +804,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     let mut updates = Vec::with_capacity(target.entries_by_b[tb].len());
 
                     for &det in &target.entries_by_b[tb] {
-                        let ta = data.space.state(NOCIIndex(det)).aid.0;
+                        let ta = data.space.spin_string_pair(NOCIIndex(det)).aid.0;
                         if ta % nworker != worker {
                             continue;
                         }
@@ -893,7 +894,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             scratch.first_s.resize(first_len, zero);
         }
 
-        // Generate one beta factor row per target beta component and consume it
+        // Generate one beta factor row per target beta spin string and consume it
         // immediately into the first-stage F and S intermediates.
         scratch
             .first_f
@@ -941,7 +942,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             );
 
         // Generate each alpha factor row once and immediately consume it for all
-        // target determinants sharing that alpha component.
+        // target determinants sharing that alpha spin string.
         let update_groups = (0..nta)
             .into_par_iter()
             .map_init(
@@ -967,7 +968,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     let mut updates = Vec::with_capacity(target.entries_by_a[ta].len());
 
                     for &det in &target.entries_by_a[ta] {
-                        let tb = data.space.state(NOCIIndex(det)).bid.0;
+                        let tb = data.space.spin_string_pair(NOCIIndex(det)).bid.0;
                         if tb % nworker != worker {
                             continue;
                         }
@@ -1015,7 +1016,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
     target_parent: usize,
     source_parent: usize,
 ) -> FactorisedOneBodyBlock<T> {
-    // Resolve ordered target/source parent topologies and spin-component dimensions.
+    // Resolve ordered target/source parent topologies and spin-string dimensions.
     let target = &spin.parents[target_parent];
     let source = &spin.parents[source_parent];
 
@@ -1107,13 +1108,13 @@ fn build_orthogonal_one_body_block(
     spin: &SpinFactorisation,
     parent_id: usize,
 ) -> OrthogonalOneBodyBlock {
-    // Group retained determinants by their exact parent-local alpha/beta component pair.
+    // Group retained determinants by their exact parent-local alpha/beta spin-string pair.
     let parent = &spin.parents[parent_id];
     let mut opos = HashMap::new();
     let mut groups = Vec::new();
 
     for entry in &parent.entries {
-        let key = (NOCISpinIndex(entry.a), NOCISpinIndex(entry.b));
+        let key = (NOCISpinStringIndex(entry.a), NOCISpinStringIndex(entry.b));
         let group = *opos.entry(key).or_insert_with(|| {
             let index = groups.len();
             groups.push(OrthogonalOccupationGroup {
@@ -1218,7 +1219,7 @@ fn apply_orthogonal_alpha_singles<T, R>(
 {
     let (worker, nworker) = partition;
     let nmo = cache.fa.nrows();
-    let state = space.state(source);
+    let state = space.spin_string_pair(source);
     let (oa, _) = space.occupations(source);
     // Enumerate `\alpha` excitations `i \to a` with `i` occupied and `a`
     // virtual, leaving the `\beta` occupation unchanged.
@@ -1233,8 +1234,8 @@ fn apply_orthogonal_alpha_singles<T, R>(
             }
             let target_oa = (oa & !(1u128 << hole)) | (1u128 << part);
 
-            let components = space.parent_components(state.parent);
-            let Some(&aid) = components.aids.get(&target_oa) else {
+            let strings = space.parent_spin_strings(state.parent);
+            let Some(&aid) = strings.aids.get(&target_oa) else {
                 continue;
             };
             let Some(&opos) = orthogonal.opos.get(&(aid, state.bid)) else {
@@ -1281,7 +1282,7 @@ fn apply_orthogonal_beta_singles<T, R>(
 {
     let (worker, nworker) = partition;
     let nmo = cache.fb.nrows();
-    let state = space.state(source);
+    let state = space.spin_string_pair(source);
     let (_, ob) = space.occupations(source);
     // Enumerate `\beta` excitations `i \to a` while `\alpha` occupation stays fixed.
     let mut holes = ob;
@@ -1295,8 +1296,8 @@ fn apply_orthogonal_beta_singles<T, R>(
             }
             let target_ob = (ob & !(1u128 << hole)) | (1u128 << part);
 
-            let components = space.parent_components(state.parent);
-            let Some(&bid) = components.bids.get(&target_ob) else {
+            let strings = space.parent_spin_strings(state.parent);
+            let Some(&bid) = strings.bids.get(&target_ob) else {
                 continue;
             };
             let Some(&opos) = orthogonal.opos.get(&(state.aid, bid)) else {
@@ -1317,7 +1318,7 @@ fn apply_orthogonal_beta_singles<T, R>(
 }
 
 /// Build same-spin `S` and `F` factor rows from prepared Wick pair batches.
-/// Independent source components are evaluated together so the widest fixed-rank SIMD kernel can be used.
+/// Independent source spin strings are evaluated together so the widest fixed-rank SIMD kernel can be used.
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
 /// - `data`: Shared NOCI determinant data.
@@ -1331,8 +1332,8 @@ fn apply_orthogonal_beta_singles<T, R>(
 fn build_spin_one_body_factors<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
-    target_reps: &[ExcitedSpinState],
-    sources: &SpinSources,
+    target_reps: &[SpinStringData],
+    sources: &SpinStringSources,
     rows: Range<usize>,
     flags: (bool, bool),
     out: (&mut [T], &mut [T]),
@@ -1371,12 +1372,12 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 /// - `scratch`: Reusable spin-resolved Wick evaluator workspace.
 /// - `out`: Output same-spin overlap and generalised-Fock factor rows.
 /// # Returns
-/// - `()`: Fills `srow` and `frow` for the target spin component.
+/// - `()`: Fills `srow` and `frow` for the target spin string.
 fn build_spin_one_body_factor_row<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
-    target: ExcitedSpinState,
-    sources: &SpinSources,
+    target: SpinStringData,
+    sources: &SpinStringSources,
     flags: (bool, bool),
     scratch: &mut WickScratchSpin<T>,
     out: (&mut [T], &mut [T]),
@@ -1401,10 +1402,10 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
 
 /// Select alpha-first or beta-first contraction from dense structural costs.
 /// # Arguments:
-/// - `nta`: Number of target alpha components.
-/// - `ntb`: Number of target beta components.
-/// - `nsa`: Number of source alpha components.
-/// - `nsb`: Number of source beta components.
+/// - `nta`: Number of target alpha spin strings.
+/// - `ntb`: Number of target beta spin strings.
+/// - `nsa`: Number of source alpha spin strings.
+/// - `nsb`: Number of source beta spin strings.
 /// - `nt`: Number of actual target determinants.
 /// - `ns`: Number of actual source determinants.
 /// # Returns

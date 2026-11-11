@@ -15,7 +15,7 @@ mod prepare;
 mod rdm;
 
 // Crate-visible type re-exports.
-pub(crate) use batch::{SpinFactor, SpinFactorRow, SpinSources};
+pub(crate) use batch::{SpinFactor, SpinFactorRow, SpinStringSources};
 pub(crate) use onebody::OneBodyFactor;
 pub(crate) use overlap::OverlapFactor;
 

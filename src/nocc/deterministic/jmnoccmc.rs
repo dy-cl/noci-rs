@@ -249,7 +249,7 @@ pub fn jm_space(
     let mut row = 0;
 
     for z in 0..references.len() {
-        let parent = references.state(NOCIIndex(z)).parent;
+        let parent = references.parent(NOCIIndex(z));
         let norb = references.parents()[parent].ca.ncols();
         let (oa, ob) = references.occupations(NOCIIndex(z));
         let maximum = (oa.count_ones() + ob.count_ones()) as usize;

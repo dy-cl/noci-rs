@@ -28,11 +28,11 @@ use super::{
     build_snoci_overlaps, build_snoci_projection, select_candidates, solve_current_space,
 };
 
-/// Return the real component of a scalar used for printed and stored energies.
+/// Return the real spin string of a scalar used for printed and stored energies.
 /// # Arguments:
 /// - `z`: Scalar value.
 /// # Returns:
-/// - `f64`: Real component.
+/// - `f64`: Real spin string.
 fn scalar_real<T: NOCIScalar + Into<Complex64>>(z: T) -> f64 {
     z.into().re
 }
@@ -112,7 +112,7 @@ fn print_candidate_m_storage<T: NOCIScalar>(n: usize) {
 
 /// Print spin-factorised one-body factor-table storage required for this candidate basis.
 /// # Arguments:
-/// - `data`: Shared candidate NOCI data defining spin-component topology.
+/// - `data`: Shared candidate NOCI data defining spin-string topology.
 /// - `fock`: Current generalised-Fock data identifying orthogonal same-parent shortcuts.
 /// # Returns:
 /// - `()`: Prints the raw factor-table storage estimate to standard output.

@@ -2,7 +2,7 @@
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::ReducedTwoSpinState;
+use crate::determinant::DeterminantData;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::Simd;
 
@@ -18,10 +18,10 @@ use super::dispatch::dispatch_orthogonal_ranks;
 /// # Returns
 /// - `T`: Orthogonal Slater-Condon overlap matrix element.
 #[inline(always)]
-pub(crate) fn xw_overlap_orthogonal<T: NOCIScalar>(state: &ReducedTwoSpinState) -> T {
+pub(crate) fn xw_overlap_orthogonal<T: NOCIScalar>(state: &DeterminantData) -> T {
     let ranks = (
-        usize::from(state.excitation_cache.alpha.rank),
-        usize::from(state.excitation_cache.beta.rank),
+        usize::from(state.alpha.cache.rank),
+        usize::from(state.beta.cache.rank),
     );
 
     // Dispatch by fixed spin excitation rank. This keeps the Slater-Condon formula compile-time
@@ -41,12 +41,12 @@ pub(crate) fn xw_overlap_orthogonal<T: NOCIScalar>(state: &ReducedTwoSpinState) 
 /// - `T`: Fixed-rank overlap matrix element.
 #[inline(always)]
 fn xw_overlap_orthogonal_const<T: NOCIScalar, const RA: usize, const RB: usize>(
-    state: &ReducedTwoSpinState
+    state: &DeterminantData
 ) -> T {
     if RA == 0 && RB == 0 {
         // Diagonal element: identical occupations overlap with the reduced phase.
         // `S_{xx} = p`.
-        return T::from_real(state.phase);
+        return T::from_real(state.phase());
     }
 
     T::from_real(0.0)
@@ -75,7 +75,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalOverlap {
     fn value(
         &self,
         _occupation: (u128, u128),
-        state: &ReducedTwoSpinState,
+        state: &DeterminantData,
     ) -> T {
         xw_overlap_orthogonal(state)
     }
@@ -93,13 +93,13 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalOverlap {
     #[inline(always)]
     unsafe fn packed<V: Simd<N, Scalar = T>, const N: usize, const RA: usize, const RB: usize>(
         &self,
-        states: &[ReducedTwoSpinState; N],
+        states: &[DeterminantData; N],
     ) -> [T; N] {
         let mut out = [T::from_real(0.0); N];
         if RA == 0 && RB == 0 {
             let mut phases = [1.0f64; N];
             for lane in 0..N {
-                phases[lane] = states[lane].phase;
+                phases[lane] = states[lane].phase();
             }
             V::multiply_real_lanes(V::one(), &phases).store(&mut out);
         }

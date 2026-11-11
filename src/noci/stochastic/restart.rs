@@ -122,7 +122,7 @@ pub(in crate::noci::stochastic) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2
     mix(space.len() as u64);
     for i in 0..space.len() {
         let index = NOCIIndex(i);
-        let det = space.state(index);
+        let det = space.spin_string_pair(index);
         let alpha = space.alpha(index);
         let beta = space.beta(index);
 
@@ -132,13 +132,13 @@ pub(in crate::noci::stochastic) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2
             mix(value as u64);
             mix((value >> 64) as u64);
         }
-        mix(alpha.reduced.phase.to_bits());
-        mix(beta.reduced.phase.to_bits());
+        mix(alpha.data.phase.to_bits());
+        mix(beta.data.phase.to_bits());
         for value in [
-            alpha.excitation.holes,
-            alpha.excitation.parts,
-            beta.excitation.holes,
-            beta.excitation.parts,
+            alpha.data.excitation.holes,
+            alpha.data.excitation.parts,
+            beta.data.excitation.holes,
+            beta.data.excitation.parts,
         ] {
             mix(value as u64);
             mix((value >> 64) as u64);

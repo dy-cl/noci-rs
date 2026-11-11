@@ -4,7 +4,7 @@
 use rand::Rng;
 
 // Crate-root imports.
-use crate::determinant::OrthogonalConnection;
+use crate::determinant::ConnectionState;
 use crate::elements::MOCache;
 
 /// Persistent uniform proposal topology for parent-orthogonal Hamiltonian connections.
@@ -12,7 +12,7 @@ pub(crate) struct OrthogonalUniformGenerator {
     /// Exact probability `1/N_\mathrm{conn}` for every table entry.
     pgen: f64,
     /// Complete system-wide table of relative occupied/virtual-rank connections.
-    connections: Vec<OrthogonalConnection>,
+    connections: Vec<ConnectionState>,
 }
 
 impl OrthogonalUniformGenerator {
@@ -44,7 +44,7 @@ impl OrthogonalUniformGenerator {
         // Enumerate alpha and beta single excitations in occupied/virtual rank coordinates.
         for occupied in 0..noa {
             for virtual_ in 0..nva {
-                connections.push(OrthogonalConnection::AlphaSingle {
+                connections.push(ConnectionState::AlphaSingle {
                     occupied: occupied as u8,
                     virtual_: virtual_ as u8,
                 });
@@ -52,7 +52,7 @@ impl OrthogonalUniformGenerator {
         }
         for occupied in 0..nob {
             for virtual_ in 0..nvb {
-                connections.push(OrthogonalConnection::BetaSingle {
+                connections.push(ConnectionState::BetaSingle {
                     occupied: occupied as u8,
                     virtual_: virtual_ as u8,
                 });
@@ -63,7 +63,7 @@ impl OrthogonalUniformGenerator {
             for occupied_j in occupied_i + 1..noa {
                 for virtual_a in 0..nva {
                     for virtual_b in virtual_a + 1..nva {
-                        connections.push(OrthogonalConnection::AlphaDouble {
+                        connections.push(ConnectionState::AlphaDouble {
                             occupied: [occupied_i as u8, occupied_j as u8],
                             virtual_: [virtual_a as u8, virtual_b as u8],
                         });
@@ -75,7 +75,7 @@ impl OrthogonalUniformGenerator {
             for occupied_j in occupied_i + 1..nob {
                 for virtual_a in 0..nvb {
                     for virtual_b in virtual_a + 1..nvb {
-                        connections.push(OrthogonalConnection::BetaDouble {
+                        connections.push(ConnectionState::BetaDouble {
                             occupied: [occupied_i as u8, occupied_j as u8],
                             virtual_: [virtual_a as u8, virtual_b as u8],
                         });
@@ -88,7 +88,7 @@ impl OrthogonalUniformGenerator {
             for virtual_a in 0..nva {
                 for occupied_b in 0..nob {
                     for virtual_b in 0..nvb {
-                        connections.push(OrthogonalConnection::AlphaBetaDouble {
+                        connections.push(ConnectionState::AlphaBetaDouble {
                             occupied_a: occupied_a as u8,
                             virtual_a: virtual_a as u8,
                             occupied_b: occupied_b as u8,
@@ -114,13 +114,13 @@ impl OrthogonalUniformGenerator {
     /// - `self`: Persistent uniform connection topology.
     /// - `rng`: Thread-local random-number generator.
     /// # Returns
-    /// - `Option<(OrthogonalConnection, f64)>`: Source-relative connection and exact uniform
+    /// - `Option<(ConnectionState, f64)>`: Source-relative connection and exact uniform
     ///   probability.
     #[inline(always)]
     pub(crate) fn sample<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
-    ) -> Option<(OrthogonalConnection, f64)> {
+    ) -> Option<(ConnectionState, f64)> {
         if self.connections.is_empty() {
             None
         } else {

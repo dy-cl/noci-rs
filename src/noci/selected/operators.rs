@@ -305,7 +305,7 @@ fn fill_candidate_m<T: NOCIScalar>(
             pairs.extend(
                 op.candidates[a..]
                     .iter()
-                    .map(|&gdet| DetPair::new(ldet, gdet)),
+                    .map(|&gdet| DetPair::from_space(op.data.space, ldet, gdet)),
             );
             calculate_pairs(
                 op.data,
@@ -356,7 +356,10 @@ pub(in crate::noci::selected) fn build_candidate_m_diag<T: NOCIScalar>(
                 || (WickScratchSpin::new(), Vec::new()),
                 |(scratch, pairs), (diag, dets)| {
                     pairs.clear();
-                    pairs.extend(dets.iter().map(|&det| DetPair::new(det, det)));
+                    pairs.extend(
+                        dets.iter()
+                            .map(|&det| DetPair::from_space(op.data.space, det, det)),
+                    );
                     calculate_pairs(
                         op.data,
                         &Fock {
@@ -390,7 +393,10 @@ pub(in crate::noci::selected) fn build_candidate_s_diag<T: NOCIScalar>(
             || (WickScratchSpin::new(), Vec::new()),
             |(scratch, pairs), (diag, dets)| {
                 pairs.clear();
-                pairs.extend(dets.iter().map(|&det| DetPair::new(det, det)));
+                pairs.extend(
+                    dets.iter()
+                        .map(|&det| DetPair::from_space(op.data.space, det, det)),
+                );
                 calculate_pairs(op.data, &Overlap, pairs, Some(scratch), diag);
             },
         );
@@ -507,7 +513,7 @@ where
                         if xa == zero && xb == zero {
                             continue;
                         }
-                        pairs.push(DetPair::new(ldet, gdet));
+                        pairs.push(DetPair::from_space(op.data.space, ldet, gdet));
                     }
                     values.clear();
                     values.resize(pairs.len(), T::from_real(0.0));
@@ -625,7 +631,7 @@ where
                 if xa == zero && xb == zero {
                     continue;
                 }
-                pairs.push(DetPair::new(ldet, gdet));
+                pairs.push(DetPair::from_space(op.data.space, ldet, gdet));
             }
             values.clear();
             values.resize(pairs.len(), T::from_real(0.0));
@@ -707,7 +713,7 @@ where
                     if xa == zero && xb == zero {
                         continue;
                     }
-                    pairs.push(DetPair::new(ldet, gdet));
+                    pairs.push(DetPair::from_space(op.data.space, ldet, gdet));
                 }
                 values.clear();
                 values.resize(pairs.len(), T::from_real(0.0));
@@ -787,7 +793,7 @@ where
             if xa == zero && xb == zero {
                 continue;
             }
-            pairs.push(DetPair::new(ldet, gdet));
+            pairs.push(DetPair::from_space(op.data.space, ldet, gdet));
         }
         values.clear();
         values.resize(pairs.len(), T::from_real(0.0));

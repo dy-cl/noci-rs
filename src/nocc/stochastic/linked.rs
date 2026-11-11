@@ -24,7 +24,7 @@
 use rand::Rng;
 
 // Crate-root imports.
-use crate::determinant::ExcitedDeterminant;
+use crate::determinant::DeterminantState;
 use crate::qmc::QmcRng;
 
 // Parent/sibling imports.
@@ -41,14 +41,14 @@ use super::state::{LinkedBatchedRequest, Target};
 /// - `projectee`: Projection determinant `|D_\mu\rangle`.
 /// - `left`: Partition mask of `L`.
 /// # Returns:
-/// - `Option<((ExcitedDeterminant, f64), (ExcitedDeterminant, f64))>`: Ket and bra with the signs
+/// - `Option<((DeterminantState, f64), (DeterminantState, f64))>`: Ket and bra with the signs
 ///   of the excitor actions, or `None` if either part vanishes.
 fn partition_cluster(
-    reference: &ExcitedDeterminant,
+    reference: &DeterminantState,
     excitors: &[Excitor],
-    projectee: &ExcitedDeterminant,
+    projectee: &DeterminantState,
     left: usize,
-) -> Option<((ExcitedDeterminant, f64), (ExcitedDeterminant, f64))> {
+) -> Option<((DeterminantState, f64), (DeterminantState, f64))> {
     let (mut ket, mut sr) = (*reference, 1.0);
     let (mut bra, mut sl) = (*projectee, 1.0);
 
@@ -81,9 +81,9 @@ fn partition_cluster(
 /// # Returns:
 /// - `()`: Queues the surviving partitions.
 fn commutator(
-    reference: &ExcitedDeterminant,
+    reference: &DeterminantState,
     excitors: &[Excitor],
-    projectee: &ExcitedDeterminant,
+    projectee: &DeterminantState,
     term: (Target, f64),
     requests: &mut Vec<LinkedBatchedRequest>,
 ) {
@@ -123,9 +123,9 @@ fn commutator(
 /// # Returns:
 /// - `f64`: Proposal probability.
 fn proposal(
-    reference: &ExcitedDeterminant,
+    reference: &DeterminantState,
     excitors: &[Excitor],
-    projectee: &ExcitedDeterminant,
+    projectee: &DeterminantState,
     pgen: f64,
 ) -> f64 {
     let s = excitors.len();
@@ -163,7 +163,7 @@ pub(super) fn linked_attempt(
 ) {
     let (excitors, weight) = cluster;
     let reference = &spaces.references[z];
-    let key = |det: &ExcitedDeterminant| Target::Excitor((z, det.alpha, det.beta));
+    let key = |det: &DeterminantState| Target::Excitor((z, det.alpha, det.beta));
 
     // Reference projection and death on the collapsed cluster.
     if let Some((collapsed, sign)) = collapse(reference, excitors) {
@@ -200,7 +200,7 @@ pub(super) fn linked_attempt(
         return;
     };
     let (ca, cb) = connection.child_of((source.alpha, source.beta), spaces.norb[z]);
-    let target = ExcitedDeterminant {
+    let target = DeterminantState {
         parent: reference.parent,
         alpha: ca,
         beta: cb,

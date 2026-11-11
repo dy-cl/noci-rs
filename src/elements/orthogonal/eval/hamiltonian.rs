@@ -1,11 +1,12 @@
 // elements/orthogonal/eval/hamiltonian.rs
 
 // Crate-root imports.
+use crate::AoData;
 use crate::NOCIScalar;
+use crate::determinant::DeterminantData;
 use crate::elements::MOCache;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::Simd;
-use crate::{AoData, ReducedTwoSpinState};
 
 // Parent/sibling imports.
 use super::batch::OrthogonalElement;
@@ -26,11 +27,11 @@ pub(crate) fn xw_hamiltonian_orthogonal<T: NOCIScalar>(
     ao: &AoData,
     cache: &MOCache<T>,
     source: (u128, u128),
-    state: &ReducedTwoSpinState,
+    state: &DeterminantData,
 ) -> T {
     let ranks = (
-        usize::from(state.excitation_cache.alpha.rank),
-        usize::from(state.excitation_cache.beta.rank),
+        usize::from(state.alpha.cache.rank),
+        usize::from(state.beta.cache.rank),
     );
 
     // Dispatch by fixed spin excitation rank. This keeps Slater-Condon formulas compile-time
@@ -59,11 +60,11 @@ fn xw_hamiltonian_orthogonal_const<T: NOCIScalar, const RA: usize, const RB: usi
     ao: &AoData,
     cache: &MOCache<T>,
     source: (u128, u128),
-    state: &ReducedTwoSpinState,
+    state: &DeterminantData,
 ) -> T {
-    let alpha = &state.excitation_cache.alpha;
-    let beta = &state.excitation_cache.beta;
-    let phase = T::from_real(state.phase);
+    let alpha = &state.alpha.cache;
+    let beta = &state.beta.cache;
+    let phase = T::from_real(state.phase());
 
     if RA == 0 && RB == 0 {
         // Diagonal element: accumulate nuclear, one-electron, same-spin, and opposite-spin terms
@@ -238,7 +239,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalHamiltonian<'_, T> {
     fn value(
         &self,
         occupation: (u128, u128),
-        state: &ReducedTwoSpinState,
+        state: &DeterminantData,
     ) -> T {
         xw_hamiltonian_orthogonal(self.ao, self.cache, occupation, state)
     }
@@ -257,7 +258,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalHamiltonian<'_, T> {
     #[inline(always)]
     unsafe fn packed<V: Simd<N, Scalar = T>, const N: usize, const RA: usize, const RB: usize>(
         &self,
-        states: &[ReducedTwoSpinState; N],
+        states: &[DeterminantData; N],
     ) -> [T; N] {
         let cache = self.cache;
         let mut out = [T::from_real(0.0); N];
@@ -268,13 +269,13 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalHamiltonian<'_, T> {
             // Alpha double: gather `p(ai||jb)` from antisymmetrised alpha ERIs.
             let shape = cache.eri_aa_asym.shape();
             for lane in 0..N {
-                let ex = &states[lane].excitation_cache.alpha;
+                let ex = &states[lane].alpha.cache;
                 let i = usize::from(ex.holes[0]);
                 let j = usize::from(ex.holes[1]);
                 let a = usize::from(ex.particles[0]);
                 let b = usize::from(ex.particles[1]);
                 indices[lane] = ((a * shape[1] + i) * shape[2] + j) * shape[3] + b;
-                phases[lane] = states[lane].phase;
+                phases[lane] = states[lane].phase();
             }
             let eri = cache
                 .eri_aa_asym
@@ -289,13 +290,13 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalHamiltonian<'_, T> {
             // Beta double: gather the spin-swapped `p(ai||jb)` contribution.
             let shape = cache.eri_bb_asym.shape();
             for lane in 0..N {
-                let ex = &states[lane].excitation_cache.beta;
+                let ex = &states[lane].beta.cache;
                 let i = usize::from(ex.holes[0]);
                 let j = usize::from(ex.holes[1]);
                 let a = usize::from(ex.particles[0]);
                 let b = usize::from(ex.particles[1]);
                 indices[lane] = ((a * shape[1] + i) * shape[2] + j) * shape[3] + b;
-                phases[lane] = states[lane].phase;
+                phases[lane] = states[lane].phase();
             }
             let eri = cache
                 .eri_bb_asym
@@ -310,14 +311,14 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalHamiltonian<'_, T> {
             // Mixed-spin double: exchange is absent, leaving the Coulomb term `p(ai|jb)`.
             let shape = cache.eri_ab_coul.shape();
             for lane in 0..N {
-                let alpha = &states[lane].excitation_cache.alpha;
-                let beta = &states[lane].excitation_cache.beta;
+                let alpha = &states[lane].alpha.cache;
+                let beta = &states[lane].beta.cache;
                 let i = usize::from(alpha.holes[0]);
                 let j = usize::from(beta.holes[0]);
                 let a = usize::from(alpha.particles[0]);
                 let b = usize::from(beta.particles[0]);
                 indices[lane] = ((a * shape[1] + i) * shape[2] + j) * shape[3] + b;
-                phases[lane] = states[lane].phase;
+                phases[lane] = states[lane].phase();
             }
             let eri = cache
                 .eri_ab_coul

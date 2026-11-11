@@ -49,7 +49,7 @@ pub use view::WicksView;
 
 // Crate-visible type re-exports.
 pub(crate) use build::{DiffSpinBuild, SameSpinBuild};
-pub(crate) use eval::{OneBodyFactor, OverlapFactor, SpinFactor, SpinFactorRow, SpinSources};
+pub(crate) use eval::{OneBodyFactor, OverlapFactor, SpinFactor, SpinFactorRow, SpinStringSources};
 #[cfg(feature = "gnocc")]
 pub(crate) use scratch::WickScratch;
 pub(crate) use scratch::WickScratchSpin;

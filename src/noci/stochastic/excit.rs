@@ -7,7 +7,7 @@ use mpi::traits::*;
 use rand::Rng;
 
 // Crate-root imports.
-use crate::determinant::{NOCIIndex, OrthogonalConnection};
+use crate::determinant::{ConnectionState, NOCIIndex};
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{
     MOCache, NOCIData, OrthogonalHamiltonianScratch, calculate_h_pairs_orthogonal_batched,
@@ -51,8 +51,8 @@ impl AuxiliaryGenerator {
             let alpha = data.space.alpha(source);
             let beta = data.space.beta(source);
             let frame = FrameSource {
-                parent: data.space.state(source).parent,
-                reference: alpha.excitation.holes == 0 && beta.excitation.holes == 0,
+                parent: data.space.parent(source),
+                reference: alpha.data.excitation.holes == 0 && beta.data.excitation.holes == 0,
                 alpha: FrameSpin {
                     occupied: &alpha.occupied,
                     virtuals: &alpha.virtuals,
@@ -72,14 +72,14 @@ impl AuxiliaryGenerator {
     /// - `scratch`: Per-source PCHB state from `prepare`.
     /// - `rng`: Thread-local random-number generator.
     /// # Returns:
-    /// - `Option<(OrthogonalConnection, f64)>`: Connection and generation probability, or `None`
+    /// - `Option<(ConnectionState, f64)>`: Connection and generation probability, or `None`
     ///   for an empty or rejected draw.
     #[inline(always)]
     pub(in crate::noci::stochastic) fn sample<R: Rng + ?Sized>(
         &self,
         scratch: &PchbScratch,
         rng: &mut R,
-    ) -> Option<(OrthogonalConnection, f64)> {
+    ) -> Option<(ConnectionState, f64)> {
         match self {
             Self::Uniform(generator) => generator.sample(rng),
             Self::Pchb(generator) => generator.sample(scratch, rng),
@@ -104,7 +104,7 @@ pub(in crate::noci::stochastic) fn pchb_generator(
 
     // A parent reference is the retained determinant without parent-relative holes.
     for reference in (0..data.space.len()).map(NOCIIndex) {
-        let parent = data.space.state(reference).parent;
+        let parent = data.space.parent(reference);
         let (alpha, beta) = data.space.excitations(reference);
         if alpha.holes != 0 || beta.holes != 0 || parent >= mocache.len() {
             continue;
@@ -120,7 +120,7 @@ pub(in crate::noci::stochastic) fn pchb_generator(
                 labels.push((true, i as usize, a as usize));
                 pairs.push((
                     reference,
-                    OrthogonalConnection::AlphaSingle {
+                    ConnectionState::AlphaSingle {
                         occupied: x as u8,
                         virtual_: y as u8,
                     },
@@ -132,7 +132,7 @@ pub(in crate::noci::stochastic) fn pchb_generator(
                 labels.push((false, i as usize, a as usize));
                 pairs.push((
                     reference,
-                    OrthogonalConnection::BetaSingle {
+                    ConnectionState::BetaSingle {
                         occupied: x as u8,
                         virtual_: y as u8,
                     },
@@ -177,8 +177,12 @@ pub(in crate::noci::stochastic) fn coupling(
     data: &NOCIData<'_, f64>,
     scratch: &mut WickScratchSpin<f64>,
 ) -> f64 {
-    let lambda_state = data.space.state(crate::determinant::NOCIIndex(lambda));
-    let gamma_state = data.space.state(crate::determinant::NOCIIndex(gamma));
+    let lambda_state = data
+        .space
+        .spin_string_pair(crate::determinant::NOCIIndex(lambda));
+    let gamma_state = data
+        .space
+        .spin_string_pair(crate::determinant::NOCIIndex(gamma));
     let (lambda_oa, lambda_ob) = data
         .space
         .occupations(crate::determinant::NOCIIndex(lambda));

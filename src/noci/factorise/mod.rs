@@ -11,37 +11,37 @@ pub(crate) use overlap::{OverlapFactors, OverlapScratch};
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::determinant::{ExcitedSpinState, NOCISpace, SpinDeterminantState};
+use crate::determinant::{NOCISpace, SpinStringData};
 use crate::elements::NOCIData;
-use crate::elements::nonorthogonalwicks::SpinSources;
+use crate::elements::nonorthogonalwicks::SpinStringSources;
 
 /// Actual determinant entry in a parent-local spin factorisation.
 #[derive(Clone, Copy)]
 pub(crate) struct FactorEntry {
     /// Global determinant index `I`.
     pub(crate) det: usize,
-    /// Parent-local alpha component `a_I`.
+    /// Parent-local alpha spin string `a_I`.
     pub(crate) a: usize,
-    /// Parent-local beta component `b_I`.
+    /// Parent-local beta spin string `b_I`.
     pub(crate) b: usize,
 }
 
 /// Parent-local determinant space in the shared spin factorisation.
 #[derive(Default)]
 pub(super) struct ParentSpinSpace {
-    /// Prepared representative for each parent-local alpha component.
-    pub(super) areps: Vec<ExcitedSpinState>,
+    /// Prepared representative for each parent-local alpha spin string.
+    pub(super) areps: Vec<SpinStringData>,
     /// Alpha representatives in packed Wick evaluation order.
-    pub(super) a_sources: SpinSources,
-    /// Prepared representative for each parent-local beta component.
-    pub(super) breps: Vec<ExcitedSpinState>,
+    pub(super) a_sources: SpinStringSources,
+    /// Prepared representative for each parent-local beta spin string.
+    pub(super) breps: Vec<SpinStringData>,
     /// Beta representatives in packed Wick evaluation order.
-    pub(super) b_sources: SpinSources,
+    pub(super) b_sources: SpinStringSources,
     /// Actual determinants belonging to this parent as `(I,a_I,b_I)`.
     pub(super) entries: Vec<FactorEntry>,
-    /// Determinant indices grouped by parent-local alpha component.
+    /// Determinant indices grouped by parent-local alpha spin string.
     pub(super) entries_by_a: Vec<Vec<usize>>,
-    /// Determinant indices grouped by parent-local beta component.
+    /// Determinant indices grouped by parent-local beta spin string.
     pub(super) entries_by_b: Vec<Vec<usize>>,
 }
 
@@ -56,7 +56,7 @@ pub(crate) struct SpinFactorisation {
 }
 
 impl SpinFactorisation {
-    /// Prepare parent-local factor evaluation orders from authoritative component IDs.
+    /// Prepare parent-local factor evaluation orders from authoritative spin-string IDs.
     /// # Arguments:
     /// - `data`: Retained NOCI topology and matrix-element data.
     /// # Returns:
@@ -65,14 +65,14 @@ impl SpinFactorisation {
         let parents = build_parent_spin_spaces(data.space);
         let ma = data
             .space
-            .components
+            .spin_strings
             .iter()
             .map(|parent| parent.na())
             .max()
             .unwrap_or(0);
         let mb = data
             .space
-            .components
+            .spin_strings
             .iter()
             .map(|parent| parent.nb())
             .max()
@@ -150,9 +150,9 @@ pub(super) fn ordered_parent_pair(
     }
 }
 
-/// Build the numerical factor plan from canonical parent-local component identities.
+/// Build the numerical factor plan from canonical parent-local spin-string identities.
 /// The retained determinant set is sparse within each `A_P \\times B_P` product, so entries are
-/// recorded in basis order while one-spin evaluation orders come from the component caches.
+/// recorded in basis order while one-spin evaluation orders come from the spin-string payloads.
 /// # Arguments:
 /// - `space`: Authoritative retained NOCI determinant topology.
 /// # Returns:
@@ -163,8 +163,8 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
         .map(|_| ParentSpinSpace::default())
         .collect::<Vec<_>>();
 
-    // Index each retained determinant by both of its one-spin component identities.
-    for (det, state) in space.states.iter().enumerate() {
+    // Index each retained determinant by both of its spin-string identities.
+    for (det, state) in space.pairs.iter().enumerate() {
         let parent = &mut parents[state.parent];
         let aid = state.aid.0;
         let bid = state.bid.0;
@@ -188,19 +188,11 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
 
     // Materialise the prepared representatives and their packed evaluation orders.
     for (parent_id, parent) in parents.iter_mut().enumerate() {
-        let components = space.parent_components(parent_id);
-        parent.areps = components
-            .alpha
-            .iter()
-            .map(SpinDeterminantState::excited)
-            .collect();
-        parent.breps = components
-            .beta
-            .iter()
-            .map(SpinDeterminantState::excited)
-            .collect();
-        parent.a_sources = SpinSources::new(&parent.areps);
-        parent.b_sources = SpinSources::new(&parent.breps);
+        let strings = space.parent_spin_strings(parent_id);
+        parent.areps = strings.alpha.iter().map(|string| string.data).collect();
+        parent.breps = strings.beta.iter().map(|string| string.data).collect();
+        parent.a_sources = SpinStringSources::new(&parent.areps);
+        parent.b_sources = SpinStringSources::new(&parent.breps);
     }
 
     parents

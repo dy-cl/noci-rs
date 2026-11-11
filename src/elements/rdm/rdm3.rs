@@ -48,7 +48,8 @@ pub(crate) fn rdm3<T: NOCIScalar>(
     // recording `\sum_{xw} c_x^L c_w^R S_{xw}` for final normalisation.
     for x in 0..data.space.len() {
         for w in 0..data.space.len() {
-            let pair = DetPair::new(
+            let pair = DetPair::from_space(
+                data.space,
                 crate::determinant::NOCIIndex(x),
                 crate::determinant::NOCIIndex(w),
             );

@@ -5,7 +5,7 @@ use mpi::traits::*;
 
 // Crate-root imports.
 use crate::basis::{apply_excitation, excitation_phase_bits, undo_excitation};
-use crate::determinant::{ExcitedDeterminant, ExcitedState, NOCIIndex};
+use crate::determinant::{DeterminantState, NOCIIndex};
 use crate::elements::NOCIData;
 use crate::input::JMNOCCMCOptions;
 use crate::nocc::reference_determinants;
@@ -14,8 +14,9 @@ use crate::qmc::{AliasTable, FriAmplitude, KeyedUpdate};
 
 /// Excitor `(z, D)` of reference block `z`, identified by the occupations of its determinant
 /// `|D\rangle = \hat\tau|{}^z\Psi\rangle` in the parent frame of `z`. The block's reference has
-/// no holes.
-pub(super) type ExcitorKey = (usize, u128, u128);
+/// no holes. It is keyed by the block rather than a `DeterminantState`, since several blocks may
+/// share one parent frame.
+pub(super) type ExcitorState = (usize, u128, u128);
 
 /// One excitation `\hat\tau_{z\mu}` of a reference block, with the sign convention
 /// `\hat\tau_{z\mu}|{}^z\Psi\rangle = +|D_\mu\rangle` so that its population is the coefficient
@@ -23,7 +24,7 @@ pub(super) type ExcitorKey = (usize, u128, u128);
 #[derive(Clone, Copy)]
 pub(super) struct Excitor {
     /// Excited determinant `|D_\mu\rangle` in the parent frame of the block.
-    pub(super) det: ExcitedDeterminant,
+    pub(super) det: DeterminantState,
     /// Alpha and beta holes relative to the block reference.
     pub(super) holes: (u128, u128),
     /// Alpha and beta particles relative to the block reference.
@@ -41,8 +42,8 @@ impl Excitor {
     /// # Returns:
     /// - `Excitor`: Excitor with `\hat\tau|{}^z\Psi\rangle = +|D\rangle`.
     pub(super) fn new(
-        reference: &ExcitedDeterminant,
-        det: ExcitedDeterminant,
+        reference: &DeterminantState,
+        det: DeterminantState,
     ) -> Self {
         let holes = (reference.alpha & !det.alpha, reference.beta & !det.beta);
         let parts = (det.alpha & !reference.alpha, det.beta & !reference.beta);
@@ -61,17 +62,17 @@ impl Excitor {
     /// - `self`: Excitor.
     /// - `det`: Determinant acted on.
     /// # Returns:
-    /// - `Option<(ExcitedDeterminant, f64)>`: Image and sign, or `None` if a hole is empty or a
+    /// - `Option<(DeterminantState, f64)>`: Image and sign, or `None` if a hole is empty or a
     ///   particle is already occupied.
     #[inline(always)]
     pub(super) fn apply(
         &self,
-        det: &ExcitedDeterminant,
-    ) -> Option<(ExcitedDeterminant, f64)> {
+        det: &DeterminantState,
+    ) -> Option<(DeterminantState, f64)> {
         let (alpha, sa) = apply_excitation(det.alpha, self.holes.0, self.parts.0)?;
         let (beta, sb) = apply_excitation(det.beta, self.holes.1, self.parts.1)?;
         Some((
-            ExcitedDeterminant {
+            DeterminantState {
                 parent: det.parent,
                 alpha,
                 beta,
@@ -85,13 +86,13 @@ impl Excitor {
     /// - `self`: Excitor.
     /// - `det`: Image determinant `|D'\rangle`.
     /// # Returns:
-    /// - `Option<(ExcitedDeterminant, f64)>`: Preimage `|D\rangle` and the sign
+    /// - `Option<(DeterminantState, f64)>`: Preimage `|D\rangle` and the sign
     ///   `\langle D'|\hat\tau|D\rangle`, or `None` if `|D'\rangle` has no preimage.
     #[inline(always)]
     pub(super) fn invert(
         &self,
-        det: &ExcitedDeterminant,
-    ) -> Option<(ExcitedDeterminant, f64)> {
+        det: &DeterminantState,
+    ) -> Option<(DeterminantState, f64)> {
         // A preimage needs every particle occupied and every hole empty in `|D'\rangle`.
         let valid = |occ: u128, holes: u128, parts: u128| occ & parts == parts && occ & holes == 0;
         if !valid(det.alpha, self.holes.0, self.parts.0)
@@ -99,7 +100,7 @@ impl Excitor {
         {
             return None;
         }
-        let source = ExcitedDeterminant {
+        let source = DeterminantState {
             parent: det.parent,
             alpha: undo_excitation(det.alpha, self.holes.0, self.parts.0),
             beta: undo_excitation(det.beta, self.holes.1, self.parts.1),
@@ -117,8 +118,8 @@ impl Excitor {
 /// - `usize`: Number of holes in both spins.
 #[inline(always)]
 pub(super) fn rank(
-    reference: &ExcitedDeterminant,
-    det: &ExcitedDeterminant,
+    reference: &DeterminantState,
+    det: &DeterminantState,
 ) -> usize {
     ((reference.alpha & !det.alpha).count_ones() + (reference.beta & !det.beta).count_ones())
         as usize
@@ -129,11 +130,9 @@ pub(super) fn rank(
 /// and the Hamiltonian-connection generator of each reference frame.
 pub(super) struct ReferenceSpaces {
     /// Block reference determinants.
-    pub(super) references: Vec<ExcitedDeterminant>,
-    /// Prepared block references.
-    pub(super) states: Vec<ExcitedState>,
-    /// Prepared projection rows of every block with ranks `1..=cluster_rank`.
-    pub(super) rows: Vec<Vec<ExcitedState>>,
+    pub(super) references: Vec<DeterminantState>,
+    /// Projection rows of every block with ranks `1..=cluster_rank`.
+    pub(super) rows: Vec<Vec<DeterminantState>>,
     /// Number of spatial orbitals of every block.
     pub(super) norb: Vec<usize>,
     /// Uniform connection generator of every block.
@@ -162,7 +161,6 @@ impl ReferenceSpaces {
         let m = data.space.len();
         let mut spaces = Self {
             references: Vec::with_capacity(m),
-            states: Vec::with_capacity(m),
             rows: Vec::with_capacity(m),
             norb: Vec::with_capacity(m),
             generators: Vec::with_capacity(m),
@@ -172,28 +170,24 @@ impl ReferenceSpaces {
 
         let mut nelec = 0;
         for z in 0..m {
-            let parent = data.space.state(NOCIIndex(z)).parent;
+            let parent = data.space.parent(NOCIIndex(z));
             let (oa, ob) = data.space.occupations(NOCIIndex(z));
             let norb = parents[parent].ca.ncols();
             nelec = (oa.count_ones() + ob.count_ones()) as usize;
-            let reference = ExcitedDeterminant {
+            let reference = DeterminantState {
                 parent,
                 alpha: oa,
                 beta: ob,
             };
             spaces.references.push(reference);
-            spaces.states.push(reference.state(parents));
             spaces.rows.push(
                 reference_determinants(oa, ob, norb, options.cluster_rank)
                     .into_iter()
                     .skip(1)
-                    .map(|(alpha, beta, _)| {
-                        ExcitedDeterminant {
-                            parent,
-                            alpha,
-                            beta,
-                        }
-                        .state(parents)
+                    .map(|(alpha, beta, _)| DeterminantState {
+                        parent,
+                        alpha,
+                        beta,
                     })
                     .collect(),
             );
@@ -214,7 +208,7 @@ impl ReferenceSpaces {
 /// clusters. Its size is the number of occupied excitors, never that of the excitor space.
 pub(super) struct Block {
     /// Block reference determinant.
-    pub(super) reference: ExcitedDeterminant,
+    pub(super) reference: DeterminantState,
     /// Reference population `N_z`.
     pub(super) nref: f64,
     /// Excitors with their populations.
@@ -264,7 +258,7 @@ impl ExcitorUpdate {
     /// # Returns:
     /// - `ExcitorUpdate`: MPI-safe update.
     pub(super) fn new(
-        key: ExcitorKey,
+        key: ExcitorState,
         dn: f64,
     ) -> Self {
         let words = |x: u128| [x as u64, (x >> 64) as u64];
@@ -280,8 +274,8 @@ impl ExcitorUpdate {
     /// # Arguments:
     /// - `self`: Update.
     /// # Returns:
-    /// - `ExcitorKey`: Reference block and occupations.
-    pub(super) fn excitor(&self) -> ExcitorKey {
+    /// - `ExcitorState`: Reference block and occupations.
+    pub(super) fn excitor(&self) -> ExcitorState {
         let join = |w: [u64; 2]| w[0] as u128 | ((w[1] as u128) << 64);
         (self.block as usize, join(self.alpha), join(self.beta))
     }

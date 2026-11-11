@@ -37,7 +37,7 @@ pub(crate) use operator::{Fock, HamiltonianOverlap, Overlap};
 pub(crate) use orthogonal::OrthogonalHamiltonianScratch;
 #[cfg(feature = "gnocc")]
 pub(crate) use rdm::{RDM1, RDM2, RDM3, RDM4};
-pub(crate) use types::{DetPair, FockData, PairDeterminant};
+pub(crate) use types::{DetPair, FockData};
 
 // Crate-visible function re-exports.
 pub(crate) use cache::build_fock_mo_cache;

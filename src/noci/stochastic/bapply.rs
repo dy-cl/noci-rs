@@ -79,14 +79,14 @@ fn redistribute_population_updates_auxiliary(
     scratch.send_ranked.clear();
 }
 
-/// Report persistent BApply factor backing and lazily discovered physical components.
+/// Report persistent BApply factor backing and lazily discovered physical spin strings.
 /// # Arguments:
 /// - `rank`: Current MPI rank; only rank zero writes storage output.
 /// - `mode`: Requested shared `SNOCIStorage` backend.
 /// - `initial`: Initial factor-table backing bytes.
 /// - `factors`: Current persistent cross-parent factor tables.
 /// # Returns
-/// - `()`: Writes actual initial, final, and peak backing and added component counts.
+/// - `()`: Writes actual initial, final, and peak backing and added spin string counts.
 fn print_bapply_storage(
     rank: usize,
     mode: crate::input::SNOCIStorage,
@@ -182,7 +182,7 @@ pub fn qmc_step(
     } else {
         AuxiliaryGenerator::Uniform(OrthogonalUniformGenerator::new(
             data.space.occupations(NOCIIndex(0)),
-            &mocache[data.space.state(NOCIIndex(0)).parent],
+            &mocache[data.space.parent(NOCIIndex(0))],
         ))
     };
     let factor_cache = data.input.wicks.cachedir.as_deref().unwrap_or(".");

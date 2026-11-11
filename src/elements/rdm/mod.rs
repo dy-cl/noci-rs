@@ -2,8 +2,6 @@
 //! Reduced density matrices of NOCI states, assembled from determinant-pair transition
 //! densities.
 
-#[cfg(feature = "gnocc")]
-mod common;
 mod density;
 #[cfg(feature = "gnocc")]
 mod rdm1;
@@ -34,11 +32,3 @@ pub(crate) use rdm2::rdm2;
 pub(crate) use rdm3::rdm3;
 #[cfg(feature = "gnocc")]
 pub(crate) use rdm4::rdm4;
-
-// Restricted type re-exports.
-#[cfg(feature = "gnocc")]
-pub(in crate::elements) use common::RDMDeterminantView;
-
-// Restricted function re-exports.
-#[cfg(feature = "gnocc")]
-pub(in crate::elements) use common::resolve_rdm_determinant;

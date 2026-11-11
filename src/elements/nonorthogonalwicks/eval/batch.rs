@@ -12,7 +12,7 @@ use crate::ExcitationSpinCache;
 use crate::NOCIScalar;
 #[cfg(target_arch = "x86_64")]
 use crate::config::MAXEXCIT;
-use crate::determinant::ExcitedSpinState;
+use crate::determinant::SpinStringData;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::{Lanes, Simd, lanes};
 
@@ -37,7 +37,7 @@ pub(crate) trait SpinFactor<const K: usize> {
     fn values<T: NOCIScalar>(
         &self,
         w: &SameSpinView<'_, T>,
-        pair: (&ExcitedSpinState, &ExcitedSpinState),
+        pair: (&SpinStringData, &SpinStringData),
         scratch: &mut WickScratch<T>,
     ) -> [T; K];
 
@@ -70,9 +70,9 @@ pub(crate) trait SpinFactor<const K: usize> {
 /// excitation rank, holes and particles, so every group of equal rank and holes fills packets of
 /// one fixed-rank kernel whose hole contractions are shared by every lane.
 #[derive(Default)]
-pub(crate) struct SpinSources {
+pub(crate) struct SpinStringSources {
     /// Source spin determinants in evaluation order.
-    states: Vec<ExcitedSpinState>,
+    states: Vec<SpinStringData>,
     /// Excitation cache of every source in evaluation order, contiguous so that a packet of
     /// sources is one array.
     caches: Vec<ExcitationSpinCache>,
@@ -82,36 +82,33 @@ pub(crate) struct SpinSources {
     groups: Vec<usize>,
 }
 
-impl SpinSources {
+impl SpinStringSources {
     /// Sort source spin determinants into packed evaluation order.
     /// # Arguments:
     /// - `sources`: Source spin determinants in output-column order.
     /// # Returns
     /// - `Self`: Sources in evaluation order with their output columns and group boundaries.
-    pub(crate) fn new(sources: &[ExcitedSpinState]) -> Self {
+    pub(crate) fn new(sources: &[SpinStringData]) -> Self {
         // Order sources by rank, holes and particles so equal-rank, common-hole sources are
         // adjacent; ties keep source order.
         let mut columns: Vec<usize> = (0..sources.len()).collect();
         columns.sort_unstable_by(|&i, &j| {
-            let ic = sources[i].state.excitation_cache;
-            let jc = sources[j].state.excitation_cache;
+            let ic = sources[i].cache;
+            let jc = sources[j].cache;
             ic.rank
                 .cmp(&jc.rank)
                 .then_with(|| ic.holes.cmp(&jc.holes))
                 .then_with(|| ic.particles.cmp(&jc.particles))
                 .then_with(|| i.cmp(&j))
         });
-        let states: Vec<ExcitedSpinState> = columns.iter().map(|&col| sources[col]).collect();
-        let caches = states
-            .iter()
-            .map(|source| source.state.excitation_cache)
-            .collect();
+        let states: Vec<SpinStringData> = columns.iter().map(|&col| sources[col]).collect();
+        let caches = states.iter().map(|source| source.cache).collect();
 
         // A new group starts wherever the rank or the holes change.
         let mut groups = vec![0];
         for position in 1..states.len() {
-            let previous = states[position - 1].state.excitation_cache;
-            let current = states[position].state.excitation_cache;
+            let previous = states[position - 1].cache;
+            let current = states[position].cache;
             if current.rank != previous.rank || current.holes != previous.holes {
                 groups.push(position);
             }
@@ -141,9 +138,9 @@ impl SpinSources {
 /// One row of same-spin factors, pairing a target spin determinant with every source.
 pub(crate) struct SpinFactorRow<'a, T, const K: usize> {
     /// Target spin determinant shared by the row.
-    pub(crate) target: ExcitedSpinState,
+    pub(crate) target: SpinStringData,
     /// Source spin determinants in packed evaluation order.
-    pub(crate) sources: &'a SpinSources,
+    pub(crate) sources: &'a SpinStringSources,
     /// Whether the target belongs to the left reference of the Wick intermediates.
     pub(crate) target_left: bool,
     /// Output factors in source-column order, one row per factor.
@@ -382,7 +379,7 @@ fn write_spin_factors<T: NOCIScalar, const K: usize>(
     values: [T; K],
 ) {
     let column = row.sources.columns[position];
-    let phase = T::from_real(row.target.state.phase * row.sources.states[position].state.phase);
+    let phase = T::from_real(row.target.phase * row.sources.states[position].phase);
     for (out, value) in row.out.iter_mut().zip(values) {
         out[column] = phase * value;
     }
@@ -450,13 +447,13 @@ fn xw_spin_factor_row_lanes<F: SpinFactor<K>, T: NOCIScalar, const K: usize, con
     scratch: &mut WickScratch<T>,
     select: SpinFactorSelect<T, K, N>,
 ) {
-    let target = row.target.state.excitation_cache;
+    let target = row.target.cache;
     let target_rank = usize::from(target.rank);
     let sources = row.sources;
 
     for bounds in sources.groups.windows(2) {
         let (start, end) = (bounds[0], bounds[1]);
-        let source_rank = usize::from(sources.states[start].state.excitation_cache.rank);
+        let source_rank = usize::from(sources.states[start].cache.rank);
         let ranks = if row.target_left {
             (target_rank, source_rank)
         } else {

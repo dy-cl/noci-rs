@@ -3,11 +3,10 @@
 //! basis.
 
 // Crate-root imports.
-use crate::basis::excitation_between;
-use crate::determinant::{NOCIIndex, NOCISpace, OrthogonalConnection};
-use crate::elements::{DetPair, FockMOCache, NOCIData, PairDeterminant};
+use crate::NOCIScalar;
+use crate::determinant::{ConnectionState, DeterminantData, NOCIIndex, NOCISpace};
+use crate::elements::{DetPair, FockMOCache, NOCIData};
 use crate::time_call;
-use crate::{Excitation, ExcitationSpin, NOCIScalar, ReducedTwoSpinState};
 
 // Parent/sibling imports.
 use super::eval::{
@@ -29,52 +28,39 @@ pub(crate) fn calculate_s_pair_orthogonal<T: NOCIScalar>(
 ) -> T {
     time_call!(crate::timers::noci::add_calculate_s_pair_orthogonal, {
         let g_occ = space.occupations(gdet);
-        match prepare_orthogonal_state(space.occupations(ldet), g_occ, 0) {
+        match connection_data(space.occupations(ldet), g_occ, 0) {
             Some(state) => xw_overlap_orthogonal(&state),
             None => T::from_real(0.0),
         }
     })
 }
 
-/// Prepare the fixed-rank orthogonal excitation taking a ket occupation into a bra occupation.
+/// Resolve the connection of a bra to a ket of the same orthonormal frame: the bra's data measured
+/// from the ket, when the operator can couple them.
 /// # Arguments:
 /// - `l_occ`: Bra alpha and beta occupation bitstrings.
 /// - `g_occ`: Ket alpha and beta occupation bitstrings.
 /// - `rank`: Largest total excitation rank coupled by the operator.
 /// # Returns:
-/// - `Option<ReducedTwoSpinState>`: Prepared phase and labels, or `None` when the operator
-///   cannot couple the occupations.
+/// - `Option<DeterminantData>`: Bra relative to the ket, or `None` when the operator cannot couple
+///   the occupations.
 #[inline(always)]
-pub(in crate::elements) fn prepare_orthogonal_state(
+pub(in crate::elements) fn connection_data(
     l_occ: (u128, u128),
     g_occ: (u128, u128),
     rank: usize,
-) -> Option<ReducedTwoSpinState> {
-    // Determine the spin-resolved excitation taking the ket occupation into the bra.
-    let (alpha_holes, alpha_parts) = excitation_between(g_occ.0, l_occ.0);
-    let (beta_holes, beta_parts) = excitation_between(g_occ.1, l_occ.1);
-    let ra = alpha_holes.count_ones() as usize;
-    let rb = beta_holes.count_ones() as usize;
+) -> Option<DeterminantData> {
+    let data = DeterminantData::between(g_occ, l_occ);
+    let (alpha, beta) = (data.alpha.excitation, data.beta.excitation);
+    let ra = alpha.holes.count_ones();
+    let rb = beta.holes.count_ones();
+
     // Particle-number changes and excitation ranks above the operator rank have zero coupling.
-    if alpha_parts.count_ones() as usize != ra
-        || beta_parts.count_ones() as usize != rb
-        || ra + rb > rank
+    if alpha.parts.count_ones() != ra || beta.parts.count_ones() != rb || (ra + rb) as usize > rank
     {
         return None;
     }
-
-    // Convert the valid connection to the reduced Slater-Condon representation.
-    let excitation = Excitation {
-        alpha: ExcitationSpin {
-            holes: alpha_holes,
-            parts: alpha_parts,
-        },
-        beta: ExcitationSpin {
-            holes: beta_holes,
-            parts: beta_parts,
-        },
-    };
-    Some(ReducedTwoSpinState::from_excitation(g_occ, &excitation))
+    Some(data)
 }
 
 /// Reusable per-parent storage for compact orthogonal Hamiltonian requests.
@@ -84,7 +70,7 @@ pub(crate) struct OrthogonalHamiltonianScratch {
     /// Source occupations of the requests of one parent.
     occupations: Vec<(u128, u128)>,
     /// Reduced connections of the requests of one parent.
-    states: Vec<ReducedTwoSpinState>,
+    states: Vec<DeterminantData>,
     /// Hamiltonian elements of the requests of one parent.
     values: Vec<f64>,
 }
@@ -117,7 +103,7 @@ impl OrthogonalHamiltonianScratch {
 /// - `()`: Writes all parent-orthogonal Hamiltonian matrix elements into `out`.
 pub(crate) fn calculate_h_pairs_orthogonal_batched(
     data: &NOCIData<'_, f64>,
-    pairs: &[(NOCIIndex, OrthogonalConnection)],
+    pairs: &[(NOCIIndex, ConnectionState)],
     scratch: &mut OrthogonalHamiltonianScratch,
     out: &mut [f64],
 ) {
@@ -133,7 +119,7 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
         group.clear();
     }
     for (output, &(source, _)) in pairs.iter().enumerate() {
-        groups[data.space.state(source).parent].push(output);
+        groups[data.space.parent(source)].push(output);
     }
 
     // Evaluate the requests of each parent as one batch, then scatter them to request order.
@@ -149,7 +135,7 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
         for &output in outputs {
             let (source, connection) = pairs[output];
             occupations.push(data.space.occupations(source));
-            states.push(connection.reduced(data.space.alpha(source), data.space.beta(source)));
+            states.push(connection.data(data.space.alpha(source), data.space.beta(source)));
         }
         values.clear();
         values.resize(outputs.len(), 0.0);
@@ -181,7 +167,7 @@ pub(crate) fn calculate_f_pair_orthogonal<T: NOCIScalar>(
         // The one-body Fock operator connects only identical determinants and single excitations
         // in one spin sector.
         let g_occ = space.occupations(gdet);
-        match prepare_orthogonal_state(space.occupations(ldet), g_occ, 1) {
+        match connection_data(space.occupations(ldet), g_occ, 1) {
             Some(state) => xw_fock_orthogonal(cache, g_occ, &state),
             None => T::from_real(0.0),
         }
@@ -189,10 +175,9 @@ pub(crate) fn calculate_f_pair_orthogonal<T: NOCIScalar>(
 }
 
 /// Evaluate the same-parent requests of one orthonormal parent through one batched kernel.
-/// Each request is converted once to its reduced fixed-rank excitation; connections beyond
-/// `rank` are written as `zero` without entering the kernel.
+/// Each request is converted once to its connection data, the bra measured from the ket;
+/// connections beyond `rank` are written as `zero` without entering the kernel.
 /// # Arguments:
-/// - `space`: Determinant space holding the parent frames.
 /// - `requests`: Same-parent `(output, pair)` requests of one orthonormal parent.
 /// - `rank`: Largest total excitation rank coupled by the operator.
 /// - `zero`: Matrix element written for uncoupled requests.
@@ -200,25 +185,20 @@ pub(crate) fn calculate_f_pair_orthogonal<T: NOCIScalar>(
 /// - `kernel`: Parent-local batched evaluator taking ket occupations, connections and outputs.
 /// # Returns:
 /// - `()`: Writes every request into `out`.
-pub(in crate::elements) fn calculate_pairs_orthogonal_batched<T, D, U>(
-    space: &NOCISpace<T>,
-    requests: &[(usize, DetPair<D>)],
+pub(in crate::elements) fn calculate_pairs_orthogonal_batched<U: Copy>(
+    requests: &[(usize, DetPair)],
     rank: usize,
     zero: U,
     out: &mut [U],
-    mut kernel: impl FnMut(&[(u128, u128)], &[ReducedTwoSpinState], &mut [U]),
-) where
-    T: NOCIScalar,
-    D: PairDeterminant<T>,
-    U: Copy,
-{
+    mut kernel: impl FnMut(&[(u128, u128)], &[DeterminantData], &mut [U]),
+) {
     // Prepare coupled requests and write uncoupled ones directly.
     let mut outputs = Vec::with_capacity(requests.len());
     let mut occupations = Vec::with_capacity(requests.len());
     let mut connections = Vec::with_capacity(requests.len());
     for &(output, pair) in requests {
-        let g_occ = pair.gdet.occupations(space);
-        match prepare_orthogonal_state(pair.ldet.occupations(space), g_occ, rank) {
+        let g_occ = (pair.ket.alpha, pair.ket.beta);
+        match connection_data((pair.bra.alpha, pair.bra.beta), g_occ, rank) {
             Some(connection) => {
                 outputs.push(output);
                 occupations.push(g_occ);

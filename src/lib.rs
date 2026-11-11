@@ -61,7 +61,6 @@ use serde::{Deserialize, Serialize};
 
 // Crate-root imports.
 use crate::config::MAXEXCIT;
-use crate::determinant::SpinDeterminantState;
 use crate::elements::MOCache;
 
 pub use error::{Error, Result};
@@ -188,108 +187,6 @@ pub struct ExcitationCache {
     pub alpha: ExcitationSpinCache,
     /// Beta-spin excitation cache.
     pub beta: ExcitationSpinCache,
-}
-
-/// Identity-free one-spin numerical state used by fixed-rank determinant-space contractions.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ReducedOneSpinState {
-    /// Fermionic phase `\phi` relative to the parent determinant for this spin sector.
-    pub(crate) phase: f64,
-    /// Cached excitation rank and orbital labels for this spin sector.
-    pub(crate) excitation_cache: ExcitationSpinCache,
-}
-
-impl ReducedOneSpinState {
-    /// Construct the minimal numerical payload for one spin sector.
-    /// # Arguments:
-    /// - `phase`: Fermionic phase `\phi` relative to the parent determinant.
-    /// - `excitation_cache`: Cached excitation rank and orbital labels.
-    /// # Returns
-    /// - `Self`: Identity-free fixed-rank kernel payload.
-    #[inline(always)]
-    pub(crate) fn new(
-        phase: f64,
-        excitation_cache: ExcitationSpinCache,
-    ) -> Self {
-        Self {
-            phase,
-            excitation_cache,
-        }
-    }
-}
-
-/// Identity-free determinant metadata for fixed-rank two-spin contractions.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ReducedTwoSpinState {
-    /// Product of alpha- and beta-spin fermionic phases relative to the parent determinant.
-    pub(crate) phase: f64,
-    /// Cached excitation ranks and orbital labels for both spin sectors.
-    pub(crate) excitation_cache: ExcitationCache,
-}
-
-impl ReducedTwoSpinState {
-    /// Combine canonical spin-component phases and fixed-rank caches for one determinant.
-    /// # Arguments:
-    /// - `alpha`: Parent-local alpha component.
-    /// - `beta`: Parent-local beta component.
-    /// # Returns:
-    /// - `Self`: Identity-free two-spin numerical payload.
-    pub(crate) fn from_spin_states(
-        alpha: &SpinDeterminantState,
-        beta: &SpinDeterminantState,
-    ) -> Self {
-        Self::new(
-            alpha.reduced.phase * beta.reduced.phase,
-            ExcitationCache {
-                alpha: alpha.reduced.excitation_cache,
-                beta: beta.reduced.excitation_cache,
-            },
-        )
-    }
-
-    /// Construct reduced determinant metadata for both spin sectors.
-    /// # Arguments:
-    /// - `phase`: Product of alpha- and beta-spin fermionic phases for determinant `I`.
-    /// - `excitation_cache`: Cached excitation ranks and orbital labels for both spin sectors.
-    /// # Returns
-    /// - `ReducedTwoSpinState`: Identity-free two-spin numerical payload.
-    #[inline(always)]
-    pub(crate) fn new(
-        phase: f64,
-        excitation_cache: ExcitationCache,
-    ) -> Self {
-        Self {
-            phase,
-            excitation_cache,
-        }
-    }
-
-    /// Construct reduced two-spin metadata for an excitation from one orthogonal source.
-    /// The phase is `p = p_\alpha p_\beta`, evaluated from the source occupations and the
-    /// existing excitation masks, while the fixed-rank labels are `C = excitation.cache()`.
-    /// # Arguments:
-    /// - `source`: Source alpha and beta occupation bitstrings.
-    /// - `excitation`: Existing excitation masks connecting the source to its child.
-    /// # Returns
-    /// - `ReducedTwoSpinState`: Identity-free phase and fixed-rank excitation cache.
-    #[inline(always)]
-    pub(crate) fn from_excitation(
-        source: (u128, u128),
-        excitation: &Excitation,
-    ) -> Self {
-        let phase_a = crate::basis::excitation_phase_bits(
-            source.0,
-            excitation.alpha.holes,
-            excitation.alpha.parts,
-        );
-        let phase_b = crate::basis::excitation_phase_bits(
-            source.1,
-            excitation.beta.holes,
-            excitation.beta.parts,
-        );
-
-        Self::new(phase_a * phase_b, excitation.cache())
-    }
 }
 
 /// Data shared by post-SCF NOCI, NOCI-QMC, and SNOCI methods.

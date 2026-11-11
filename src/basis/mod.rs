@@ -12,7 +12,7 @@
 //! ordering.
 //!
 //! Excited determinants are generated in `NOCISpace` from selected parent orbital frames.
-//! Parent-local spin components retain their excitation descriptors and fermionic phases
+//! Parent-local spin strings retain their excitation descriptors and fermionic phases
 //! for subsequent matrix-element evaluation.
 
 mod atoms;

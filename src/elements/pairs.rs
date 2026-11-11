@@ -10,14 +10,14 @@
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::determinant::NOCIIndex;
-use crate::elements::{DetPair, NOCIData, PairDeterminant};
+use crate::determinant::DeterminantState;
+use crate::elements::{DetPair, NOCIData};
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use super::operator::PairOperator;
-use super::orthogonal::{calculate_pairs_orthogonal_batched, prepare_orthogonal_state};
+use super::orthogonal::{calculate_pairs_orthogonal_batched, connection_data};
 
 /// Engine that evaluates one determinant pair.
 enum Route {
@@ -39,23 +39,22 @@ enum Route {
 /// - `pair`: Determinant pair.
 /// # Returns:
 /// - `Route`: Engine for the pair.
-fn route<T, Op, D>(
+fn route<T, Op>(
     data: &NOCIData<'_, T>,
     op: &Op,
     wicks: bool,
-    pair: DetPair<D>,
+    pair: DetPair,
 ) -> Route
 where
     T: NOCIScalar,
     Op: PairOperator<T>,
-    D: PairDeterminant<T>,
 {
-    let lp = pair.ldet.parent(data.space);
-    if lp == pair.gdet.parent(data.space) {
+    let lp = pair.bra.parent;
+    if lp == pair.ket.parent {
         // An operator of rank `R` cannot connect determinants of one orthonormal frame that
         // differ by more than `R` excitations, `2R` occupation bits.
-        let l_occ = pair.ldet.occupations(data.space);
-        let g_occ = pair.gdet.occupations(data.space);
+        let l_occ = (pair.bra.alpha, pair.bra.beta);
+        let g_occ = (pair.ket.alpha, pair.ket.beta);
         let differing = (l_occ.0 ^ g_occ.0).count_ones() + (l_occ.1 ^ g_occ.1).count_ones();
         if differing as usize > 2 * Op::RANK {
             return Route::Zero;
@@ -91,16 +90,15 @@ fn enabled_wicks<'a, T: NOCIScalar>(data: &NOCIData<'a, T>) -> Option<&'a WicksV
 /// - `()`: Writes every requested matrix element into `out`.
 /// # Panics
 /// - Panics if a Wick pair is requested without Wick scratch space.
-pub(crate) fn calculate_pairs<T, Op, D>(
+pub(crate) fn calculate_pairs<T, Op>(
     data: &NOCIData<'_, T>,
     op: &Op,
-    pairs: &[DetPair<D>],
+    pairs: &[DetPair],
     scratch: Option<&mut WickScratchSpin<T>>,
     out: &mut [Op::Out],
 ) where
     T: NOCIScalar,
     Op: PairOperator<T>,
-    D: PairDeterminant<T>,
 {
     time_call!(Op::TIMER, {
         // A single pair has no other requests to fill SIMD lanes, so evaluate it directly.
@@ -120,13 +118,13 @@ pub(crate) fn calculate_pairs<T, Op, D>(
         for (output, &pair) in pairs.iter().enumerate() {
             match route(data, op, wicks.is_some(), pair) {
                 Route::Zero => out[output] = Op::zero(),
-                Route::Orthogonal => orthogonal[pair.ldet.parent(space)].push((output, pair)),
+                Route::Orthogonal => orthogonal[pair.bra.parent].push((output, pair)),
                 Route::Wicks => {
-                    let group = pair.ldet.parent(space) * nref + pair.gdet.parent(space);
+                    let group = pair.bra.parent * nref + pair.ket.parent;
                     nonorthogonal[group].push((output, pair));
                 }
                 Route::Naive => {
-                    out[output] = op.naive(data, &pair.ldet.state(space), &pair.gdet.state(space));
+                    out[output] = op.naive(data, &pair.bra, &pair.ket);
                 }
             }
         }
@@ -137,7 +135,6 @@ pub(crate) fn calculate_pairs<T, Op, D>(
                 continue;
             }
             calculate_pairs_orthogonal_batched(
-                space,
                 requests,
                 Op::RANK,
                 Op::zero(),
@@ -172,41 +169,37 @@ pub(crate) fn calculate_pairs<T, Op, D>(
 /// - `Op::Out`: Matrix element of the pair.
 /// # Panics
 /// - Panics if the pair needs Wick's theorem and no Wick scratch space is given.
-fn calculate_pair<T, Op, D>(
+fn calculate_pair<T, Op>(
     data: &NOCIData<'_, T>,
     op: &Op,
-    pair: DetPair<D>,
+    pair: DetPair,
     scratch: Option<&mut WickScratchSpin<T>>,
 ) -> Op::Out
 where
     T: NOCIScalar,
     Op: PairOperator<T>,
-    D: PairDeterminant<T>,
 {
-    let space = data.space;
     let wicks = enabled_wicks(data);
     let mut value = [Op::zero()];
 
     match route(data, op, wicks.is_some(), pair) {
         Route::Zero => {}
         Route::Orthogonal => {
-            let g_occ = pair.gdet.occupations(space);
+            let g_occ = (pair.ket.alpha, pair.ket.beta);
             if let Some(connection) =
-                prepare_orthogonal_state(pair.ldet.occupations(space), g_occ, Op::RANK)
+                connection_data((pair.bra.alpha, pair.bra.beta), g_occ, Op::RANK)
             {
-                let parent = pair.ldet.parent(space);
+                let parent = pair.bra.parent;
                 op.orthogonal(data, parent, &[g_occ], &[connection], &mut value);
             }
         }
         Route::Wicks => {
-            let w = wicks
-                .unwrap()
-                .pair(pair.ldet.parent(space), pair.gdet.parent(space));
+            let w = wicks.unwrap().pair(pair.bra.parent, pair.ket.parent);
             let scratch = scratch.expect("Wick pairs require Wick scratch space");
             op.wicks(data, &w, &[(0, pair)], scratch, &mut value);
         }
         Route::Naive => {
-            value[0] = op.naive(data, &pair.ldet.state(space), &pair.gdet.state(space));
+            value[0] = op.naive(data, &pair.bra, &pair.ket);
         }
     }
 
@@ -232,8 +225,8 @@ where
 pub(crate) fn calculate_pairs_dense<T, Op>(
     data: &NOCIData<'_, T>,
     op: &Op,
-    ldet: NOCIIndex,
-    kets: (&[NOCIIndex], &[(usize, Vec<usize>)]),
+    ldet: DeterminantState,
+    kets: (&[DeterminantState], &[(usize, Vec<usize>)]),
     first: usize,
     mut scratch: Option<&mut WickScratchSpin<T>>,
     out: &mut [Op::Out],
@@ -243,9 +236,8 @@ pub(crate) fn calculate_pairs_dense<T, Op>(
 {
     time_call!(Op::TIMER, {
         let (right, runs) = kets;
-        let space = data.space;
         let wicks = enabled_wicks(data);
-        let lp = ldet.parent(space);
+        let lp = ldet.parent;
         let mut orthogonal = Vec::new();
         let mut nonorthogonal = Vec::new();
 
@@ -262,16 +254,13 @@ pub(crate) fn calculate_pairs_dense<T, Op>(
                     Route::Zero => out[j] = Op::zero(),
                     Route::Orthogonal => orthogonal.push((j, pair)),
                     Route::Wicks => nonorthogonal.push((j, pair)),
-                    Route::Naive => {
-                        out[j] = op.naive(data, &ldet.state(space), &right[j].state(space))
-                    }
+                    Route::Naive => out[j] = op.naive(data, &ldet, &right[j]),
                 }
             }
 
             // Evaluate the orthogonal and Wick columns of the run as one batch each.
             if !orthogonal.is_empty() {
                 calculate_pairs_orthogonal_batched(
-                    space,
                     &orthogonal,
                     Op::RANK,
                     Op::zero(),
@@ -314,15 +303,14 @@ where
     T: NOCIScalar,
     Op: PairOperator<T>,
 {
-    let space = data.space;
     let w = data
         .wicks
         .expect("comparison requires Wick intermediates")
-        .pair(pair.ldet.parent(space), pair.gdet.parent(space));
+        .pair(pair.bra.parent, pair.ket.parent);
 
     let mut wick = [Op::zero()];
     op.wicks(data, &w, &[(0, pair)], scratch, &mut wick);
-    let naive = op.naive(data, &pair.ldet.state(space), &pair.gdet.state(space));
+    let naive = op.naive(data, &pair.bra, &pair.ket);
 
     (wick[0], Op::discrepancy(wick[0], naive))
 }

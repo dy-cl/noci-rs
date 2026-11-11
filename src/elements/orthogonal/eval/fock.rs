@@ -2,7 +2,7 @@
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::ReducedTwoSpinState;
+use crate::determinant::DeterminantData;
 use crate::elements::FockMOCache;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::Simd;
@@ -24,11 +24,11 @@ use super::dispatch::dispatch_orthogonal_ranks;
 pub(crate) fn xw_fock_orthogonal<T: NOCIScalar>(
     cache: &FockMOCache<T>,
     source: (u128, u128),
-    state: &ReducedTwoSpinState,
+    state: &DeterminantData,
 ) -> T {
     let ranks = (
-        usize::from(state.excitation_cache.alpha.rank),
-        usize::from(state.excitation_cache.beta.rank),
+        usize::from(state.alpha.cache.rank),
+        usize::from(state.beta.cache.rank),
     );
 
     // Dispatch by fixed spin excitation rank. This keeps Slater-Condon formulas compile-time
@@ -54,11 +54,11 @@ pub(crate) fn xw_fock_orthogonal<T: NOCIScalar>(
 fn xw_fock_orthogonal_const<T: NOCIScalar, const RA: usize, const RB: usize>(
     cache: &FockMOCache<T>,
     source: (u128, u128),
-    state: &ReducedTwoSpinState,
+    state: &DeterminantData,
 ) -> T {
-    let alpha = &state.excitation_cache.alpha;
-    let beta = &state.excitation_cache.beta;
-    let phase = T::from_real(state.phase);
+    let alpha = &state.alpha.cache;
+    let beta = &state.beta.cache;
+    let phase = T::from_real(state.phase());
 
     if RA == 0 && RB == 0 {
         // Diagonal element: accumulate occupied alpha and beta orbital Fock energies.
@@ -127,7 +127,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalFock<'_, T> {
     fn value(
         &self,
         occupation: (u128, u128),
-        state: &ReducedTwoSpinState,
+        state: &DeterminantData,
     ) -> T {
         xw_fock_orthogonal(self.cache, occupation, state)
     }
@@ -146,7 +146,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalFock<'_, T> {
     #[inline(always)]
     unsafe fn packed<V: Simd<N, Scalar = T>, const N: usize, const RA: usize, const RB: usize>(
         &self,
-        states: &[ReducedTwoSpinState; N],
+        states: &[DeterminantData; N],
     ) -> [T; N] {
         let cache = self.cache;
         let mut out = [T::from_real(0.0); N];
@@ -157,11 +157,11 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalFock<'_, T> {
             // Alpha single: gather `pF_{ai}` from the alpha Fock matrix.
             let shape = cache.fa.shape();
             for lane in 0..N {
-                let ex = &states[lane].excitation_cache.alpha;
+                let ex = &states[lane].alpha.cache;
                 let i = usize::from(ex.holes[0]);
                 let a = usize::from(ex.particles[0]);
                 indices[lane] = a * shape[1] + i;
-                phases[lane] = states[lane].phase;
+                phases[lane] = states[lane].phase();
             }
             let fock = cache
                 .fa
@@ -176,11 +176,11 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalFock<'_, T> {
             // Beta single: gather the spin-swapped `pF_{ai}` contribution.
             let shape = cache.fb.shape();
             for lane in 0..N {
-                let ex = &states[lane].excitation_cache.beta;
+                let ex = &states[lane].beta.cache;
                 let i = usize::from(ex.holes[0]);
                 let a = usize::from(ex.particles[0]);
                 indices[lane] = a * shape[1] + i;
-                phases[lane] = states[lane].phase;
+                phases[lane] = states[lane].phase();
             }
             let fock = cache
                 .fb

@@ -36,14 +36,14 @@ pub(crate) fn noci_density<T: NOCIScalar>(
             let mut db_loc = Array2::<T>::zeros((nao, nao));
 
             let ldet = states[i];
-            let lparent = space.parent(ldet);
+            let lparent = space.parent_determinant(ldet);
             let (loa, lob) = space.occupations(ldet);
             let l_ca_occ = occ_coeffs(&lparent.ca, loa);
             let l_cb_occ = occ_coeffs(&lparent.cb, lob);
 
             for j in 0..nst {
                 let gdet = states[j];
-                let gparent = space.parent(gdet);
+                let gparent = space.parent_determinant(gdet);
                 let (goa, gob) = space.occupations(gdet);
 
                 let g_ca_occ = occ_coeffs(&gparent.ca, goa);

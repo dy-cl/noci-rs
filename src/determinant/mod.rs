@@ -12,15 +12,13 @@ pub(crate) mod state;
 
 // Public type re-exports.
 pub use parent::ParentDeterminant;
-pub use space::{NOCIDeterminantState, NOCIIndex, NOCISpace};
+pub use space::{NOCIIndex, NOCISpace};
 
 // Crate-visible type re-exports.
-pub(crate) use auxiliary::{
-    AuxiliaryDeterminantState, AuxiliaryIndex, AuxiliarySpace, AuxiliarySpinIndex,
-};
-pub(crate) use connection::OrthogonalConnection;
-pub(crate) use excited::{ExcitedDeterminant, ExcitedSpinState, ExcitedState};
-pub(crate) use space::NOCISpinIndex;
+pub(crate) use auxiliary::{AuxiliaryIndex, AuxiliarySpace, AuxiliarySpinStringIndex};
+pub(crate) use connection::ConnectionState;
+pub(crate) use excited::{DeterminantData, DeterminantState};
+pub(crate) use space::NOCISpinStringIndex;
 pub(crate) use state::{
-    DeterminantState, ParentComponents, SpinDeterminantIndex, SpinDeterminantState,
+    ParentSpinStrings, SpinStringData, SpinStringIndex, SpinStringPair, SpinStringState,
 };

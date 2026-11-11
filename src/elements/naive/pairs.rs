@@ -6,7 +6,7 @@ use ndarray::Array2;
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::determinant::ExcitedState;
+use crate::determinant::DeterminantState;
 use crate::elements::{FockData, NOCIData};
 
 // Parent/sibling imports.
@@ -15,35 +15,35 @@ use super::rules::{
     two_electron_same,
 };
 
-/// Occupied MO coefficients of both spins of one prepared determinant in its parent frame.
+/// Occupied MO coefficients of both spins of one determinant in its parent frame.
 /// # Arguments:
 /// - `data`: Shared data holding the parent orbital frames.
-/// - `det`: Prepared determinant.
+/// - `det`: Determinant.
 /// # Returns:
 /// - `(Array2<T>, Array2<T>)`: Alpha and beta occupied MO coefficients.
-fn occupied_coefficients<T: NOCIScalar>(
+pub(super) fn occupied_coefficients<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    det: &ExcitedState,
+    det: &DeterminantState,
 ) -> (Array2<T>, Array2<T>) {
-    let parent = &data.space.parents()[det.det.parent];
+    let parent = &data.space.parents()[det.parent];
     (
-        occ_coeffs(&parent.ca, det.det.alpha),
-        occ_coeffs(&parent.cb, det.det.beta),
+        occ_coeffs(&parent.ca, det.alpha),
+        occ_coeffs(&parent.cb, det.beta),
     )
 }
 
-/// Calculate the overlap matrix element between two prepared determinants using the generalised
+/// Calculate the overlap matrix element between two determinants using the generalised
 /// Slater-Condon rules.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
-/// - `bra`: Prepared bra determinant x.
-/// - `ket`: Prepared ket determinant w.
+/// - `bra`: Bra determinant x.
+/// - `ket`: Ket determinant w.
 /// # Returns:
 /// - `T`: Overlap matrix element between `bra` and `ket`.
 pub(in crate::elements) fn calculate_s_pair_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    bra: &ExcitedState,
-    ket: &ExcitedState,
+    bra: &DeterminantState,
+    ket: &DeterminantState,
 ) -> T {
     let (l_ca_occ, l_cb_occ) = occupied_coefficients(data, bra);
     let (g_ca_occ, g_cb_occ) = occupied_coefficients(data, ket);
@@ -51,22 +51,24 @@ pub(in crate::elements) fn calculate_s_pair_naive<T: NOCIScalar>(
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
-    let det_phase = T::from_real(bra.reduced.phase * ket.reduced.phase);
+    // Undo the parent-relative orbital ordering of the occupied coefficients.
+    let parents = data.space.parents();
+    let det_phase = T::from_real(bra.data(parents).phase() * ket.data(parents).phase());
     det_phase * pa.s * pb.s
 }
 
-/// Calculate the Hamiltonian and overlap matrix elements between two prepared determinants using
+/// Calculate the Hamiltonian and overlap matrix elements between two determinants using
 /// the generalised Slater-Condon rules.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
-/// - `bra`: Prepared bra determinant x.
-/// - `ket`: Prepared ket determinant w.
+/// - `bra`: Bra determinant x.
+/// - `ket`: Ket determinant w.
 /// # Returns:
 /// - `(T, T)`: Hamiltonian and overlap matrix elements between `bra` and `ket`.
 pub(in crate::elements) fn calculate_hs_pair_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    bra: &ExcitedState,
-    ket: &ExcitedState,
+    bra: &DeterminantState,
+    ket: &DeterminantState,
 ) -> (T, T) {
     let ao = data.ao;
     let (l_ca_occ, l_cb_occ) = occupied_coefficients(data, bra);
@@ -98,22 +100,22 @@ pub(in crate::elements) fn calculate_hs_pair_naive<T: NOCIScalar>(
     ((hnuc + h1 + h2), s)
 }
 
-/// Calculate the Fock and overlap matrix elements between two prepared determinants using the
+/// Calculate the Fock and overlap matrix elements between two determinants using the
 /// generalised Slater-Condon rules,
 /// `F_{xw} = F^\alpha_{xw} S^\beta_{xw} + S^\alpha_{xw} F^\beta_{xw}` and
 /// `S_{xw} = S^\alpha_{xw} S^\beta_{xw}`.
 /// # Arguments:
 /// - `fock`: Spin-resolved Fock matrices in the AO basis.
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
-/// - `bra`: Prepared bra determinant x.
-/// - `ket`: Prepared ket determinant w.
+/// - `bra`: Bra determinant x.
+/// - `ket`: Ket determinant w.
 /// # Returns:
 /// - `(T, T)`: Fock and overlap matrix elements between `bra` and `ket`.
 pub(in crate::elements) fn calculate_fs_pair_naive<T: NOCIScalar>(
     fock: &FockData<'_, T>,
     data: &NOCIData<'_, T>,
-    bra: &ExcitedState,
-    ket: &ExcitedState,
+    bra: &DeterminantState,
+    ket: &DeterminantState,
 ) -> (T, T) {
     let (l_ca_occ, l_cb_occ) = occupied_coefficients(data, bra);
     let (g_ca_occ, g_cb_occ) = occupied_coefficients(data, ket);

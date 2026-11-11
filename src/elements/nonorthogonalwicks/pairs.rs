@@ -6,70 +6,62 @@
 //! `S_{xw} = S^\alpha_{xw} S^\beta_{xw}` and
 //! `F_{xw} = F^\alpha_{xw} S^\beta_{xw} + S^\alpha_{xw} F^\beta_{xw}`, so a batch of pairs of one
 //! ordered reference pair is evaluated from its distinct same-spin factors. Each distinct pair of
-//! spin components is evaluated once, and the distinct ket components of each bra component form
+//! spin strings is evaluated once, and the distinct ket spin strings of each bra spin string form
 //! one same-spin factor row.
 
 // Standard library imports.
 use std::ops::Range;
 
 // Crate-root imports.
-use crate::NOCIScalar;
-use crate::determinant::{ExcitedSpinState, NOCISpace};
-use crate::elements::{DetPair, PairDeterminant};
+use crate::determinant::{NOCISpace, ParentDeterminant, SpinStringData};
+use crate::elements::DetPair;
 use crate::hash::FastMap;
+use crate::{NOCIScalar, StateScalar};
 
 // Parent/sibling imports.
 use super::scratch::WickScratch;
 use super::view::SameSpinView;
 use super::{
-    OneBodyFactor, OverlapFactor, SpinFactor, SpinFactorRow, SpinSources, WickScratchSpin,
+    OneBodyFactor, OverlapFactor, SpinFactor, SpinFactorRow, SpinStringSources, WickScratchSpin,
     WicksPairView, xw_spin_factor_row,
 };
 
-/// Distinct same-spin component pairs of a batch of determinant pairs, arranged as rows of one bra
-/// component against its distinct ket components.
+/// Distinct same-spin string pairs of a batch of determinant pairs, arranged as rows of one bra
+/// spin string against its distinct ket spin strings.
 struct SpinPairRows {
-    /// Bra component of each row, the slots of its factors and its distinct ket components.
-    rows: Vec<(ExcitedSpinState, Range<usize>, SpinSources)>,
-    /// Number of distinct component pairs over every row.
+    /// Bra spin string of each row, the slots of its factors and its distinct ket spin strings.
+    rows: Vec<(SpinStringData, Range<usize>, SpinStringSources)>,
+    /// Number of distinct spin-string pairs over every row.
     nslot: usize,
-    /// Slot of the component pair of each request.
+    /// Slot of the spin-string pair of each request.
     slots: Vec<usize>,
 }
 
 impl SpinPairRows {
-    /// Group the same-spin component pairs of a batch into rows of distinct pairs.
+    /// Group the same-spin string pairs of a batch into rows of distinct pairs.
     /// # Arguments:
-    /// - `space`: Determinant space holding the parent frames.
-    /// - `requests`: Output positions with their determinant pairs.
+    /// - `references`: Same-spin occupations of the bra and ket parents shared by the batch.
     /// - `occupations`: Same-spin bra and ket occupations of each request.
-    /// - `alpha`: Whether to group the alpha rather than the beta components.
     /// # Returns
-    /// - `Self`: Rows of distinct component pairs and the slot of every request.
-    fn new<T, D>(
-        space: &NOCISpace<T>,
-        requests: &[(usize, DetPair<D>)],
+    /// - `Self`: Rows of distinct spin-string pairs and the slot of every request.
+    fn new(
+        references: (u128, u128),
         occupations: &[(u128, u128)],
-        alpha: bool,
-    ) -> Self
-    where
-        T: NOCIScalar,
-        D: PairDeterminant<T>,
-    {
-        // Within one reference pair a spin component is identified by its occupation. Index the
-        // distinct bra components as rows and, within each row, the distinct ket components,
-        // preparing each component only the first time it is seen.
+    ) -> Self {
+        // Within one reference pair a spin string is identified by its occupation. Index the
+        // distinct bra spin strings as rows and, within each row, the distinct ket spin strings,
+        // preparing each spin string only the first time it is seen.
         let mut row_of: FastMap<u128, usize> = FastMap::default();
-        let mut row_sources: Vec<(ExcitedSpinState, Vec<ExcitedSpinState>)> = Vec::new();
+        let mut row_sources: Vec<(SpinStringData, Vec<SpinStringData>)> = Vec::new();
         let mut column_of: Vec<FastMap<u128, usize>> = Vec::new();
-        let mut positions = Vec::with_capacity(requests.len());
+        let mut positions = Vec::with_capacity(occupations.len());
         let mut previous: Option<(u128, usize)> = None;
-        for (&(_, pair), &(bra, ket)) in requests.iter().zip(occupations) {
+        for &(bra, ket) in occupations {
             // Consecutive requests usually share their bra, so check the previous row first.
             let row = match previous {
                 Some((key, row)) if key == bra => row,
                 _ => *row_of.entry(bra).or_insert_with(|| {
-                    row_sources.push((pair.ldet.spin(space, alpha), Vec::new()));
+                    row_sources.push((SpinStringData::between(references.0, bra), Vec::new()));
                     column_of.push(FastMap::default());
                     row_sources.len() - 1
                 }),
@@ -78,7 +70,7 @@ impl SpinPairRows {
 
             let sources = &mut row_sources[row].1;
             let column = *column_of[row].entry(ket).or_insert_with(|| {
-                sources.push(pair.gdet.spin(space, alpha));
+                sources.push(SpinStringData::between(references.1, ket));
                 sources.len() - 1
             });
             positions.push((row, column));
@@ -88,7 +80,11 @@ impl SpinPairRows {
         let mut rows = Vec::with_capacity(row_sources.len());
         let mut nslot = 0;
         for (bra, kets) in row_sources {
-            rows.push((bra, nslot..nslot + kets.len(), SpinSources::new(&kets)));
+            rows.push((
+                bra,
+                nslot..nslot + kets.len(),
+                SpinStringSources::new(&kets),
+            ));
             nslot += kets.len();
         }
         let slots = positions
@@ -99,66 +95,63 @@ impl SpinPairRows {
         Self { rows, nslot, slots }
     }
 
-    /// Group the alpha and beta component pairs of a batch, reading each request's occupations
-    /// once.
+    /// Group the alpha and beta spin-string pairs of a batch of one ordered reference pair.
     /// # Arguments:
-    /// - `space`: Determinant space holding the parent frames.
+    /// - `references`: Bra and ket parents shared by the batch.
     /// - `requests`: Output positions with their determinant pairs.
     /// # Returns
-    /// - `(Self, Self)`: Alpha and beta rows of distinct component pairs.
-    fn spins<T, D>(
-        space: &NOCISpace<T>,
-        requests: &[(usize, DetPair<D>)],
-    ) -> (Self, Self)
-    where
-        T: NOCIScalar,
-        D: PairDeterminant<T>,
-    {
+    /// - `(Self, Self)`: Alpha and beta rows of distinct spin-string pairs.
+    fn spins<T: StateScalar>(
+        references: (&ParentDeterminant<T>, &ParentDeterminant<T>),
+        requests: &[(usize, DetPair)],
+    ) -> (Self, Self) {
+        let (x, w) = references;
         let (alpha, beta): (Vec<_>, Vec<_>) = requests
             .iter()
             .map(|(_, pair)| {
-                let (la, lb) = pair.ldet.occupations(space);
-                let (ga, gb) = pair.gdet.occupations(space);
-                ((la, ga), (lb, gb))
+                (
+                    (pair.bra.alpha, pair.ket.alpha),
+                    (pair.bra.beta, pair.ket.beta),
+                )
             })
             .unzip();
         (
-            Self::new(space, requests, &alpha, true),
-            Self::new(space, requests, &beta, false),
+            Self::new((x.oa, w.oa), &alpha),
+            Self::new((x.ob, w.ob), &beta),
         )
     }
 }
 
-/// Evaluate the factors of one same-spin component pair, including the excitation phases.
+/// Evaluate the factors of one same-spin string pair, including the excitation phases.
 /// # Arguments:
 /// - `factor`: Same-spin factor family.
 /// - `w`: Same-spin Wick intermediates of the ordered reference pair.
-/// - `pair`: Bra and ket spin components.
+/// - `pair`: Bra and ket spin strings.
 /// - `scratch`: Same-spin Wick scratch space.
 /// # Returns:
-/// - `[T; K]`: Factors of the component pair.
+/// - `[T; K]`: Factors of the spin-string pair.
 fn spin_factor<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
     factor: &F,
     w: &SameSpinView<'_, T>,
-    pair: (ExcitedSpinState, ExcitedSpinState),
+    pair: (SpinStringData, SpinStringData),
     scratch: &mut WickScratch<T>,
 ) -> [T; K] {
     let (bra, ket) = pair;
-    let phase = T::from_real(bra.state.phase * ket.state.phase);
+    let phase = T::from_real(bra.phase * ket.phase);
     factor
         .values(w, (&bra, &ket), scratch)
         .map(|value| phase * value)
 }
 
 /// Evaluate the distinct same-spin factors of a batch, including the excitation phases, one row
-/// per distinct bra component.
+/// per distinct bra spin string.
 /// # Arguments:
 /// - `factor`: Same-spin factor family.
 /// - `w`: Same-spin Wick intermediates of the ordered reference pair.
-/// - `pairs`: Distinct same-spin component pairs of the batch.
+/// - `pairs`: Distinct same-spin string pairs of the batch.
 /// - `scratch`: Same-spin Wick scratch space.
 /// # Returns:
-/// - `[Vec<T>; K]`: Factors of each distinct component pair, aligned with the slots of `pairs`.
+/// - `[Vec<T>; K]`: Factors of each distinct spin-string pair, aligned with the slots of `pairs`.
 fn spin_factors<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
     factor: &F,
     w: &SameSpinView<'_, T>,
@@ -188,27 +181,32 @@ fn spin_factors<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `Vec<T>`: Overlap matrix element of each request, in request order.
-pub(in crate::elements) fn calculate_s_pairs_wicks<T, D>(
+pub(in crate::elements) fn calculate_s_pairs_wicks<T>(
     w: &WicksPairView<'_, T>,
     space: &NOCISpace<T>,
-    requests: &[(usize, DetPair<D>)],
+    requests: &[(usize, DetPair)],
     scratch: &mut WickScratchSpin<T>,
 ) -> Vec<T>
 where
     T: NOCIScalar,
-    D: PairDeterminant<T>,
 {
     // A single pair shares no factors with other requests, so evaluate both spins directly.
     if let [(_, pair)] = requests {
-        let alpha = (pair.ldet.spin(space, true), pair.gdet.spin(space, true));
-        let beta = (pair.ldet.spin(space, false), pair.gdet.spin(space, false));
+        let (bra, ket) = (
+            pair.bra.data(space.parents()),
+            pair.ket.data(space.parents()),
+        );
+        let (alpha, beta) = ((bra.alpha, ket.alpha), (bra.beta, ket.beta));
         let [sa] = spin_factor(&OverlapFactor, &w.aa, alpha, &mut scratch.aa);
         let [sb] = spin_factor(&OverlapFactor, &w.bb, beta, &mut scratch.bb);
         return vec![sa * sb];
     }
 
     // Evaluate every distinct same-spin factor once, then combine them for each request.
-    let (alpha, beta) = SpinPairRows::spins(space, requests);
+    let (_, first) = requests[0];
+    let parents = space.parents();
+    let references = (&parents[first.bra.parent], &parents[first.ket.parent]);
+    let (alpha, beta) = SpinPairRows::spins(references, requests);
     let [sa] = spin_factors(&OverlapFactor, &w.aa, &alpha, &mut scratch.aa);
     let [sb] = spin_factors(&OverlapFactor, &w.bb, &beta, &mut scratch.bb);
 
@@ -230,29 +228,34 @@ where
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `Vec<(T, T)>`: Fock and overlap matrix elements of each request, in request order.
-pub(in crate::elements) fn calculate_fs_pairs_wicks<T, D>(
+pub(in crate::elements) fn calculate_fs_pairs_wicks<T>(
     w: &WicksPairView<'_, T>,
     space: &NOCISpace<T>,
-    requests: &[(usize, DetPair<D>)],
+    requests: &[(usize, DetPair)],
     tol: f64,
     scratch: &mut WickScratchSpin<T>,
 ) -> Vec<(T, T)>
 where
     T: NOCIScalar,
-    D: PairDeterminant<T>,
 {
     // A single pair shares no factors with other requests, so evaluate both spins directly.
     let factor = OneBodyFactor { tol };
     if let [(_, pair)] = requests {
-        let alpha = (pair.ldet.spin(space, true), pair.gdet.spin(space, true));
-        let beta = (pair.ldet.spin(space, false), pair.gdet.spin(space, false));
+        let (bra, ket) = (
+            pair.bra.data(space.parents()),
+            pair.ket.data(space.parents()),
+        );
+        let (alpha, beta) = ((bra.alpha, ket.alpha), (bra.beta, ket.beta));
         let [sa, fa] = spin_factor(&factor, &w.aa, alpha, &mut scratch.aa);
         let [sb, fb] = spin_factor(&factor, &w.bb, beta, &mut scratch.bb);
         return vec![(fa * sb + fb * sa, sa * sb)];
     }
 
     // Evaluate every distinct same-spin factor once, then combine them for each request.
-    let (alpha, beta) = SpinPairRows::spins(space, requests);
+    let (_, first) = requests[0];
+    let parents = space.parents();
+    let references = (&parents[first.bra.parent], &parents[first.ket.parent]);
+    let (alpha, beta) = SpinPairRows::spins(references, requests);
     let [sa, fa] = spin_factors(&factor, &w.aa, &alpha, &mut scratch.aa);
     let [sb, fb] = spin_factors(&factor, &w.bb, &beta, &mut scratch.bb);
 

@@ -9,45 +9,16 @@ use itertools::Itertools;
 // Crate-root imports.
 use crate::basis::{excitation_between, undo_excitation};
 use crate::determinant::{
-    DeterminantState, ExcitedDeterminant, ExcitedState, ParentComponents, ParentDeterminant,
-    SpinDeterminantIndex, SpinDeterminantState,
+    DeterminantState, ParentDeterminant, ParentSpinStrings, SpinStringIndex, SpinStringPair,
+    SpinStringState,
 };
 use crate::input::Input;
-use crate::{Excitation, ExcitationSpin, ReducedTwoSpinState, SCFState, StateScalar};
+use crate::{ExcitationSpin, SCFState, StateScalar};
 
-macro_rules! determinant_index {
-    ($name:ident, $trait_name:ident) => {
-        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-        pub(crate) struct $name(
-            /// Parent-local spin-component position.
-            pub(crate) usize,
-        );
+// Parent/sibling imports.
+use super::state::determinant_index;
 
-        impl $trait_name for $name {
-            /// Construct a compact index from its position.
-            /// # Arguments:
-            /// - `index`: Parent-local position.
-            /// # Returns:
-            /// - `Self`: Typed component index.
-            #[inline(always)]
-            fn from_usize(index: usize) -> Self {
-                Self(index)
-            }
-
-            /// Return the position encoded by this index.
-            /// # Arguments:
-            /// - `self`: Typed component index.
-            /// # Returns:
-            /// - `usize`: Parent-local position.
-            #[inline(always)]
-            fn as_usize(self) -> usize {
-                self.0
-            }
-        }
-    };
-}
-
-determinant_index!(NOCISpinIndex, SpinDeterminantIndex);
+determinant_index!(NOCISpinStringIndex, SpinStringIndex);
 
 /// Global retained determinant index in the ordered NOCI basis.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -56,62 +27,18 @@ pub struct NOCIIndex(
     pub usize,
 );
 
-/// Parent and spin-component identity of one retained determinant.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct NOCIDeterminantState {
-    /// Orbital-frame parent shared with other descendants.
-    pub parent: usize,
-    /// Retained alpha component ID within that parent.
-    pub(crate) aid: NOCISpinIndex,
-    /// Retained beta component ID within that parent.
-    pub(crate) bid: NOCISpinIndex,
-}
-
-impl DeterminantState for NOCIDeterminantState {
-    type SpinIndex = NOCISpinIndex;
-
-    /// Return the retained determinant's parent orbital frame.
-    /// # Arguments:
-    /// - `self`: Retained determinant identity.
-    /// # Returns:
-    /// - `usize`: Parent frame index.
-    fn parent(&self) -> usize {
-        self.parent
-    }
-
-    /// Return the retained alpha component ID.
-    /// # Arguments:
-    /// - `self`: Retained determinant identity.
-    /// # Returns:
-    /// - `NOCISpinIndex`: Alpha component ID.
-    fn aid(&self) -> Self::SpinIndex {
-        self.aid
-    }
-
-    /// Return the retained beta component ID.
-    /// # Arguments:
-    /// - `self`: Retained determinant identity.
-    /// # Returns:
-    /// - `NOCISpinIndex`: Beta component ID.
-    fn bid(&self) -> Self::SpinIndex {
-        self.bid
-    }
-}
-
 /// Authoritative ordered NOCI determinant topology and identity registry.
 /// Active retained, selected or candidate subspaces are represented by ordered
 /// collections of `NOCIIndex` values into this space.
 pub struct NOCISpace<T: StateScalar> {
     /// Shared parent orbital frames defining all determinants in this space.
     pub(crate) parents: Arc<[ParentDeterminant<T>]>,
-    /// Canonical parent-local spin components referenced by determinant identities.
-    pub(crate) components: Vec<ParentComponents<NOCISpinIndex>>,
+    /// Canonical parent-local spin strings referenced by determinant identities.
+    pub(crate) spin_strings: Vec<ParentSpinStrings<NOCISpinStringIndex>>,
     /// Ordered determinant identities registered in this space.
-    pub(crate) states: Vec<NOCIDeterminantState>,
-    /// Labels ordered identically to `states`.
+    pub(crate) pairs: Vec<SpinStringPair<NOCISpinStringIndex>>,
+    /// Labels ordered identically to `pairs`.
     pub(crate) labels: Vec<String>,
-    /// Parent-relative numerical payloads ordered identically to `states`.
-    pub(crate) reduced: Vec<ReducedTwoSpinState>,
 }
 
 /// Format the total parent-relative excitation using the established basis labels.
@@ -199,16 +126,15 @@ impl<T: StateScalar> NOCISpace<T> {
     ) -> Self {
         let mut out = Self {
             parents: Arc::clone(&self.parents),
-            components: (0..self.parents.len())
-                .map(|_| ParentComponents::new())
+            spin_strings: (0..self.parents.len())
+                .map(|_| ParentSpinStrings::new())
                 .collect(),
-            states: Vec::new(),
+            pairs: Vec::new(),
             labels: Vec::new(),
-            reduced: Vec::new(),
         };
 
         for &source in sources {
-            let state = self.state(source);
+            let state = self.spin_string_pair(source);
             let alpha = self.alpha(source);
             let beta = self.beta(source);
 
@@ -262,13 +188,13 @@ impl<T: StateScalar> NOCISpace<T> {
                                     // labeling the total parent-to-child excitation.
                                     let parent_oa = undo_excitation(
                                         alpha.occupation,
-                                        alpha.excitation.holes,
-                                        alpha.excitation.parts,
+                                        alpha.data.excitation.holes,
+                                        alpha.data.excitation.parts,
                                     );
                                     let parent_ob = undo_excitation(
                                         beta.occupation,
-                                        beta.excitation.holes,
-                                        beta.excitation.parts,
+                                        beta.data.excitation.holes,
+                                        beta.data.excitation.parts,
                                     );
                                     let (aholes, aparts) = excitation_between(parent_oa, oa);
                                     let (bholes, bparts) = excitation_between(parent_ob, ob);
@@ -297,21 +223,20 @@ impl<T: StateScalar> NOCISpace<T> {
     /// # Returns:
     /// - `Self`: Empty retained topology with those frames.
     pub(crate) fn from_parents(parents: Vec<ParentDeterminant<T>>) -> Self {
-        let components = (0..parents.len())
-            .map(|_| ParentComponents::new())
+        let strings = (0..parents.len())
+            .map(|_| ParentSpinStrings::new())
             .collect();
 
         Self {
             parents: parents.into(),
-            components,
-            states: Vec::new(),
+            spin_strings: strings,
+            pairs: Vec::new(),
             labels: Vec::new(),
-            reduced: Vec::new(),
         }
     }
 
     /// Build an ordered temporary NOCI topology for a numerical determinant subset.
-    /// Parent orbital frames remain shared; component metadata is interned in subset order.
+    /// Parent orbital frames remain shared; spin-string payloads is interned in subset order.
     /// # Arguments:
     /// - `self`: Source retained space.
     /// - `indices`: Determinants required by the numerical operation.
@@ -323,16 +248,15 @@ impl<T: StateScalar> NOCISpace<T> {
     ) -> Self {
         let mut out = Self {
             parents: Arc::clone(&self.parents),
-            components: (0..self.parents.len())
-                .map(|_| ParentComponents::new())
+            spin_strings: (0..self.parents.len())
+                .map(|_| ParentSpinStrings::new())
                 .collect(),
-            states: Vec::new(),
+            pairs: Vec::new(),
             labels: Vec::new(),
-            reduced: Vec::new(),
         };
 
         for &index in indices {
-            let state = self.state(index);
+            let state = self.spin_string_pair(index);
             let (oa, ob) = self.occupations(index);
             out.push(state.parent, oa, ob, self.labels[index.0].clone());
         }
@@ -356,26 +280,16 @@ impl<T: StateScalar> NOCISpace<T> {
         label: String,
     ) -> NOCIIndex {
         let reference = &self.parents[parent];
-        let components = &mut self.components[parent];
+        let strings = &mut self.spin_strings[parent];
 
-        let aid = components.intern_alpha(SpinDeterminantState::new(
-            reference.oa,
-            oa,
-            reference.ca.ncols(),
-        ));
-        let bid = components.intern_beta(SpinDeterminantState::new(
-            reference.ob,
-            ob,
-            reference.cb.ncols(),
-        ));
+        let aid =
+            strings.intern_alpha(SpinStringState::new(reference.oa, oa, reference.ca.ncols()));
+        let bid = strings.intern_beta(SpinStringState::new(reference.ob, ob, reference.cb.ncols()));
 
-        let reduced =
-            ReducedTwoSpinState::from_spin_states(components.alpha(aid), components.beta(bid));
-        let index = NOCIIndex(self.states.len());
+        let index = NOCIIndex(self.pairs.len());
 
-        self.states.push(NOCIDeterminantState { parent, aid, bid });
+        self.pairs.push(SpinStringPair { parent, aid, bid });
         self.labels.push(label);
-        self.reduced.push(reduced);
 
         index
     }
@@ -386,7 +300,7 @@ impl<T: StateScalar> NOCISpace<T> {
     /// # Returns:
     /// - `usize`: Number of retained determinants.
     pub fn len(&self) -> usize {
-        self.states.len()
+        self.pairs.len()
     }
 
     /// Return whether the retained basis has no determinant identities.
@@ -395,7 +309,7 @@ impl<T: StateScalar> NOCISpace<T> {
     /// # Returns:
     /// - `bool`: Whether the ordered retained basis is empty.
     pub fn is_empty(&self) -> bool {
-        self.states.is_empty()
+        self.pairs.is_empty()
     }
 
     /// Return the selected parent orbital frames in reference order.
@@ -420,32 +334,18 @@ impl<T: StateScalar> NOCISpace<T> {
         &self.labels[index.0]
     }
 
-    /// Return one retained determinant identity.
+    /// Return the spin-string handles of one retained determinant.
     /// # Arguments:
     /// - `self`: Retained NOCI space.
     /// - `index`: Global retained determinant index.
     /// # Returns:
-    /// - `NOCIDeterminantState`: Parent and component IDs.
+    /// - `SpinStringPair<NOCISpinStringIndex>`: Parent and spin-string positions.
     #[inline(always)]
-    pub fn state(
+    pub(crate) fn spin_string_pair(
         &self,
         index: NOCIIndex,
-    ) -> NOCIDeterminantState {
-        self.states[index.0]
-    }
-
-    /// Return one parent's canonical spin-component storage.
-    /// # Arguments:
-    /// - `self`: Retained NOCI space.
-    /// - `parent`: Parent orbital-frame index.
-    /// # Returns:
-    /// - `&ParentComponents<NOCISpinIndex>`: Canonical retained components.
-    #[inline(always)]
-    pub(crate) fn parent_components(
-        &self,
-        parent: usize,
-    ) -> &ParentComponents<NOCISpinIndex> {
-        &self.components[parent]
+    ) -> SpinStringPair<NOCISpinStringIndex> {
+        self.pairs[index.0]
     }
 
     /// Return the parent orbital frame of one retained determinant.
@@ -453,40 +353,68 @@ impl<T: StateScalar> NOCISpace<T> {
     /// - `self`: Retained NOCI space.
     /// - `index`: Global retained determinant index.
     /// # Returns:
+    /// - `usize`: Parent frame index.
+    #[inline(always)]
+    pub fn parent(
+        &self,
+        index: NOCIIndex,
+    ) -> usize {
+        self.pairs[index.0].parent
+    }
+
+    /// Return one parent's canonical spin-string storage.
+    /// # Arguments:
+    /// - `self`: Retained NOCI space.
+    /// - `parent`: Parent orbital-frame index.
+    /// # Returns:
+    /// - `&ParentSpinStrings<NOCISpinStringIndex>`: Canonical retained spin strings.
+    #[inline(always)]
+    pub(crate) fn parent_spin_strings(
+        &self,
+        parent: usize,
+    ) -> &ParentSpinStrings<NOCISpinStringIndex> {
+        &self.spin_strings[parent]
+    }
+
+    /// Return the parent determinant of one retained determinant.
+    /// # Arguments:
+    /// - `self`: Retained NOCI space.
+    /// - `index`: Global retained determinant index.
+    /// # Returns:
     /// - `&ParentDeterminant<T>`: Shared parent orbital frame.
-    pub(crate) fn parent(
+    pub(crate) fn parent_determinant(
         &self,
         index: NOCIIndex,
     ) -> &ParentDeterminant<T> {
-        &self.parents[self.state(index).parent]
+        &self.parents[self.parent(index)]
     }
 
-    /// Return the retained alpha component of one determinant.
+    /// Return the retained alpha spin string of one determinant.
     /// # Arguments:
     /// - `self`: Retained NOCI space.
     /// - `index`: Global retained determinant index.
     /// # Returns:
-    /// - `&SpinDeterminantState`: Canonical alpha component.
+    /// - `&SpinStringState`: Canonical alpha spin string.
     pub(crate) fn alpha(
         &self,
         index: NOCIIndex,
-    ) -> &SpinDeterminantState {
-        let state = self.state(index);
-        self.components[state.parent].alpha(state.aid)
+    ) -> &SpinStringState {
+        let state = self.spin_string_pair(index);
+        self.spin_strings[state.parent].alpha(state.aid)
     }
 
-    /// Return the retained beta component of one determinant.
+    /// Return the retained beta spin string of one determinant.
     /// # Arguments:
     /// - `self`: Retained NOCI space.
     /// - `index`: Global retained determinant index.
     /// # Returns:
-    /// - `&SpinDeterminantState`: Canonical beta component.
+    /// - `&SpinStringState`: Canonical beta spin string.
     pub(crate) fn beta(
         &self,
         index: NOCIIndex,
-    ) -> &SpinDeterminantState {
-        let state = self.state(index);
-        self.components[state.parent].beta(state.bid)
+    ) -> &SpinStringState {
+        let state = self.spin_string_pair(index);
+        self.spin_strings[state.parent].beta(state.bid)
     }
 
     /// Return the physical alpha and beta occupations of one retained determinant.
@@ -512,7 +440,10 @@ impl<T: StateScalar> NOCISpace<T> {
         &self,
         index: NOCIIndex,
     ) -> (&ExcitationSpin, &ExcitationSpin) {
-        (&self.alpha(index).excitation, &self.beta(index).excitation)
+        (
+            &self.alpha(index).data.excitation,
+            &self.beta(index).data.excitation,
+        )
     }
 
     /// Return one retained determinant's parent-relative two-spin phase.
@@ -525,37 +456,23 @@ impl<T: StateScalar> NOCISpace<T> {
         &self,
         index: NOCIIndex,
     ) -> f64 {
-        self.reduced[index.0].phase
+        self.alpha(index).data.phase * self.beta(index).data.phase
     }
 
-    /// Return one retained determinant in its prepared form, the parent-relative excitation,
-    /// spin phases and fixed-rank payload used by the nonorthogonal matrix-element engines.
+    /// Return the identity of one retained determinant, its parent and occupations.
     /// # Arguments:
     /// - `self`: Retained NOCI space.
     /// - `index`: Global retained determinant index.
     /// # Returns:
-    /// - `ExcitedState`: Determinant with its stored excitation, phases and payload.
-    pub(crate) fn excited_state(
+    /// - `DeterminantState`: Parent and alpha and beta occupations.
+    pub(crate) fn determinant(
         &self,
         index: NOCIIndex,
-    ) -> ExcitedState {
-        let parent = self.state(index).parent;
-        let alpha = self.alpha(index);
-        let beta = self.beta(index);
-
-        ExcitedState {
-            det: ExcitedDeterminant {
-                parent,
-                alpha: alpha.occupation,
-                beta: beta.occupation,
-            },
-            excitation: Excitation {
-                alpha: alpha.excitation,
-                beta: beta.excitation,
-            },
-            phase_a: alpha.reduced.phase,
-            phase_b: beta.reduced.phase,
-            reduced: self.reduced[index.0],
+    ) -> DeterminantState {
+        DeterminantState {
+            parent: self.parent(index),
+            alpha: self.alpha(index).occupation,
+            beta: self.beta(index).occupation,
         }
     }
 }

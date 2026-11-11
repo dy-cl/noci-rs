@@ -11,8 +11,9 @@ use crate::elements::{DetPair, NOCIData};
 use crate::maths::det_occupied_minor_dynamic;
 
 // Parent/sibling imports.
-use super::super::rdm::{RDM1, RDM2, RDM3, RDM4, RDMDeterminantView, resolve_rdm_determinant};
-use super::rules::{build_s_pair, occ_coeffs, pair_density};
+use super::super::rdm::{RDM1, RDM2, RDM3, RDM4};
+use super::pairs::occupied_coefficients;
+use super::rules::{build_s_pair, pair_density};
 
 /// Split creation and annihilation indices by spin assignment mask.
 /// # Arguments:
@@ -47,16 +48,16 @@ fn split_spin_assignment(
 
 /// Calculate one spin-assignment contribution to a spin-free RDM element by determinant expansion.
 /// # Arguments:
-/// - `ldet`: Resolved bra determinant data.
-/// - `gdet`: Resolved ket determinant data.
+/// - `left`: Bra alpha and beta occupied MO coefficients.
+/// - `right`: Ket alpha and beta occupied MO coefficients.
 /// - `ps`: Creation indices in the full RDM basis.
 /// - `qs`: Annihilation indices in the full RDM basis.
 /// - `mask`: Spin assignment mask, where bit `i` selects beta for operator `i`.
 /// # Returns
 /// - `T`: Spin-assignment contribution to the spin-free RDM element.
 fn spin_assignment_rdm_element_naive<T: NOCIScalar>(
-    ldet: &RDMDeterminantView<'_, T>,
-    gdet: &RDMDeterminantView<'_, T>,
+    left: (&Array2<T>, &Array2<T>),
+    right: (&Array2<T>, &Array2<T>),
     ps: &[usize],
     qs: &[usize],
     mask: usize,
@@ -66,24 +67,20 @@ fn spin_assignment_rdm_element_naive<T: NOCIScalar>(
     // Fixed spin assignments factor into independent `\alpha` and `\beta`
     // determinant matrix elements; the spin-free RDM sums these assignments.
     let (pa, qa, pb, qb) = split_spin_assignment(ps, qs, mask);
-    let nela = ldet.oa.count_ones() as usize;
-    let nelb = ldet.ob.count_ones() as usize;
+    let ((l_ca_occ, l_cb_occ), (g_ca_occ, g_cb_occ)) = (left, right);
+    let nela = l_ca_occ.ncols();
+    let nelb = l_cb_occ.ncols();
 
-    if pa.len() > nela || pa.len() > gdet.oa.count_ones() as usize {
+    if pa.len() > nela || pa.len() > g_ca_occ.ncols() {
         return zero;
     }
 
-    if pb.len() > nelb || pb.len() > gdet.ob.count_ones() as usize {
+    if pb.len() > nelb || pb.len() > g_cb_occ.ncols() {
         return zero;
     }
 
-    let l_ca_occ = occ_coeffs(ldet.ca.as_ref(), ldet.oa);
-    let g_ca_occ = occ_coeffs(gdet.ca.as_ref(), gdet.oa);
-    let l_cb_occ = occ_coeffs(ldet.cb.as_ref(), ldet.ob);
-    let g_cb_occ = occ_coeffs(gdet.cb.as_ref(), gdet.ob);
-
-    let va = same_spin_rdm_element_naive(&l_ca_occ, &g_ca_occ, nela, &pa, &qa);
-    let vb = same_spin_rdm_element_naive(&l_cb_occ, &g_cb_occ, nelb, &pb, &qb);
+    let va = same_spin_rdm_element_naive(l_ca_occ, g_ca_occ, nela, &pa, &qa);
+    let vb = same_spin_rdm_element_naive(l_cb_occ, g_cb_occ, nelb, &pb, &qb);
 
     va * vb
 }
@@ -183,22 +180,19 @@ pub(in crate::elements) fn rdm1_pair_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     pair: DetPair,
 ) -> (T, RDM1<T>) {
-    // Resolve the determinant pair and external AO-basis tensor dimension.
-    let ldet = resolve_rdm_determinant(data.space, pair.ldet);
-    let gdet = resolve_rdm_determinant(data.space, pair.gdet);
+    // External AO-basis tensor dimension.
     let n = data.ao.h.nrows();
 
     // Extract occupied MO coefficients for each bra/ket spin sector.
-    let l_ca_occ = occ_coeffs(ldet.ca.as_ref(), ldet.oa);
-    let g_ca_occ = occ_coeffs(gdet.ca.as_ref(), gdet.oa);
-    let l_cb_occ = occ_coeffs(ldet.cb.as_ref(), ldet.ob);
-    let g_cb_occ = occ_coeffs(gdet.cb.as_ref(), gdet.ob);
+    let (l_ca_occ, l_cb_occ) = occupied_coefficients(data, &pair.bra);
+    let (g_ca_occ, g_cb_occ) = occupied_coefficients(data, &pair.ket);
 
     // Build nonorthogonal spin overlaps and their transition-density intermediates.
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
-    let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
+    let parents = data.space.parents();
+    let det_phase = T::from_real(pair.bra.data(parents).phase() * pair.ket.data(parents).phase());
     let sxw = det_phase * pa.s * pb.s;
 
     // Transform spin transition densities to the AO basis and combine their spin complements.
@@ -229,19 +223,16 @@ pub(in crate::elements) fn rdm2_pair_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     pair: DetPair,
 ) -> (T, RDM2<T>) {
-    let ldet = resolve_rdm_determinant(data.space, pair.ldet);
-    let gdet = resolve_rdm_determinant(data.space, pair.gdet);
     let n = data.ao.h.nrows();
 
-    let l_ca_occ = occ_coeffs(ldet.ca.as_ref(), ldet.oa);
-    let g_ca_occ = occ_coeffs(gdet.ca.as_ref(), gdet.oa);
-    let l_cb_occ = occ_coeffs(ldet.cb.as_ref(), ldet.ob);
-    let g_cb_occ = occ_coeffs(gdet.cb.as_ref(), gdet.ob);
+    let (l_ca_occ, l_cb_occ) = occupied_coefficients(data, &pair.bra);
+    let (g_ca_occ, g_cb_occ) = occupied_coefficients(data, &pair.ket);
 
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
-    let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
+    let parents = data.space.parents();
+    let det_phase = T::from_real(pair.bra.data(parents).phase() * pair.ket.data(parents).phase());
     let half = <T as From<f64>>::from(0.5);
     let sxw = det_phase * pa.s * pb.s;
 
@@ -316,19 +307,16 @@ pub(in crate::elements) fn rdm3_pair_naive<T: NOCIScalar>(
     pair: DetPair,
     active: &[usize],
 ) -> (T, RDM3<T>) {
-    let ldet = resolve_rdm_determinant(data.space, pair.ldet);
-    let gdet = resolve_rdm_determinant(data.space, pair.gdet);
     let n = active.len();
 
-    let l_ca_occ = occ_coeffs(ldet.ca.as_ref(), ldet.oa);
-    let g_ca_occ = occ_coeffs(gdet.ca.as_ref(), gdet.oa);
-    let l_cb_occ = occ_coeffs(ldet.cb.as_ref(), ldet.ob);
-    let g_cb_occ = occ_coeffs(gdet.cb.as_ref(), gdet.ob);
+    let (l_ca_occ, l_cb_occ) = occupied_coefficients(data, &pair.bra);
+    let (g_ca_occ, g_cb_occ) = occupied_coefficients(data, &pair.ket);
 
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
-    let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
+    let parents = data.space.parents();
+    let det_phase = T::from_real(pair.bra.data(parents).phase() * pair.ket.data(parents).phase());
     let sxw = det_phase * pa.s * pb.s;
     let mut gamma = RDM3 {
         n,
@@ -348,8 +336,13 @@ pub(in crate::elements) fn rdm3_pair_naive<T: NOCIScalar>(
                             let mut val = <T as From<f64>>::from(0.0);
 
                             for mask in 0..8 {
-                                val +=
-                                    spin_assignment_rdm_element_naive(&ldet, &gdet, &ps, &qs, mask);
+                                val += spin_assignment_rdm_element_naive(
+                                    (&l_ca_occ, &l_cb_occ),
+                                    (&g_ca_occ, &g_cb_occ),
+                                    &ps,
+                                    &qs,
+                                    mask,
+                                );
                             }
 
                             let i = (((((a * n + b) * n + c) * n + d) * n + e) * n) + f;
@@ -376,19 +369,16 @@ pub(in crate::elements) fn rdm4_pair_naive<T: NOCIScalar>(
     pair: DetPair,
     active: &[usize],
 ) -> (T, RDM4<T>) {
-    let ldet = resolve_rdm_determinant(data.space, pair.ldet);
-    let gdet = resolve_rdm_determinant(data.space, pair.gdet);
     let n = active.len();
 
-    let l_ca_occ = occ_coeffs(ldet.ca.as_ref(), ldet.oa);
-    let g_ca_occ = occ_coeffs(gdet.ca.as_ref(), gdet.oa);
-    let l_cb_occ = occ_coeffs(ldet.cb.as_ref(), ldet.ob);
-    let g_cb_occ = occ_coeffs(gdet.cb.as_ref(), gdet.ob);
+    let (l_ca_occ, l_cb_occ) = occupied_coefficients(data, &pair.bra);
+    let (g_ca_occ, g_cb_occ) = occupied_coefficients(data, &pair.ket);
 
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
-    let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
+    let parents = data.space.parents();
+    let det_phase = T::from_real(pair.bra.data(parents).phase() * pair.ket.data(parents).phase());
     let sxw = det_phase * pa.s * pb.s;
     let mut gamma = RDM4 {
         n,
@@ -411,7 +401,11 @@ pub(in crate::elements) fn rdm4_pair_naive<T: NOCIScalar>(
 
                                     for mask in 0..16 {
                                         val += spin_assignment_rdm_element_naive(
-                                            &ldet, &gdet, &ps, &qs, mask,
+                                            (&l_ca_occ, &l_cb_occ),
+                                            (&g_ca_occ, &g_cb_occ),
+                                            &ps,
+                                            &qs,
+                                            mask,
                                         );
                                     }
 

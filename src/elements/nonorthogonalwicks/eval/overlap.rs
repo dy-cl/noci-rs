@@ -3,7 +3,7 @@
 // Crate-root imports.
 use crate::ExcitationSpin;
 use crate::NOCIScalar;
-use crate::determinant::ExcitedSpinState;
+use crate::determinant::SpinStringData;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::{Simd, det_simd_const};
 use crate::maths::{det_const, det_dynamic};
@@ -125,7 +125,7 @@ impl SpinFactor<1> for OverlapFactor {
     fn values<T: NOCIScalar>(
         &self,
         w: &SameSpinView<'_, T>,
-        pair: (&ExcitedSpinState, &ExcitedSpinState),
+        pair: (&SpinStringData, &SpinStringData),
         scratch: &mut WickScratch<T>,
     ) -> [T; 1] {
         let (x, wdet) = pair;

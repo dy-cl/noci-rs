@@ -901,8 +901,12 @@ pub(in crate::noci::stochastic) fn find_s(
 ) -> f64 {
     // Get the sorted pair of indices
     let (a, b) = if i <= j { (i, j) } else { (j, i) };
-    let ldet = data.space.state(crate::determinant::NOCIIndex(a));
-    let gdet = data.space.state(crate::determinant::NOCIIndex(b));
+    let ldet = data
+        .space
+        .spin_string_pair(crate::determinant::NOCIIndex(a));
+    let gdet = data
+        .space
+        .spin_string_pair(crate::determinant::NOCIIndex(b));
 
     // If the determinants share the same parent take an orthogonal early exit.
     if ldet.parent == gdet.parent
@@ -919,7 +923,8 @@ pub(in crate::noci::stochastic) fn find_s(
     }
 
     // Otherwise calculate normally.
-    let pair = DetPair::new(
+    let pair = DetPair::from_space(
+        data.space,
         crate::determinant::NOCIIndex(a),
         crate::determinant::NOCIIndex(b),
     );
@@ -952,7 +957,8 @@ pub(in crate::noci::stochastic) fn find_hs(
     let (a, b) = if i <= j { (i, j) } else { (j, i) };
 
     // Calculate the matrix element.
-    let pair = DetPair::new(
+    let pair = DetPair::from_space(
+        data.space,
         crate::determinant::NOCIIndex(a),
         crate::determinant::NOCIIndex(b),
     );
@@ -997,17 +1003,17 @@ pub(in crate::noci::stochastic) fn max_scratch_sizes(
     space: &crate::determinant::NOCISpace<f64>
 ) -> (usize, usize, usize) {
     let maxexa = space
-        .components
+        .spin_strings
         .iter()
         .flat_map(|parent| &parent.alpha)
-        .map(|st| st.excitation.holes.count_ones() as usize)
+        .map(|st| st.data.excitation.holes.count_ones() as usize)
         .max()
         .unwrap_or(0);
     let maxexb = space
-        .components
+        .spin_strings
         .iter()
         .flat_map(|parent| &parent.beta)
-        .map(|st| st.excitation.holes.count_ones() as usize)
+        .map(|st| st.data.excitation.holes.count_ones() as usize)
         .max()
         .unwrap_or(0);
     let maxsame = 2 * maxexa.max(maxexb);

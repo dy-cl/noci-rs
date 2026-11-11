@@ -144,7 +144,7 @@ fn run_wicks_naive_fixture(
             .filter(|&i| {
                 let (oa, ob) = space.occupations(i);
                 let rank = ((oa ^ rhf.oa).count_ones() + (ob ^ rhf.ob).count_ones()) / 2;
-                space.state(i).parent == parent && rank <= max_rank && (!alpha_only || ob == rhf.ob)
+                space.parent(i) == parent && rank <= max_rank && (!alpha_only || ob == rhf.ob)
             })
             .collect()
     };
@@ -349,7 +349,7 @@ fn wicks_beh2_sto_3g_1_3_ang_complex_references_agree() {
     let select = |parent: usize| -> Vec<NOCIIndex> {
         (0..space.len())
             .map(NOCIIndex)
-            .filter(|&i| space.state(i).parent == parent)
+            .filter(|&i| space.parent(i) == parent)
             .collect()
     };
     let left = select(0);

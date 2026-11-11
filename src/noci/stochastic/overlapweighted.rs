@@ -16,12 +16,12 @@ pub(in crate::noci::stochastic) enum OverlapProposal {
         /// Exact total mixture generation probability.
         pgen: f64,
     },
-    /// The sampled Cartesian spin-component pair was invalid or had zero proposal mass.
+    /// The sampled Cartesian spin-string pair was invalid or had zero proposal mass.
     Null,
 }
 
 struct ParentDetLookup {
-    /// Number of beta components in this parent lookup.
+    /// Number of beta spin strings in this parent lookup.
     nb: usize,
     /// Dense determinant table keyed by `a * nb + b`, with `usize::MAX` for absent pairs.
     det_by_ab: Vec<usize>,
@@ -30,9 +30,9 @@ struct ParentDetLookup {
 struct DetOverlapMeta {
     /// Parent reference ID for this determinant.
     parent: usize,
-    /// Parent-local alpha component ID for this determinant.
+    /// Parent-local alpha spin-string ID for this determinant.
     a: usize,
-    /// Parent-local beta component ID for this determinant.
+    /// Parent-local beta spin-string ID for this determinant.
     b: usize,
     /// Source determinant overlap-branch normalisation `Z_x`.
     z: f64,
@@ -42,7 +42,7 @@ struct DetOverlapMeta {
 pub(in crate::noci::stochastic) struct OverlapWeightedGenerator {
     /// Parent-local determinant lookup tables keyed by `(Q,a_w,b_w)`.
     det_by_ab: Vec<ParentDetLookup>,
-    /// Per-determinant parent, component and overlap-normalisation metadata.
+    /// Per-determinant parent, spin string and overlap-normalisation metadata.
     det_meta: Vec<DetOverlapMeta>,
 }
 
@@ -78,7 +78,9 @@ impl OverlapWeightedGenerator {
         let nparent = spin.nparents();
         let det_meta = (0..data.space.len())
             .map(|det| {
-                let source = data.space.state(crate::determinant::NOCIIndex(det));
+                let source = data
+                    .space
+                    .spin_string_pair(crate::determinant::NOCIIndex(det));
                 let source_parent = source.parent;
                 let source_a = source.aid.0;
                 let source_b = source.bid.0;
@@ -237,12 +239,12 @@ impl OverlapWeightedGenerator {
         q_s
     }
 
-    /// Return the determinant for one parent-local spin-component pair.
+    /// Return the determinant for one parent-local spin-string pair.
     /// # Arguments:
     /// - `self`: Overlap-weighted generator.
     /// - `parent`: Target parent `Q`.
-    /// - `a`: Parent-local alpha component.
-    /// - `b`: Parent-local beta component.
+    /// - `a`: Parent-local alpha spin string.
+    /// - `b`: Parent-local beta spin string.
     /// # Returns:
     /// - `Option<usize>`: Determinant index when `(Q,a,b)` exists.
     fn lookup(

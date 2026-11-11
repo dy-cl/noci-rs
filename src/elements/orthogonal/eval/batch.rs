@@ -9,7 +9,7 @@
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::ReducedTwoSpinState;
+use crate::determinant::DeterminantData;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::{Lanes, Simd, lanes};
 
@@ -41,7 +41,7 @@ pub(crate) trait OrthogonalElement<T: NOCIScalar> {
     fn value(
         &self,
         occupation: (u128, u128),
-        state: &ReducedTwoSpinState,
+        state: &DeterminantData,
     ) -> T;
 
     /// Evaluate one packet of matrix elements of the fixed-rank sector `(RA, RB)`.
@@ -56,13 +56,13 @@ pub(crate) trait OrthogonalElement<T: NOCIScalar> {
     #[cfg(target_arch = "x86_64")]
     unsafe fn packed<V: Simd<N, Scalar = T>, const N: usize, const RA: usize, const RB: usize>(
         &self,
-        states: &[ReducedTwoSpinState; N],
+        states: &[DeterminantData; N],
     ) -> [T; N];
 }
 
 /// Packed fixed-rank kernel of one operator behind a target-feature boundary.
 #[cfg(target_arch = "x86_64")]
-type OrthogonalPacket<E, T, const N: usize> = unsafe fn(&E, &[ReducedTwoSpinState; N]) -> [T; N];
+type OrthogonalPacket<E, T, const N: usize> = unsafe fn(&E, &[DeterminantData; N]) -> [T; N];
 
 /// Selector of the packed fixed-rank kernel of one packet width, by excitation ranks.
 #[cfg(target_arch = "x86_64")]
@@ -82,7 +82,7 @@ type OrthogonalSelect<E, T, const N: usize> =
 pub(crate) fn xw_orthogonal_batched<E: OrthogonalElement<T>, T: NOCIScalar>(
     element: &E,
     occupations: &[(u128, u128)],
-    states: &[ReducedTwoSpinState],
+    states: &[DeterminantData],
     out: &mut [T],
 ) {
     // Packed kernels exist on CPUs with AVX2 and FMA.
@@ -118,7 +118,7 @@ pub(crate) fn xw_orthogonal_batched<E: OrthogonalElement<T>, T: NOCIScalar>(
 unsafe fn xw_orthogonal_batched_x4<E: OrthogonalElement<T>, T: NOCIScalar>(
     element: &E,
     occupations: &[(u128, u128)],
-    states: &[ReducedTwoSpinState],
+    states: &[DeterminantData],
     out: &mut [T],
 ) {
     xw_orthogonal_batched_lanes::<E, T, 4>(
@@ -145,7 +145,7 @@ unsafe fn xw_orthogonal_batched_x4<E: OrthogonalElement<T>, T: NOCIScalar>(
 unsafe fn xw_orthogonal_batched_x8<E: OrthogonalElement<T>, T: NOCIScalar>(
     element: &E,
     occupations: &[(u128, u128)],
-    states: &[ReducedTwoSpinState],
+    states: &[DeterminantData],
     out: &mut [T],
 ) {
     xw_orthogonal_batched_lanes::<E, T, 8>(
@@ -173,7 +173,7 @@ unsafe fn xw_orthogonal_batched_x8<E: OrthogonalElement<T>, T: NOCIScalar>(
 fn xw_orthogonal_batched_lanes<E: OrthogonalElement<T>, T: NOCIScalar, const N: usize>(
     element: &E,
     occupations: &[(u128, u128)],
-    states: &[ReducedTwoSpinState],
+    states: &[DeterminantData],
     out: &mut [T],
     select: OrthogonalSelect<E, T, N>,
 ) {
@@ -188,8 +188,8 @@ fn xw_orthogonal_batched_lanes<E: OrthogonalElement<T>, T: NOCIScalar, const N: 
     // Bin the packed sectors so every packet evaluates one Slater-Condon formula.
     for (output, (&occupation, state)) in occupations.iter().zip(states).enumerate() {
         let ranks = (
-            usize::from(state.excitation_cache.alpha.rank),
-            usize::from(state.excitation_cache.beta.rank),
+            usize::from(state.alpha.cache.rank),
+            usize::from(state.beta.cache.rank),
         );
         let sector = match ranks {
             (0, 0) => 0,
@@ -290,7 +290,7 @@ fn select_packet_x8<E: OrthogonalElement<T>, T: NOCIScalar>(
 #[target_feature(enable = "avx2,fma")]
 unsafe fn packet_x4<E: OrthogonalElement<T>, T: NOCIScalar, const RA: usize, const RB: usize>(
     element: &E,
-    states: &[ReducedTwoSpinState; 4],
+    states: &[DeterminantData; 4],
 ) -> [T; 4] {
     unsafe { element.packed::<T::Packed4, 4, RA, RB>(states) }
 }
@@ -307,7 +307,7 @@ unsafe fn packet_x4<E: OrthogonalElement<T>, T: NOCIScalar, const RA: usize, con
 #[target_feature(enable = "avx512f")]
 unsafe fn packet_x8<E: OrthogonalElement<T>, T: NOCIScalar, const RA: usize, const RB: usize>(
     element: &E,
-    states: &[ReducedTwoSpinState; 8],
+    states: &[DeterminantData; 8],
 ) -> [T; 8] {
     unsafe { element.packed::<T::Packed8, 8, RA, RB>(states) }
 }

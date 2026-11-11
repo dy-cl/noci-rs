@@ -3,7 +3,7 @@
 // Crate-root imports.
 use crate::ExcitationSpin;
 use crate::NOCIScalar;
-use crate::determinant::ExcitedSpinState;
+use crate::determinant::SpinStringData;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::{Simd, adjugate_transpose_simd_const};
 use crate::maths::{
@@ -43,7 +43,7 @@ impl SpinFactor<2> for OneBodyFactor {
     fn values<T: NOCIScalar>(
         &self,
         w: &SameSpinView<'_, T>,
-        pair: (&ExcitedSpinState, &ExcitedSpinState),
+        pair: (&SpinStringData, &SpinStringData),
         scratch: &mut WickScratch<T>,
     ) -> [T; 2] {
         let (x, wdet) = pair;
