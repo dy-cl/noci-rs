@@ -87,8 +87,6 @@ pub(in crate::noci::stochastic) struct QMCRunInfo {
     pub(in crate::noci::stochastic) rank_seed: u64,
     /// Population representation used by this run.
     pub(in crate::noci::stochastic) representation: PopulationRepresentation,
-    /// Target population used by this run.
-    pub(in crate::noci::stochastic) target_population: f64,
     /// Projected-energy Hamiltonian and overlap contractions aligned with `owned`.
     pub(in crate::noci::stochastic) projection_hs: Vec<(f64, f64)>,
     /// Cached diagonal Hamiltonian and overlap matrix elements for each determinant.

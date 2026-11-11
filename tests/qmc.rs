@@ -631,22 +631,21 @@ fn qmc_h6_sto_3g_1_5_ang_unshifted_wicks_trajectory() {
     );
 }
 
-/// Test that an H6 STO-3G SApply QMC trajectory reproduces the stored deterministic QMC trajectory,
-/// and that a run resumed from the restart it writes after three iterations reproduces the last
-/// reports of the uninterrupted run.
+/// Check that a trajectory matches its stored energies, and that a run resumed from the restart it
+/// writes reproduces the uninterrupted run from that report on.
 /// # Arguments:
-/// - None.
+/// - `fixture`: Name of the fixture, whose `input.lua` writes a restart and `resume.lua` reads it.
+/// - `resumed_from`: Row of the uninterrupted trajectory where the resumed one starts.
 /// # Returns
 /// - `()`: Both runs match the stored and the uninterrupted trajectory.
 /// # Panics
 /// - If either binary run fails.
 /// - If the uninterrupted trajectory differs from the stored trajectory.
-/// - If the resumed trajectory differs from the last reports of the uninterrupted run.
-#[test]
-#[serial]
-fn qmc_h6_sto_3g_1_5_ang_s_apply_restart_trajectory() {
-    let fixture = "QMC_H6_STO-3G_1_5_TRAJECTORY_S_APPLY_RESTART";
-
+/// - If the resumed trajectory differs from the uninterrupted run from `resumed_from` on.
+fn assert_restart_trajectory(
+    fixture: &str,
+    resumed_from: usize,
+) {
     // Run the uninterrupted and the resumed input in one directory, which holds the restart.
     let workdir = env::temp_dir().join(format!("noci-rs-{fixture}-{}", std::process::id()));
     fs::create_dir_all(&workdir).unwrap();
@@ -658,13 +657,12 @@ fn qmc_h6_sto_3g_1_5_ang_s_apply_restart_trajectory() {
     let resumed = qmc_report_energies(&resume, &workdir);
     fs::remove_dir_all(&workdir).unwrap();
 
-    // The resumed run starts from the state after three iterations and prints it as its first row.
     assert_eq!(
-        resumed.len() + 3,
+        resumed.len() + resumed_from,
         full.len(),
         "{fixture}: resumed trajectory length"
     );
-    for (i, (&got, &expected)) in resumed.iter().zip(&full[3..]).enumerate() {
+    for (i, (&got, &expected)) in resumed.iter().zip(&full[resumed_from..]).enumerate() {
         assert_close(
             got,
             expected,
@@ -672,4 +670,34 @@ fn qmc_h6_sto_3g_1_5_ang_s_apply_restart_trajectory() {
             &format!("{fixture} resumed report {i}"),
         );
     }
+}
+
+/// Test that an H6 STO-3G SApply QMC trajectory reproduces the stored deterministic QMC trajectory,
+/// and that a run resumed from the restart it writes after three iterations, which prints that
+/// state as its first row, reproduces the uninterrupted run.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: Both runs match the stored and the uninterrupted trajectory.
+/// # Panics
+/// - If either run differs from its expected trajectory.
+#[test]
+#[serial]
+fn qmc_h6_sto_3g_1_5_ang_s_apply_restart_trajectory() {
+    assert_restart_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_S_APPLY_RESTART", 3);
+}
+
+/// Test that an H4 STO-3G JM-NOCCMC trajectory reproduces the stored trajectory, and that a run
+/// resumed from the restart it writes after twenty reports reproduces the uninterrupted run's last
+/// reports.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: Both runs match the stored and the uninterrupted trajectory.
+/// # Panics
+/// - If either run differs from its expected trajectory.
+#[test]
+#[serial]
+fn jmnoccmc_h4_sto_3g_1_5_ang_restart_trajectory() {
+    assert_restart_trajectory("QMC_H4_STO-3G_1_5_TRAJECTORY_JMNOCCMC_RESTART", 20);
 }

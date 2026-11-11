@@ -9,12 +9,11 @@ use mpi::traits::*;
 use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::qmc::excitgen::ExcitationHist;
-use crate::qmc::{PopulationUpdate, gather_updates};
+use crate::qmc::{PopulationUpdate, gather_updates, read_restart};
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::common::{find_s, population_stats_projected_energy, projected_energy};
-use super::restart::{population_representation, read_restart_hdf5};
 use super::state::{
     MCState, NOCIMPIScratch, PopulationRepresentation, PopulationStats, PropagationState,
     QMCRunInfo, SparsePopulations,
@@ -156,67 +155,44 @@ pub(in crate::noci::stochastic) fn initialise_qmc_state(
             println!("Reading restart from {path}");
         }
 
-        let restart = read_restart_hdf5(
-            path,
-            world,
-            run.ndets,
-            run.basis_hash,
-            population_representation(data.input.prop_ref().propagator),
-        )
-        .unwrap();
-        // The saved rank-local shard must match the current MPI determinant partition.
-        if restart.populations.len() != run.owned.len() {
-            panic!(
-                "Restart population length mismatch on rank {}: saved {}, current {}.",
-                run.irank,
-                restart.populations.len(),
-                run.owned.len()
-            );
+        // Keep the saved populations of the determinants this rank owns, in its owned order.
+        let identity = (run.representation.as_str(), run.basis_hash);
+        let owns = |det: u64, _| run.det_owner[det as usize] == run.irank;
+        let restart = read_restart(path, identity, owns, world).unwrap();
+        let mut populations = vec![0.0; run.owned.len()];
+        for update in &restart.populations {
+            let position = run.owned.binary_search(&(update.index as usize)).unwrap();
+            populations[position] = update.dn;
         }
 
-        // Restore shift and histogram state, creating a requested legacy-missing histogram.
+        // Restore the shift, the controller history and the histogram, creating a requested one.
         *es = restart.shift;
-
-        let excitation_hist =
-            if data.input.write.write_excitation_hist && restart.excitation_hist.is_none() {
-                Some(ExcitationHist::new(-60.0, 1e-12, 100))
-            } else {
-                restart.excitation_hist
-            };
-
-        // Reconstruct transient sampling buffers around the persistent population vector.
+        let excitation_hist = restart.histogram.or_else(|| {
+            data.input
+                .write
+                .write_excitation_hist
+                .then(|| ExcitationHist::new(-60.0, 1e-12, 100))
+        });
         let mc = MCState {
-            populations: restart.populations,
+            populations,
             sampled: SparsePopulations::new(run.ndets),
             delta: vec![0.0; run.ndets],
             changed: Vec::new(),
             excitation_hist,
         };
+        let previous = &restart.values["previous"];
+        let prev_pop =
+            PopulationStats::new(previous[0], previous[1], previous[2], previous[3] as i64);
 
-        // Recompute projected energy but retain saved population-controller observables.
+        // Resume at the report following the restart, with the projected energy recomputed.
         let pe = projected_energy(&mc.populations, run, world);
-
-        let prev_pop = PopulationStats::new(
-            restart.nwprev,
-            restart.nrefprev,
-            restart.nsampledprev,
-            restart.nsampledoprev,
-        );
-        let overlap_weight = restart.overlap_weight.unwrap_or(qmc.overlap_weight);
-
-        // Resume at the report following the checkpoint, inferring legacy activation if needed.
         return PropagationState::new(
             mc,
             pe,
             restart.report + 1,
-            restart.reached.unwrap_or_else(|| {
-                if run.irank == 0 {
-                    println!("Warning: legacy restart lacks population-control activation state; inferring from saved population.");
-                }
-                restart.nwprev >= qmc.target_population
-            }),
+            restart.reached,
             prev_pop,
-            overlap_weight,
+            restart.values["overlap_weight"][0],
         );
     }
 

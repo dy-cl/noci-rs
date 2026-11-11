@@ -19,17 +19,18 @@ use crate::input::{Input, Propagator};
 use crate::maths::general_evp;
 use crate::mpiutils::broadcast;
 use crate::noci::OverlapFactors;
-use crate::qmc::{PopulationUpdate, exchange_to_owners, owner, rank_seed, stream};
+use crate::qmc::{
+    PopulationUpdate, basis_hash, exchange_to_owners, owner, rank_seed, restart_seed, stream,
+};
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::excit::AuxiliaryGenerator;
 use super::overlapweighted::OverlapWeightedGenerator;
-use super::restart::{basis_hash, population_representation, restart_base_seed};
 use super::state::{
     AuxiliaryPropagationResult, AuxiliaryThreadPropagation, MCState, NOCIMPIScratch,
-    NOCIPropagationResult, NOCIThreadPropagation, PopulationStats, ProjectedEnergyUpdate,
-    PropagationWorker, QMCRunInfo, ScratchSize, SparsePopulations,
+    NOCIPropagationResult, NOCIThreadPropagation, PopulationRepresentation, PopulationStats,
+    ProjectedEnergyUpdate, PropagationWorker, QMCRunInfo, ScratchSize, SparsePopulations,
 };
 
 /// Accumulate one signed population change in dense/sparse Monte Carlo storage.
@@ -656,21 +657,24 @@ pub(in crate::noci::stochastic) fn construct_qmc_run(
         isref[i] = true;
     }
 
-    // Preserve the established deterministic rank-dependent RNG construction.
+    // A restart's base seed overrides the input seed, so a resumed run continues its streams.
     let compatibility_hash = basis_hash(data.space);
-    let representation = population_representation(data.input.prop_ref().propagator);
-    let restart_seed =
-        data.input.write.read_restart.as_deref().and_then(|path| {
-            restart_base_seed(path, world, ndets, compatibility_hash, representation)
-        });
-    let base_seed = restart_seed.unwrap_or_else(|| qmc.seed.unwrap_or_else(rand::random));
-    if let (Some(restart_seed), Some(input_seed)) = (restart_seed, qmc.seed)
-        && restart_seed != input_seed
+    let representation = match data.input.prop_ref().propagator {
+        Propagator::SApply | Propagator::BApply => PopulationRepresentation::Range,
+        Propagator::Unshifted => PopulationRepresentation::Coefficient,
+    };
+    let saved_seed = data
+        .input
+        .write
+        .read_restart
+        .as_deref()
+        .map(|path| restart_seed(path, (representation.as_str(), compatibility_hash)).unwrap());
+    let base_seed = saved_seed.unwrap_or_else(|| qmc.seed.unwrap_or_else(rand::random));
+    if let (Some(saved_seed), Some(input_seed)) = (saved_seed, qmc.seed)
+        && saved_seed != input_seed
         && irank == 0
     {
-        println!(
-            "Warning: restart base seed {restart_seed} overrides input qmc.seed {input_seed}."
-        );
+        println!("Warning: restart base seed {saved_seed} overrides input qmc.seed {input_seed}.");
     }
     let rank_seed = rank_seed(base_seed, irank);
 
@@ -797,7 +801,6 @@ pub(in crate::noci::stochastic) fn construct_qmc_run(
             base_seed,
             rank_seed,
             representation,
-            target_population: qmc.target_population,
             projection_hs,
             diagonal_hs,
         },

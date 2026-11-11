@@ -35,15 +35,15 @@ write = {
 
 ## Restarts
 
-A restart holds the populations, shift and controller history, random seed and overlap weight, so
-a resumed run continues where it stopped. $S$-apply and $B$-apply restarts are
-interchangeable. Reading checks that the restart matches the determinant space and the MPI
-partition.
+A restart holds the populations, the shift and its controller history, and the random seed, so a
+resumed run continues exactly where it stopped. NOCIQMC also keeps its overlap weight, and
+JM-NOCCMC its running effective Hamiltonian. $S$-apply and $B$-apply restarts are interchangeable.
+Reading checks that the restart comes from the same kind of propagation and determinant space.
+Populations are stored with their indices, so a run may resume on a different number of MPI
+ranks. Restarts written before this format are not read.
 
 :::{note}
 A restart is written every `write_restart_interval` iterations, and when a `STOP` file appears
 in the working directory, which also ends the run cleanly. It is **not** written when a run
 finishes normally, so set `write_restart_interval` to keep a restart of a completed run.
 :::
-
-JM-NOCCMC does not use the restart options yet.

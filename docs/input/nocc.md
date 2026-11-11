@@ -136,4 +136,4 @@ together with one key of its own:
 | `memory_effective` | number | `100` | Memory, in reports, of the running estimate of $G$. At least 1. |
 
 Only the `uniform` generator is allowed, and `n_projected` must be omitted because only reference
-trials give the JM-NOCCMC energy. JM-NOCCMC does not use `prop`, `excit` or the restart options.
+trials give the JM-NOCCMC energy. JM-NOCCMC does not use `prop` or `excit`.

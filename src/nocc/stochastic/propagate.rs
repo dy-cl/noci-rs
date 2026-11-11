@@ -1,5 +1,8 @@
 // nocc/stochastic/propagate.rs
 
+// Standard library imports.
+use std::collections::BTreeMap;
+
 // External crate imports.
 use mpi::topology::Communicator;
 use mpi::traits::*;
@@ -14,9 +17,9 @@ use crate::input::{JMNOCCMCOptions, QMCOptions};
 use crate::mpiutils::all_reduce_array1;
 use crate::nocc::Effective;
 use crate::qmc::{
-    AliasTable, ExchangeScratch, PopulationUpdate, Propagator, QmcRng, coalesce, compress_sparse,
-    exchange_to_owners, gather_updates, owner_words, print_table_header, print_table_row,
-    rank_seed, run, stream, update_shift,
+    AliasTable, ExchangeScratch, PopulationUpdate, Propagator, QmcRng, Restart, basis_hash,
+    coalesce, compress_sparse, exchange_to_owners, gather_updates, owner_words, print_table_header,
+    print_table_row, rank_seed, read_restart, run, stream, update_shift, write_restart,
 };
 
 // Parent/sibling imports.
@@ -32,6 +35,9 @@ const CHUNK: usize = 256;
 /// Number of parallel tasks per block and kind on each Rayon thread, bounding the per-task
 /// spawn maps held at once.
 const TASKSPERTHREAD: usize = 4;
+
+/// Kind of propagation recorded in, and required of, JM-NOCCMC restarts.
+const RESTARTKIND: &str = "jmnoccmc";
 
 /// Salt of the rank-local population-rounding stream.
 const ROUNDSALT: u64 = 0x8EBC6AF09C88C6E3;
@@ -76,19 +82,17 @@ fn owner(
 /// clusters.
 /// # Arguments:
 /// - `spaces`: Projection and expansion spaces of every reference block.
-/// - `populations`: Excitor populations owned by this rank, references included.
+/// - `populations`: Excitor populations owned by this rank, references included, by index.
 /// - `nref`: Global reference populations `N_z`.
 /// - `ranks`: Number of ranks `P` holding the distributed excitors.
 /// # Returns:
 /// - `Vec<Block>`: Block populations of this rank.
 fn blocks(
     spaces: &ReferenceSpaces,
-    populations: &FastMap<ExcitorIndex, f64>,
+    populations: &[(ExcitorIndex, f64)],
     nref: &[f64],
     ranks: f64,
 ) -> Vec<Block> {
-    let mut keys = populations.keys().copied().collect::<Vec<_>>();
-    keys.par_sort_unstable();
     let mut out = spaces
         .references
         .iter()
@@ -96,10 +100,12 @@ fn blocks(
         .map(|(reference, &nref)| (*reference, nref, Vec::new()))
         .collect::<Vec<_>>();
 
-    for key in keys.into_iter().filter(|&key| !spaces.is_reference(key)) {
+    for &(key, n) in populations
+        .iter()
+        .filter(|&&(key, _)| !spaces.is_reference(key))
+    {
         let (reference, _, excitors) = &mut out[spaces.block(key)];
-        let excitor = Excitor::new(reference, spaces.determinant(key));
-        excitors.push((excitor, populations[&key]));
+        excitors.push((Excitor::new(reference, spaces.determinant(key)), n));
     }
     out.into_iter()
         .map(|(reference, nref, excitors)| {
@@ -554,19 +560,19 @@ fn round_populations(
 /// Population statistics over every rank: the total population `\sum|n|`, the reference
 /// population `\sum_x|N_x|` and the number of occupied excitors.
 /// # Arguments:
-/// - `populations`: Excitor populations owned by this rank, references included.
+/// - `populations`: Excitor populations owned by this rank, references included, by index.
 /// - `spaces`: Spaces of every reference block, which tell its references apart.
 /// - `world`: MPI communicator.
 /// # Returns:
 /// - `(f64, f64, i64)`: Total population, reference population and occupied excitors.
 fn population_stats(
-    populations: &FastMap<ExcitorIndex, f64>,
+    populations: &[(ExcitorIndex, f64)],
     spaces: &ReferenceSpaces,
     world: &impl Communicator,
 ) -> (f64, f64, i64) {
     // This rank's contributions.
     let mut stats = vec![0.0; 3];
-    for (&key, n) in populations {
+    for &(key, n) in populations {
         stats[0] += n.abs();
         if spaces.is_reference(key) {
             stats[1] += n.abs();
@@ -629,11 +635,13 @@ pub(crate) fn jm_qmc_step(
     world: &impl Communicator,
 ) -> f64 {
     let mut jm = JMRun::new(data, options, c0, shift, world);
-    let qmc = jm.qmc;
+    let (qmc, write) = (jm.qmc, &data.input.write);
+    let path = write.write_restart.as_deref().unwrap_or("RESTART.H5");
+    let reports = jm.first..qmc.nreports;
     run(
         &mut jm,
-        (0..qmc.nreports, qmc.ncycles),
-        (None, "RESTART.H5"),
+        (reports, qmc.ncycles),
+        (write.write_restart_interval, path),
         world,
     );
     jm.eproj
@@ -655,14 +663,14 @@ struct ReportView {
 /// Build the frozen view of the populations for the next report.
 /// # Arguments:
 /// - `spaces`: Projection and expansion spaces of every reference block.
-/// - `populations`: Excitor populations owned by this rank, references included.
+/// - `populations`: Excitor populations owned by this rank, references included, by index.
 /// - `lagged`: Lagged effective Hamiltonian `G`.
 /// - `world`: MPI communicator.
 /// # Returns:
 /// - `ReportView`: Reference populations, blocks, `\tilde G` and attempts of the report.
 fn report_view(
     spaces: &ReferenceSpaces,
-    populations: &FastMap<ExcitorIndex, f64>,
+    populations: &[(ExcitorIndex, f64)],
     lagged: &Array2<f64>,
     world: &impl Communicator,
 ) -> ReportView {
@@ -671,7 +679,7 @@ fn report_view(
 
     // Global reference populations and excitor norms, then this rank's block view.
     let mut totals = vec![0.0; 2 * m];
-    for (&key, &n) in populations {
+    for &(key, n) in populations {
         if spaces.is_reference(key) {
             totals[spaces.block(key)] += n;
         } else {
@@ -719,6 +727,8 @@ struct JMRun<'a, C> {
     populations: FastMap<ExcitorIndex, f64>,
     /// Base seed shared by every rank and this rank's seed.
     seeds: (u64, u64),
+    /// First report of the run, after any restart.
+    first: usize,
     /// Energy of the first reference, the zero of the reported shift.
     e0: f64,
     /// Lagged effective Hamiltonian `G`.
@@ -780,40 +790,86 @@ impl<'a, C: Communicator> JMRun<'a, C> {
         let nranks = world.size() as usize;
         let m = data.space.len();
 
+        // A restart's populations are those this rank owns under the next report's assignment.
+        let identity = (RESTARTKIND, basis_hash(data.space));
+        let restart = data.input.write.read_restart.as_deref().map(|path| {
+            if irank == 0 {
+                println!("Reading restart from {path}");
+            }
+            let owns = |index: u64, (report, base): (usize, u64)| {
+                let next = base ^ ((report + 1) as u64).wrapping_mul(ASSIGNSTRIDE);
+                owner(ExcitorIndex(index as usize), next, nranks) == irank
+            };
+            read_restart(path, identity, owns, world).unwrap()
+        });
+
         // One base seed for every rank, from which the shared assignments and the rank streams
-        // follow.
-        let mut base = qmc.seed.unwrap_or_else(rand::random);
-        world.process_at_rank(0).broadcast_into(&mut base);
+        // follow; a restart keeps its own.
+        let base = match &restart {
+            Some(restart) => restart.seed,
+            None => {
+                let mut base = qmc.seed.unwrap_or_else(rand::random);
+                world.process_at_rank(0).broadcast_into(&mut base);
+                base
+            }
+        };
 
         // Fixed spaces of every block, which also index their excitors.
         let spaces = ReferenceSpaces::new(data, options);
 
         // Initial reference populations from the NOCI coefficients and the exact effective
         // Hamiltonian of uncorrelated references, `G = S^{-1}H`.
-        let (trial, populations) =
+        let (trial, mut populations) =
             initial_populations(&spaces, c0, qmc.initial_population, (base, irank, nranks));
         let uncorrelated = uncorrelated_effective(data, &spaces);
-        let lagged = uncorrelated.g().expect("singular reference overlap");
-
-        print_table_header(irank, ["NWalk", "NRef", "-", "NExcitors"]);
+        let mut lagged = uncorrelated.g().expect("singular reference overlap");
         let local_norm = populations.values().map(|n: &f64| n.abs()).sum::<f64>();
-        let previous = all_reduce_array1(world, Array1::from_vec(vec![local_norm]))[0];
+        let mut previous = all_reduce_array1(world, Array1::from_vec(vec![local_norm]))[0];
+        let (mut shift, mut reached, mut first) = (shift, false, 0);
+        let mut running = Effective::new(m);
+
+        // A restart replaces them with the saved populations, shift and effective sums.
+        if let Some(restart) = restart {
+            populations = restart
+                .populations
+                .iter()
+                .map(|u| (ExcitorIndex(u.index as usize), u.dn))
+                .collect();
+            let matrix = |values: &[f64]| Array2::from_shape_vec((m, m), values.to_vec()).unwrap();
+            let sums = &restart.values["running"];
+            running = Effective {
+                se: matrix(&sums[..m * m]),
+                he: matrix(&sums[m * m..]),
+            };
+            lagged = matrix(&restart.values["lagged"]);
+            previous = restart.values["previous"][0];
+            (shift, reached, first) = (restart.shift, restart.reached, restart.report + 1);
+        }
+        print_table_header(irank, ["NWalk", "NRef", "-", "NExcitors"]);
+
+        // The first report's view, from the populations in index order.
+        let mut sorted = populations
+            .iter()
+            .map(|(&key, &n)| (key, n))
+            .collect::<Vec<_>>();
+        sorted.par_sort_unstable_by_key(|&(key, _)| key);
 
         Self {
             data,
             world,
             options,
             qmc,
-            view: report_view(&spaces, &populations, &lagged, world),
+            view: report_view(&spaces, &sorted, &lagged, world),
             spaces,
             trial,
             populations,
             seeds: (base, rank_seed(base, irank)),
+            first,
             e0: uncorrelated.he[(0, 0)],
             lagged,
-            running: Effective::new(m),
+            running,
             shift,
-            reached: false,
+            reached,
             previous,
             block: Effective::new(m),
             projected: (0.0, 0.0),
@@ -971,8 +1027,15 @@ impl<C: Communicator> Propagator for JMRun<'_, C> {
             self.lagged = g;
         }
 
-        // Population statistics over every rank and the shift update.
-        let stats = population_stats(&self.populations, &self.spaces, self.world);
+        // Population statistics over every rank and the shift update, summed in index order so
+        // they do not depend on the layout of the population map.
+        let mut sorted = self
+            .populations
+            .iter()
+            .map(|(&key, &n)| (key, n))
+            .collect::<Vec<_>>();
+        sorted.par_sort_unstable_by_key(|&(key, _)| key);
+        let stats = population_stats(&sorted, &self.spaces, self.world);
         update_shift(
             &mut self.shift,
             &mut self.reached,
@@ -993,19 +1056,54 @@ impl<C: Communicator> Propagator for JMRun<'_, C> {
         self.projected = (0.0, 0.0);
         self.spawns.clear();
         self.coupled.clear();
-        self.view = report_view(&self.spaces, &self.populations, &self.lagged, self.world);
+        self.view = report_view(&self.spaces, &sorted, &self.lagged, self.world);
     }
 
-    /// JM-NOCCMC does not write restarts yet.
+    /// Write the owned populations, the shift and the effective sums and lagged `G` carried to
+    /// the next report.
     /// # Arguments:
     /// - `self`: JM-NOCCMC run.
-    /// - `_`: Last completed report.
+    /// - `report`: Last completed report.
     /// # Returns
-    /// - `()`: Writes nothing.
+    /// - `()`: Writes the restart file.
     fn write_restart(
         &mut self,
-        _: usize,
+        report: usize,
     ) {
+        let populations = self
+            .populations
+            .iter()
+            .map(|(&key, &n)| PopulationUpdate {
+                index: key.0 as u64,
+                dn: n,
+            })
+            .collect();
+        let running = &self.running;
+        let values = BTreeMap::from([
+            ("previous".to_string(), vec![self.previous]),
+            (
+                "running".to_string(),
+                running
+                    .se
+                    .iter()
+                    .chain(running.he.iter())
+                    .copied()
+                    .collect(),
+            ),
+            ("lagged".to_string(), self.lagged.iter().copied().collect()),
+        ]);
+        let restart = Restart {
+            report,
+            shift: self.shift,
+            reached: self.reached,
+            seed: self.seeds.0,
+            populations,
+            values,
+            histogram: None,
+        };
+        let path = self.data.input.write.write_restart.as_deref();
+        let identity = (RESTARTKIND, basis_hash(self.data.space));
+        write_restart(path.unwrap_or("RESTART.H5"), identity, &restart, self.world).unwrap();
     }
 
     /// Print the report's populations, projected-energy terms and shift.

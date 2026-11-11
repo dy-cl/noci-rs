@@ -5,8 +5,8 @@
 //! wavefunction: seeded random-number streams, MPI ownership of sparse keys, exchange and
 //! annihilation of keyed population updates, Fast Randomised Iteration compression, the
 //! population-control shift, stop requests, alias tables for constant-time weighted selection,
-//! excitation generators within one orthonormal orbital frame, and the report loop every
-//! propagator runs under. Method subfolders such as
+//! excitation generators within one orthonormal orbital frame, restart files, and the report loop
+//! every propagator runs under. Method subfolders such as
 //! `noci::stochastic` and `nocc::stochastic` build their population storage and propagators on top
 //! of it. This layer never depends on a method family.
 //!
@@ -23,6 +23,7 @@ mod exchange;
 mod fri;
 mod ownership;
 mod report;
+mod restart;
 mod rng;
 mod run;
 mod shift;
@@ -30,6 +31,7 @@ mod shift;
 // Crate-visible type re-exports.
 pub(crate) use alias::AliasTable;
 pub(crate) use exchange::{ExchangeScratch, PopulationUpdate};
+pub(crate) use restart::Restart;
 pub(crate) use rng::QmcRng;
 pub(crate) use run::Propagator;
 
@@ -42,6 +44,7 @@ pub(crate) use fri::{
 };
 pub(crate) use ownership::{owner, owner_words};
 pub(crate) use report::{print_table_header, print_table_row};
+pub(crate) use restart::{basis_hash, read_restart, restart_seed, write_restart};
 pub(crate) use rng::{rank_seed, stream};
 pub(crate) use run::run;
 pub(crate) use shift::update_shift;
