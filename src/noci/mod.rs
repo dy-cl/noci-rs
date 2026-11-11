@@ -33,7 +33,8 @@ pub use matrix::{build_noci_hs, calculate_noci_energy};
 
 // Crate-visible type re-exports.
 pub(crate) use factorise::{
-    OneBodyFactorisation, OneBodyScratch, OverlapFactors, OverlapScratch, SpinFactorisation,
+    AuxiliaryOverlapScratch, OneBodyFactorisation, OneBodyScratch, OverlapFactors, OverlapScratch,
+    SpinFactorisation,
 };
 
 // Crate-visible function re-exports.

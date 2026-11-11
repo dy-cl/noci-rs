@@ -5,8 +5,7 @@ use mpi::topology::Communicator;
 
 // Crate-root imports.
 use crate::input::Propagator;
-use crate::qmc::excitgen::ExcitationHist;
-use crate::qmc::{print_table_header, print_table_row, stop_requested};
+use crate::qmc::{print_table_header, print_table_row};
 
 // Parent/sibling imports.
 use super::restart::{RestartState, write_restart_hdf5};
@@ -150,38 +149,4 @@ pub(in crate::noci::stochastic) fn write_restart(
     let restart_path = restart_path.map(String::as_str).unwrap_or("RESTART.H5");
 
     write_restart_hdf5(restart_path, world, &restart).unwrap();
-}
-
-/// Check for a `STOP` file, write a restart if required, and return early.
-/// # Arguments:
-/// - `report`: Current report number.
-/// - `state`: Propagation state containing QMC bookkeeping data.
-/// - `shift`: Current population-control shift.
-/// - `run`: Rank-local propagation metadata.
-/// - `world`: MPI communicator.
-/// - `restart_path`: Optional restart file path.
-/// # Returns:
-/// - `Option<(f64, Option<ExcitationHist>)>`: Final result if stopping.
-pub(in crate::noci::stochastic) fn check_stop(
-    report: usize,
-    state: &mut PropagationState,
-    shift: f64,
-    run: &QMCRunInfo,
-    world: &impl Communicator,
-    restart_path: Option<&String>,
-) -> Option<(f64, Option<ExcitationHist>)> {
-    // Every rank receives one decision so all ranks enter the collective restart write together.
-    if !stop_requested(run.irank, run.nranks, world) {
-        return None;
-    }
-
-    // Write the restart before the run ends, then remove the request.
-    write_restart(report, state, shift, run, world, restart_path);
-    if run.irank == 0 {
-        let restart_path = restart_path.map(String::as_str).unwrap_or("RESTART.H5");
-        let _ = std::fs::remove_file("STOP");
-        println!("STOP detected, wrote {restart_path} and exiting");
-    }
-
-    Some((state.eprojcur, state.mc.excitation_hist.take()))
 }

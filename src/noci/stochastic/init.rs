@@ -13,14 +13,15 @@ use crate::qmc::gather_updates;
 use crate::time_call;
 
 // Parent/sibling imports.
-use super::common::{find_s, projected_energy};
+use super::common::{find_s, population_stats_projected_energy, projected_energy};
 use super::restart::{population_representation, read_restart_hdf5};
 use super::state::{
-    MCState, NOCIMPIScratch, NOCIPopulationUpdate, PopulationStats, PropagationState, QMCRunInfo,
-    SparsePopulations,
+    MCState, NOCIMPIScratch, NOCIPopulationUpdate, PopulationRepresentation, PopulationStats,
+    PropagationState, QMCRunInfo, SparsePopulations,
 };
 
-/// Initialise the persistent range-safe population vector as `S c0`.
+/// Initialise the persistent range-safe population vector as `S c0`, the starting populations of
+/// the range propagators.
 /// # Arguments:
 /// - `c0`: Initial determinant coefficient vector.
 /// - `initial_population`: Requested initial population 1-norm.
@@ -31,7 +32,7 @@ use super::state::{
 /// - `mpiscratch`: Reusable MPI scratch storage.
 /// # Returns:
 /// - `Vec<f64>`: Rank-local persistent real populations.
-pub(in crate::noci::stochastic) fn initialise_populations(
+fn initialise_range_populations(
     c0: &[f64],
     initial_population: f64,
     data: &NOCIData<'_, f64>,
@@ -87,6 +88,39 @@ pub(in crate::noci::stochastic) fn initialise_populations(
 
         populations
     })
+}
+
+/// Initialise rank-local coefficient populations proportional to `c_0`, the starting populations of
+/// the unshifted propagator.
+/// # Arguments:
+/// - `c0`: Initial determinant coefficient vector.
+/// - `initial_population`: Requested initial population 1-norm.
+/// - `run`: Rank-local propagation metadata.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `Vec<f64>`: Rank-local coefficient populations proportional to `c_0`.
+fn initialise_coefficient_populations(
+    c0: &[f64],
+    initial_population: f64,
+    run: &QMCRunInfo,
+    world: &impl Communicator,
+) -> Vec<f64> {
+    let local_norm = run.owned.iter().map(|&i| c0[i].abs()).sum::<f64>();
+    let mut global_norm = 0.0;
+
+    if run.nranks == 1 {
+        global_norm = local_norm;
+    } else {
+        world.all_reduce_into(&local_norm, &mut global_norm, SystemOperation::sum());
+    }
+
+    let scale = if global_norm == 0.0 {
+        0.0
+    } else {
+        initial_population / global_norm
+    };
+
+    run.owned.iter().map(|&i| scale * c0[i]).collect()
 }
 
 /// Initialise projected energy, populations, and population totals across ranks.
@@ -186,20 +220,24 @@ pub(in crate::noci::stochastic) fn initialise_qmc_state(
         );
     }
 
-    // Without a checkpoint, construct and globally normalise fresh initial populations.
+    // Without a checkpoint, start from the populations of the propagator's representation.
     if run.irank == 0 {
         println!("Initialising populations.....");
     }
-
-    let populations = initialise_populations(
-        c0,
-        qmc.initial_population,
-        data,
-        run,
-        world,
-        scratch,
-        mpiscratch,
-    );
+    let populations = match run.representation {
+        PopulationRepresentation::Range => initialise_range_populations(
+            c0,
+            qmc.initial_population,
+            data,
+            run,
+            world,
+            scratch,
+            mpiscratch,
+        ),
+        PopulationRepresentation::Coefficient => {
+            initialise_coefficient_populations(c0, qmc.initial_population, run, world)
+        }
+    };
 
     // Allocate optional diagnostics and empty per-iteration population buffers.
     let excitation_hist = if data.input.write.write_excitation_hist {
@@ -216,31 +254,7 @@ pub(in crate::noci::stochastic) fn initialise_qmc_state(
         excitation_hist,
     };
 
-    // Evaluate the initial projected energy and rank-local total/reference norms.
-    let pe = projected_energy(&mc.populations, run, world);
-
-    let nw_local = mc
-        .populations
-        .iter()
-        .map(|population| population.abs())
-        .sum::<f64>();
-
-    let nref_local = mc
-        .populations
-        .iter()
-        .enumerate()
-        .filter(|(k, _)| isref[run.owned[*k]])
-        .map(|(_, population)| population.abs())
-        .sum::<f64>();
-
-    let local = [nw_local, nref_local];
-    let mut global = [0.0; 2];
-
-    // Sum population norms across ranks for the initial shift-controller state.
-    world.all_reduce_into(&local, &mut global, SystemOperation::sum());
-
-    let stats = PopulationStats::new(global[0], global[1], 0.0, 0);
-
-    // Start a fresh run at report zero with population control inactive.
+    // The initial statistics start the shift controller, with population control inactive.
+    let (stats, pe) = population_stats_projected_energy(&mc, isref, run, world);
     PropagationState::new(mc, pe, 0, false, stats, qmc.overlap_weight)
 }

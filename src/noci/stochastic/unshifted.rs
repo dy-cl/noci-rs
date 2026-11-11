@@ -14,64 +14,21 @@ use std::path::Path;
 use std::sync::Mutex;
 
 // External crate imports.
-use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
-use mpi::traits::*;
 
 // Crate-root imports.
 use crate::elements::NOCIData;
 use crate::input::ExcitationGen;
-use crate::noci::SpinFactorisation;
-use crate::qmc::excitgen::ExcitationHist;
-use crate::qmc::{coalesce, stream};
+use crate::noci::{OverlapFactors, SpinFactorisation};
+use crate::qmc::coalesce;
 
 // Parent/sibling imports.
-use super::common::{
-    accumulate_generated_updates, exchange_accumulated_updates, population_stats_projected_energy,
-    propagate_iteration, take_population_changes,
-};
-use super::excit::update_overlap_weight;
-use super::fri::sample_populations;
+use super::common::{exchange_accumulated_updates, take_population_changes};
 use super::overlapweighted::OverlapWeightedGenerator;
-use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
-use super::restart::{population_representation, read_restart_hdf5};
-use super::shift::update_shift;
+use super::propagate::{NOCIPropagator, NOCIRun};
 use super::state::{
-    MCState, NOCIMPIScratch, NOCIPropagationResult, NOCIThreadPropagation, OverlapDerivativeSums,
-    PopulationStats, ProjectedEnergyUpdate, PropagationState, QMCRunInfo, SparsePopulations,
+    NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation, QMCRunInfo, ScratchSize,
 };
-
-/// Initialise rank-local coefficient populations from the initial coefficient vector.
-/// # Arguments:
-/// - `c0`: Initial determinant coefficient vector.
-/// - `initial_population`: Requested initial population 1-norm.
-/// - `run`: Rank-local propagation metadata.
-/// - `world`: MPI communicator.
-/// # Returns:
-/// - `Vec<f64>`: Rank-local coefficient populations proportional to `c_0`.
-fn initialise_populations(
-    c0: &[f64],
-    initial_population: f64,
-    run: &QMCRunInfo,
-    world: &impl Communicator,
-) -> Vec<f64> {
-    let local_norm = run.owned.iter().map(|&i| c0[i].abs()).sum::<f64>();
-    let mut global_norm = 0.0;
-
-    if run.nranks == 1 {
-        global_norm = local_norm;
-    } else {
-        world.all_reduce_into(&local_norm, &mut global_norm, SystemOperation::sum());
-    }
-
-    let scale = if global_norm == 0.0 {
-        0.0
-    } else {
-        initial_population / global_norm
-    };
-
-    run.owned.iter().map(|&i| scale * c0[i]).collect()
-}
 
 /// Apply direct coefficient-population changes to rank-local populations.
 /// # Arguments:
@@ -82,7 +39,7 @@ fn initialise_populations(
 /// - `()`: Updates rank-local populations in place.
 fn apply_population_changes(
     populations: &mut [f64],
-    changes: &[super::state::NOCIPopulationUpdate],
+    changes: &[NOCIPopulationUpdate],
     local_pos: &[usize],
 ) {
     for update in changes {
@@ -95,272 +52,136 @@ fn apply_population_changes(
     }
 }
 
-/// Perform stochastic NOCI propagation with the unshifted propagator on coefficient populations.
-/// # Arguments:
-/// - `data`: Immutable stochastic propagation data.
-/// - `c0`: Initial determinant coefficient vector.
-/// - `es`: Population-control shift energy.
-/// - `ref_indices`: Determinants included in the reference-population norm.
-/// - `world`: MPI communicator.
-/// # Returns:
-/// - `(f64, Option<ExcitationHist>)`: Final projected energy and optional
-///   spawning-magnitude histogram.
-/// # Panics
-/// - Panics if restart populations do not match this rank's determinant layout.
-pub fn qmc_step(
-    data: &NOCIData<'_, f64>,
-    c0: &[f64],
-    es: &mut f64,
-    ref_indices: &[usize],
-    world: &impl Communicator,
-) -> (f64, Option<ExcitationHist>) {
-    // Validate report-aligned checkpointing and construct the rank-local run topology.
-    let qmc = data.input.qmc.as_ref().unwrap();
+/// The unshifted propagator of coefficient populations, `c' = c - \Delta\tau(H - E_s S)c`, with
+/// the logarithmic shift controller.
+pub(in crate::noci::stochastic) struct Unshifted {
+    /// Overlap factor tables and overlap-weighted generator, when that generator is selected.
+    overlap: Option<(OverlapFactors, OverlapWeightedGenerator)>,
+    /// Rank-local position of every owned determinant, `usize::MAX` for the others.
+    positions: Vec<usize>,
+    /// Per-thread propagation workers.
+    workers: Vec<Mutex<NOCIThreadPropagation>>,
+    /// Reusable gathered spawns of one cycle.
+    result: NOCIPropagationResult,
+    /// Coalesced report change.
+    changes: Vec<NOCIPopulationUpdate>,
+}
 
-    let (isref, scratchsize, run) = super::common::construct_qmc_run(data, c0, ref_indices, world);
+impl<C: Communicator> NOCIPropagator<C> for Unshifted {
+    /// Build the optional overlap-weighted generator, the owned positions and the workers.
+    /// # Arguments:
+    /// - `data`: Immutable stochastic propagation data.
+    /// - `run`: Rank-local topology of the run.
+    /// - `sizes`: Wick scratch dimensions of the worker threads.
+    /// - `world`: MPI communicator.
+    /// # Returns
+    /// - `Self`: Unshifted propagator.
+    fn new(
+        data: &NOCIData<'_, f64>,
+        run: &QMCRunInfo,
+        sizes: ScratchSize,
+        world: &C,
+    ) -> Self {
+        let qmc = data.input.qmc.as_ref().unwrap();
 
-    // Build overlap-weighted proposal factors only for the corresponding generator.
-    let overlap_generation = if let ExcitationGen::OverlapWeighted = qmc.excitation_gen {
-        let overlap_factor = SpinFactorisation::new(data);
-        let factor_cache = data.input.wicks.cachedir.as_deref().unwrap_or(".");
-        let overlap_factors = overlap_factor.build_overlap_factors(
-            data,
-            Path::new(factor_cache),
-            world.rank(),
-            qmc.factor_tables,
-            true,
-        );
-        let overlap_generator =
-            OverlapWeightedGenerator::new(data, &overlap_factor, &overlap_factors);
-        Some((overlap_factors, overlap_generator))
-    } else {
-        None
-    };
-
-    // Map global determinant indices to this rank's compact population vector.
-    let mut local_pos = vec![usize::MAX; run.ndets];
-    for (k, &det) in run.owned.iter().enumerate() {
-        local_pos[det] = k;
-    }
-
-    // Allocate thread-local propagation and rank-level communication scratch.
-    let mut workers = (0..rayon::current_num_threads())
-        .map(|tid| {
-            Mutex::new(NOCIThreadPropagation::with_sizes(
-                run.rank_seed ^ tid as u64,
-                scratchsize.maxsame,
-                scratchsize.maxla,
-                scratchsize.maxlb,
-            ))
-        })
-        .collect::<Vec<_>>();
-    let mut propagation_result = NOCIPropagationResult::new();
-    let mut mpiscratch = NOCIMPIScratch::new(run.nranks);
-
-    // Restore a compatible checkpoint or initialise a fresh stochastic population.
-    let mut state = if let Some(path) = data.input.write.read_restart.as_deref() {
-        if run.irank == 0 {
-            println!("Reading restart from {path}");
-        }
-
-        let restart = read_restart_hdf5(
-            path,
-            world,
-            run.ndets,
-            run.basis_hash,
-            population_representation(data.input.prop_ref().propagator),
-        )
-        .unwrap();
-        if restart.populations.len() != run.owned.len() {
-            panic!(
-                "Restart population length mismatch on rank {}: saved {}, current {}.",
-                run.irank,
-                restart.populations.len(),
-                run.owned.len()
-            );
-        }
-        *es = restart.shift;
-
-        let excitation_hist =
-            if data.input.write.write_excitation_hist && restart.excitation_hist.is_none() {
-                Some(ExcitationHist::new(-60.0, 1e-12, 100))
-            } else {
-                restart.excitation_hist
-            };
-
-        let mc = MCState {
-            populations: restart.populations,
-            sampled: SparsePopulations::new(run.ndets),
-            delta: vec![0.0; run.ndets],
-            changed: Vec::new(),
-            excitation_hist,
-        };
-        let (_, pe) = population_stats_projected_energy(&mc, &isref, &run, world);
-        let prev_pop = PopulationStats::new(
-            restart.nwprev,
-            restart.nrefprev,
-            restart.nsampledprev,
-            restart.nsampledoprev,
-        );
-        let overlap_weight = restart.overlap_weight.unwrap_or(qmc.overlap_weight);
-
-        PropagationState::new(
-            mc,
-            pe,
-            restart.report + 1,
-            restart.reached.unwrap_or_else(|| {
-                if run.irank == 0 {
-                    println!("Warning: legacy restart lacks population-control activation state; inferring from saved population.");
-                }
-                restart.nwprev >= qmc.target_population
-            }),
-            prev_pop,
-            overlap_weight,
-        )
-    } else {
-        let populations = initialise_populations(c0, qmc.initial_population, &run, world);
-        let excitation_hist = if data.input.write.write_excitation_hist {
-            Some(ExcitationHist::new(-60.0, 1e-12, 100))
-        } else {
-            None
-        };
-
-        let mut state = PropagationState::new(
-            MCState {
-                populations,
-                sampled: SparsePopulations::new(run.ndets),
-                delta: vec![0.0; run.ndets],
-                changed: Vec::new(),
-                excitation_hist,
-            },
-            ProjectedEnergyUpdate { num: 0.0, den: 1.0 },
-            0,
-            false,
-            PopulationStats::new(qmc.initial_population, 0.0, 0.0, 0),
-            qmc.overlap_weight,
-        );
-
-        let (stats, pe) = population_stats_projected_energy(&state.mc, &isref, &run, world);
-        state.pe = pe;
-        state.eprojcur = state.pe.num / state.pe.den;
-        state.prev_pop = stats;
-        state
-    };
-
-    // Print the initial observable row from the restored or newly constructed state.
-    let propagator = data.input.prop_ref().propagator;
-    print_header(run.irank, propagator);
-    print_initial_row(
-        run.irank,
-        state.start_report * qmc.ncycles,
-        &state,
-        data.space.parents[0].e,
-        *es,
-        propagator,
-    );
-
-    let mut population_changes = Vec::new();
-    let mut sample_chunks = Vec::new();
-    let mut overlap_derivatives = OverlapDerivativeSums::default();
-
-    // Propagate in report blocks, accumulating spawned changes before MPI exchange.
-    for report in state.start_report..qmc.nreports {
-        for cycle in 0..qmc.ncycles {
-            let iter = report * qmc.ncycles + cycle;
-
-            let mut rng = stream(run.rank_seed, 0xD1B54A32D192ED03, iter as u64);
-
-            sample_populations(
-                &state.mc.populations,
-                &mut state.mc.sampled,
-                qmc.fri.population_cutoff,
-                &run,
-                &mut rng,
-                &mut sample_chunks,
-            );
-
-            propagate_iteration(
-                (iter, &state.mc.sampled),
+        // Build overlap-weighted proposal factors only for the corresponding generator.
+        let overlap = (qmc.excitation_gen == ExcitationGen::OverlapWeighted).then(|| {
+            let factorisation = SpinFactorisation::new(data);
+            let factor_cache = data.input.wicks.cachedir.as_deref().unwrap_or(".");
+            let factors = factorisation.build_overlap_factors(
                 data,
-                &run,
-                *es,
-                (
-                    overlap_generation.as_ref().map(|(factors, _)| factors),
-                    overlap_generation.as_ref().map(|(_, generator)| generator),
-                    state.overlap_weight,
-                    qmc.optimise_overlap_weight,
-                ),
-                &mut workers,
-                &mut propagation_result,
+                Path::new(factor_cache),
+                world.rank(),
+                qmc.factor_tables,
+                true,
             );
-            overlap_derivatives.add(&propagation_result.overlap_derivatives);
+            let generator = OverlapWeightedGenerator::new(data, &factorisation, &factors);
+            (factors, generator)
+        });
 
-            accumulate_generated_updates(
-                &mut state.mc,
-                &mut propagation_result,
-                data.input,
-                &mut mpiscratch,
-            );
+        // Map global determinant indices to this rank's compact population vector.
+        let mut positions = vec![usize::MAX; run.ndets];
+        for (k, &det) in run.owned.iter().enumerate() {
+            positions[det] = k;
         }
 
-        // Route spawned amplitudes to owners, coalesce duplicates, and update populations.
-        exchange_accumulated_updates(&mut state.mc, &mut mpiscratch, world, &run);
+        let workers = (0..rayon::current_num_threads())
+            .map(|tid| {
+                Mutex::new(NOCIThreadPropagation::with_sizes(
+                    run.rank_seed ^ tid as u64,
+                    sizes.maxsame,
+                    sizes.maxla,
+                    sizes.maxlb,
+                ))
+            })
+            .collect();
 
-        take_population_changes(&mut state.mc, &mut population_changes);
-        population_changes.sort_unstable_by_key(|update| update.det);
-        coalesce(&mut population_changes);
-        apply_population_changes(&mut state.mc.populations, &population_changes, &local_pos);
-
-        // Recompute projected observables and adapt shift and overlap-generator weight.
-        let end = (report + 1) * qmc.ncycles;
-        let (stats, pe) = population_stats_projected_energy(&state.mc, &isref, &run, world);
-        state.pe = pe;
-        state.eprojcur = state.pe.num / state.pe.den;
-
-        update_shift(&stats, &mut state, es, data.input);
-        update_overlap_weight(
-            &mut state,
-            &mut overlap_derivatives,
-            data.input,
-            &run,
-            world,
-        );
-
-        // Honour convergence stops and periodic restart checkpoints before reporting.
-        if let Some(ret) = check_stop(
-            report,
-            &mut state,
-            *es,
-            &run,
-            world,
-            data.input.write.write_restart.as_ref(),
-        ) {
-            return ret;
+        Self {
+            overlap,
+            positions,
+            workers,
+            result: NOCIPropagationResult::new(),
+            changes: Vec::new(),
         }
+    }
 
-        if let Some(write_restart_interval) = data.input.write.write_restart_interval
-            && end.is_multiple_of(write_restart_interval)
-        {
-            write_restart(
-                report,
-                &state,
-                *es,
-                &run,
-                world,
-                data.input.write.write_restart.as_ref(),
-            );
-        }
-
-        print_row(
-            run.irank,
-            end,
-            &state,
-            &stats,
-            data.space.parents[0].e,
-            *es,
-            propagator,
+    /// Spawn one cycle from the sampled populations.
+    /// # Arguments:
+    /// - `self`: Unshifted propagator.
+    /// - `run`: Shared run state.
+    /// - `iteration`: Global iteration of the cycle.
+    /// # Returns
+    /// - `()`: Accumulates the cycle's change.
+    fn cycle(
+        &mut self,
+        run: &mut NOCIRun<'_, C>,
+        iteration: usize,
+    ) {
+        let overlap = self.overlap.as_ref();
+        run.spawn(
+            iteration,
+            (
+                overlap.map(|(factors, _)| factors),
+                overlap.map(|(_, generator)| generator),
+            ),
+            &mut self.workers,
+            &mut self.result,
         );
     }
 
-    (state.eprojcur, state.mc.excitation_hist)
+    /// Route the report change to its owners, coalesce it and add it to the populations.
+    /// # Arguments:
+    /// - `self`: Unshifted propagator.
+    /// - `run`: Shared run state.
+    /// - `_`: Report ending with this update.
+    /// # Returns
+    /// - `Option<&[f64]>`: `None`, as the unshifted propagator uses the logarithmic controller.
+    fn apply(
+        &mut self,
+        run: &mut NOCIRun<'_, C>,
+        _: usize,
+    ) -> Option<&[f64]> {
+        exchange_accumulated_updates(&mut run.state.mc, &mut run.mpi, run.world, &run.run);
+        take_population_changes(&mut run.state.mc, &mut self.changes);
+        self.changes.sort_unstable_by_key(|update| update.det);
+        coalesce(&mut self.changes);
+        apply_population_changes(
+            &mut run.state.mc.populations,
+            &self.changes,
+            &self.positions,
+        );
+        None
+    }
+
+    /// The unshifted propagator has no final diagnostics.
+    /// # Arguments:
+    /// - `self`: Unshifted propagator.
+    /// - `_`: Shared run state.
+    /// # Returns
+    /// - `()`: Prints nothing.
+    fn finish(
+        &mut self,
+        _: &NOCIRun<'_, C>,
+    ) {
+    }
 }

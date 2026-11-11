@@ -7,7 +7,7 @@ mod storage;
 
 // Crate-visible type re-exports.
 pub(crate) use onebody::{OneBodyFactorisation, OneBodyScratch};
-pub(crate) use overlap::{OverlapFactors, OverlapScratch};
+pub(crate) use overlap::{AuxiliaryOverlapScratch, OverlapFactors, OverlapScratch};
 
 // Crate-root imports.
 use crate::NOCIScalar;

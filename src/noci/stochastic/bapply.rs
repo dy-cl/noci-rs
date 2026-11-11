@@ -11,29 +11,24 @@ use rand::SeedableRng;
 // Crate-root imports.
 use crate::determinant::{AuxiliarySpace, NOCIIndex};
 use crate::elements::NOCIData;
-use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::input::ExcitationGen;
-use crate::noci::{OverlapFactors, SpinFactorisation};
+use crate::noci::{AuxiliaryOverlapScratch, OverlapFactors, OverlapScratch, SpinFactorisation};
 use crate::qmc::excitgen::{ExcitationHist, OrthogonalUniformGenerator};
 use crate::qmc::{
-    QmcRng, coalesce, compress_sparse, exchange_updates, gather_updates, pack_updates, stream,
+    QmcRng, coalesce, compress_sparse, exchange_updates, gather_updates, pack_updates,
     target_cutoff,
 };
 
 // Parent/sibling imports.
-use super::common::{
-    construct_qmc_run, population_stats_projected_energy, propagate_iteration_auxiliary,
-};
+use super::common::propagate_iteration_auxiliary;
 use super::excit::{AuxiliaryGenerator, pchb_generator};
-use super::fri::{compress_dense_to_sparse, sample_populations};
-use super::init::initialise_qmc_state;
-use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
-use super::shift::{
-    collect_shift_tangent, exchange_shift_tangent, reduce_shift_tangent, update_shift_tangent,
-};
+use super::fri::compress_dense_to_sparse;
+use super::propagate::{NOCIPropagator, NOCIRun};
+use super::sapply::apply_overlap_population_changes;
+use super::shift::{collect_shift_tangent, exchange_shift_tangent, reduce_shift_tangent};
 use super::state::{
     AuxiliaryMPIScratch, AuxiliaryPopulationUpdate, AuxiliaryPropagationResult,
-    AuxiliaryThreadPropagation, NOCIMPIScratch, NOCIPopulationUpdate, ShiftTangent,
+    AuxiliaryThreadPropagation, NOCIPopulationUpdate, QMCRunInfo, ScratchSize, ShiftTangent,
 };
 
 /// Accumulate one cycle's `\chi_D^P` events and retain remote events for report exchange.
@@ -118,293 +113,294 @@ fn print_bapply_storage(
     );
 }
 
-/// Perform BApply stochastic range propagation.
+/// The $B$-apply range propagator.
 /// `\chi \simeq -dt(\hat H-E_s)B N` is sampled in parent-orthogonal determinant spaces and the
 /// persistent real range population is updated as `N_{r+1} = N_r + B^\dagger\chi_r`.
-/// # Arguments:
-/// - `data`: Immutable stochastic propagation data.
-/// - `c0`: Initial determinant coefficient vector.
-/// - `es`: Population-control shift energy.
-/// - `ref_indices`: Determinants included in the reference-population norm.
-/// - `world`: MPI communicator.
-/// # Returns
-/// - `(f64, Option<ExcitationHist>)`: Final projected energy and optional spawning histogram.
-/// # Panics
-/// - Panics for nonorthogonal parent orbitals, or missing MO caches or Wick data.
-pub fn qmc_step(
-    data: &NOCIData<'_, f64>,
-    c0: &[f64],
-    es: &mut f64,
-    ref_indices: &[usize],
-    world: &impl Communicator,
-) -> (f64, Option<ExcitationHist>) {
-    // Validate BApply's parent-orbital requirements; the input parser has checked the generator.
-    let qmc = data.input.qmc.as_ref().unwrap();
-    let mocache = data
-        .mocache
-        .expect("BApply requires parent MO integral caches");
-    if mocache.iter().any(|cache| !cache.orthogonal_slater_condon) {
-        panic!("BApply requires orthonormal orbitals within every parent MO basis");
-    }
-    // Build retained/auxiliary spin spaces and reusable overlap-factor storage.
-    let (isref, _, run) = construct_qmc_run(data, c0, ref_indices, world);
-    let factorisation = SpinFactorisation::new(data);
-    let auxiliary = AuxiliarySpace::new(data.space);
-    if factorisation.nparents() > 1 && data.wicks.is_none() {
-        panic!("BApply cross-parent B^dagger requires Wick intermediates");
-    }
-    // Select the parent-orthogonal proposal; PCHB tables are built once per parent.
-    let generator = if qmc.excitation_gen == ExcitationGen::Pchb {
-        let pchb = pchb_generator(data, &mocache[..factorisation.nparents()]);
-        if run.irank == 0 {
-            println!(
-                "PCHB excitation tables: {:.3} MiB",
-                pchb.bytes() as f64 / (1024.0 * 1024.0)
-            );
+pub(in crate::noci::stochastic) struct BApply {
+    /// Determinant and spin-string mappings of the overlap.
+    factorisation: SpinFactorisation,
+    /// Auxiliary space of every parent's connections.
+    auxiliary: AuxiliarySpace,
+    /// Parent-orthogonal proposal, uniform or PCHB.
+    generator: AuxiliaryGenerator,
+    /// Overlap factor tables, grown lazily as auxiliary spin strings are discovered.
+    factors: OverlapFactors,
+    /// Factor-table storage in bytes before propagation.
+    initial_bytes: usize,
+    /// Reusable storage of one application of the overlap.
+    overlap_scratch: OverlapScratch,
+    /// Reusable storage of one application of `B^\dagger`.
+    auxiliary_scratch: AuxiliaryOverlapScratch,
+    /// Auxiliary-space MPI exchange scratch.
+    mpi: AuxiliaryMPIScratch,
+    /// Per-thread propagation workers.
+    workers: Vec<Mutex<AuxiliaryThreadPropagation>>,
+    /// Reusable gathered spawns of one cycle.
+    result: AuxiliaryPropagationResult,
+    /// Report change `\chi` owned by this rank.
+    local: Vec<AuxiliaryPopulationUpdate>,
+    /// Report shift tangent.
+    tangent: ShiftTangent,
+    /// Sparse report shift tangent after compression.
+    tangent_changes: Vec<NOCIPopulationUpdate>,
+    /// Propagated shift tangent `\partial N'/\partial E_s`.
+    propagated: Vec<f64>,
+    /// Last FRI cutoffs of `\chi` and the tangent, which seed the next searches.
+    hints: (f64, f64),
+}
+
+impl<C: Communicator> NOCIPropagator<C> for BApply {
+    /// Check the parent orbitals, then build the auxiliary space, the proposal, the overlap factor
+    /// tables and the workers.
+    /// # Arguments:
+    /// - `data`: Immutable stochastic propagation data.
+    /// - `run`: Rank-local topology of the run.
+    /// - `_`: Wick scratch dimensions, unused by the auxiliary workers.
+    /// - `world`: MPI communicator.
+    /// # Returns
+    /// - `Self`: $B$-apply propagator.
+    /// # Panics
+    /// - Panics for nonorthogonal parent orbitals, or missing MO caches or Wick data.
+    fn new(
+        data: &NOCIData<'_, f64>,
+        run: &QMCRunInfo,
+        _: ScratchSize,
+        world: &C,
+    ) -> Self {
+        // Validate BApply's parent-orbital requirements; the input parser has checked the generator.
+        let qmc = data.input.qmc.as_ref().unwrap();
+        let mocache = data
+            .mocache
+            .expect("BApply requires parent MO integral caches");
+        if mocache.iter().any(|cache| !cache.orthogonal_slater_condon) {
+            panic!("BApply requires orthonormal orbitals within every parent MO basis");
         }
-        AuxiliaryGenerator::Pchb(pchb)
-    } else {
-        AuxiliaryGenerator::Uniform(OrthogonalUniformGenerator::new(
-            data.space.occupations(NOCIIndex(0)),
-            &mocache[data.space.parent(NOCIIndex(0))],
-        ))
-    };
-    let factor_cache = data.input.wicks.cachedir.as_deref().unwrap_or(".");
-    let mut overlap_factors = factorisation.build_overlap_factors(
-        data,
-        Path::new(factor_cache),
-        world.rank(),
-        qmc.bapply_factor_tables,
-        false,
-    );
-    let initial_factor_bytes = overlap_factors.storage_bytes().0;
-    // Allocate persistent contraction, communication, and propagation state.
-    let mut overlap_scratch = factorisation.overlap_scratch();
-    let mut auxiliary_scratch = factorisation.auxiliary_overlap_scratch();
-    let mut mpi = NOCIMPIScratch::new(run.nranks);
-    let mut auxiliary_mpi = AuxiliaryMPIScratch::new(run.nranks);
-    let mut wick = WickScratchSpin::new();
-    let mut state = initialise_qmc_state(c0, es, data, &run, &isref, &mut wick, (world, &mut mpi));
-    let propagator = data.input.prop_ref().propagator;
-    print_header(run.irank, propagator);
-    print_initial_row(
-        run.irank,
-        state.start_report * qmc.ncycles,
-        &state,
-        data.space.parents[0].e,
-        *es,
-        propagator,
-    );
 
-    // Give each Rayon worker independent RNG and auxiliary propagation scratch.
-    let mut workers = (0..rayon::current_num_threads())
-        .map(|tid| {
-            Mutex::new(AuxiliaryThreadPropagation::new(
-                run.rank_seed ^ tid as u64,
-                factorisation.nparents(),
-            ))
-        })
-        .collect::<Vec<_>>();
-    let mut propagation_result = AuxiliaryPropagationResult::new();
-    let mut local_updates = Vec::new();
-    let mut shift_tangent = ShiftTangent::new(run.ndets);
-    let mut tangent_updates = Vec::<NOCIPopulationUpdate>::new();
-    let mut propagated_tangent = vec![0.0; run.owned.len()];
-    let mut sample_chunks = Vec::new();
-    let mut chi_cutoff_hint = 0.0;
-    let mut tangent_cutoff_hint = 0.0;
-
-    // Advance one report block at a time so communication and compression remain amortised.
-    for report in state.start_report..qmc.nreports {
-        local_updates.clear();
-        auxiliary_mpi.send_ranked.clear();
-        for cycle in 0..qmc.ncycles {
-            let iteration = report * qmc.ncycles + cycle;
-            let mut rng = stream(run.rank_seed, 0xD1B54A32D192ED03, iteration as u64);
-            sample_populations(
-                &state.mc.populations,
-                &mut state.mc.sampled,
-                qmc.fri.population_cutoff,
-                &run,
-                &mut rng,
-                &mut sample_chunks,
-            );
-
-            propagate_iteration_auxiliary(
-                (iteration, &state.mc.sampled),
-                data,
-                &run,
-                *es,
-                (&generator, &auxiliary),
-                &mut workers,
-                &mut propagation_result,
-            );
-            accumulate_generated_updates_auxiliary(
-                &mut propagation_result,
-                &mut local_updates,
-                &mut auxiliary_mpi,
-                &mut state.mc.excitation_hist,
-            );
+        // Build retained/auxiliary spin spaces and reusable overlap-factor storage.
+        let factorisation = SpinFactorisation::new(data);
+        let auxiliary = AuxiliarySpace::new(data.space);
+        if factorisation.nparents() > 1 && data.wicks.is_none() {
+            panic!("BApply cross-parent B^dagger requires Wick intermediates");
         }
-        // Coalesce generated auxiliary amplitudes on their owning MPI ranks.
-        local_updates.sort_unstable_by_key(|update| update.det);
-        coalesce(&mut local_updates);
-        let mut owner_updates = if run.nranks == 1 {
-            // Preserve allocation across reports while avoiding MPI scratch and a second coalesce.
-            std::mem::take(&mut local_updates)
+
+        // Select the parent-orthogonal proposal; PCHB tables are built once per parent.
+        let generator = if qmc.excitation_gen == ExcitationGen::Pchb {
+            let pchb = pchb_generator(data, &mocache[..factorisation.nparents()]);
+            if run.irank == 0 {
+                println!(
+                    "PCHB excitation tables: {:.3} MiB",
+                    pchb.bytes() as f64 / (1024.0 * 1024.0)
+                );
+            }
+            AuxiliaryGenerator::Pchb(pchb)
         } else {
-            redistribute_population_updates_auxiliary(
-                &mut local_updates,
-                &mut auxiliary_mpi,
-                world,
-            );
+            AuxiliaryGenerator::Uniform(OrthogonalUniformGenerator::new(
+                data.space.occupations(NOCIIndex(0)),
+                &mocache[data.space.parent(NOCIIndex(0))],
+            ))
+        };
+        let factor_cache = data.input.wicks.cachedir.as_deref().unwrap_or(".");
+        let factors = factorisation.build_overlap_factors(
+            data,
+            Path::new(factor_cache),
+            world.rank(),
+            qmc.bapply_factor_tables,
+            false,
+        );
 
-            let mut updates = std::mem::take(&mut auxiliary_mpi.recv_contig);
+        // Give each Rayon worker independent RNG and auxiliary propagation scratch.
+        let workers = (0..rayon::current_num_threads())
+            .map(|tid| {
+                Mutex::new(AuxiliaryThreadPropagation::new(
+                    run.rank_seed ^ tid as u64,
+                    factorisation.nparents(),
+                ))
+            })
+            .collect();
+
+        Self {
+            initial_bytes: factors.storage_bytes().0,
+            overlap_scratch: factorisation.overlap_scratch(),
+            auxiliary_scratch: factorisation.auxiliary_overlap_scratch(),
+            factorisation,
+            auxiliary,
+            generator,
+            factors,
+            mpi: AuxiliaryMPIScratch::new(run.nranks),
+            workers,
+            result: AuxiliaryPropagationResult::new(),
+            local: Vec::new(),
+            tangent: ShiftTangent::new(run.ndets),
+            tangent_changes: Vec::new(),
+            propagated: vec![0.0; run.owned.len()],
+            hints: (0.0, 0.0),
+        }
+    }
+
+    /// Spawn one cycle of auxiliary events `\chi^{(a)}` from the sampled populations.
+    /// # Arguments:
+    /// - `self`: $B$-apply propagator.
+    /// - `run`: Shared run state.
+    /// - `iteration`: Global iteration of the cycle.
+    /// # Returns
+    /// - `()`: Accumulates the cycle's events and tangent.
+    fn cycle(
+        &mut self,
+        run: &mut NOCIRun<'_, C>,
+        iteration: usize,
+    ) {
+        propagate_iteration_auxiliary(
+            (iteration, &run.state.mc.sampled),
+            run.data,
+            &run.run,
+            run.shift,
+            (&self.generator, &self.auxiliary),
+            &mut self.workers,
+            &mut self.result,
+        );
+        accumulate_generated_updates_auxiliary(
+            &mut self.result,
+            &mut self.local,
+            &mut self.mpi,
+            &mut run.state.mc.excitation_hist,
+        );
+    }
+
+    /// Coalesce and compress `\chi` on its owners, apply `N' = N + B^\dagger\Phi(\chi)`, and
+    /// propagate the compressed tangent through the overlap.
+    /// # Arguments:
+    /// - `self`: $B$-apply propagator.
+    /// - `run`: Shared run state.
+    /// - `report`: Report ending with this update.
+    /// # Returns
+    /// - `Option<&[f64]>`: Propagated shift tangent `\partial N'/\partial E_s`.
+    fn apply(
+        &mut self,
+        run: &mut NOCIRun<'_, C>,
+        report: usize,
+    ) -> Option<&[f64]> {
+        let qmc = run.data.input.qmc.as_ref().unwrap();
+        let (world, nranks) = (run.world, run.run.nranks);
+
+        // Coalesce generated auxiliary amplitudes on their owning MPI ranks.
+        self.local.sort_unstable_by_key(|update| update.det);
+        coalesce(&mut self.local);
+        let mut owner_updates = if nranks == 1 {
+            // Preserve allocation across reports while avoiding MPI scratch and a second coalesce.
+            std::mem::take(&mut self.local)
+        } else {
+            redistribute_population_updates_auxiliary(&mut self.local, &mut self.mpi, world);
+            let mut updates = std::mem::take(&mut self.mpi.recv_contig);
             updates.sort_unstable_by_key(|update| update.det);
             coalesce(&mut updates);
             updates
         };
+
         // Compress the auxiliary vector before applying `B^dagger` to physical populations.
         let chi_cutoff = target_cutoff(
             &owner_updates,
             qmc.fri.pre_overlap_target_nnz,
-            chi_cutoff_hint,
+            self.hints.0,
             |update| update.dn.abs(),
         );
-        chi_cutoff_hint = chi_cutoff;
-        let mut fri_rng = QmcRng::seed_from_u64(run.rank_seed ^ 0xA0761D6478BD642F ^ report as u64);
+        self.hints.0 = chi_cutoff;
+        let mut fri_rng =
+            QmcRng::seed_from_u64(run.run.rank_seed ^ 0xA0761D6478BD642F ^ report as u64);
         compress_sparse(&mut owner_updates, chi_cutoff, &mut fri_rng);
-
-        let physical_updates: &[AuxiliaryPopulationUpdate] = if run.nranks == 1 {
+        let physical_updates: &[AuxiliaryPopulationUpdate] = if nranks == 1 {
             &owner_updates
         } else {
-            gather_updates(world, &owner_updates, &mut auxiliary_mpi)
+            gather_updates(world, &owner_updates, &mut self.mpi)
         };
 
         // Apply the realised range update `N_{r+1} = N_r + B^\dagger\chi_r`.
-        factorisation.apply_auxiliary_overlap_sparse(
-            &mut state.mc.populations,
-            &run.owned,
+        self.factorisation.apply_auxiliary_overlap_sparse(
+            &mut run.state.mc.populations,
+            &run.run.owned,
             physical_updates
                 .iter()
                 .map(|update| (update.index(), update.dn)),
-            (data, &auxiliary),
-            &mut overlap_factors,
-            &mut auxiliary_scratch,
+            (run.data, &self.auxiliary),
+            &mut self.factors,
+            &mut self.auxiliary_scratch,
         );
 
-        // Collect and compress `d chi / d E_s` in the representation local to this MPI mode.
-        if run.nranks == 1 {
-            local_updates = owner_updates;
+        // Recycle the report buffers, emptied for the next report's cycles.
+        if nranks == 1 {
+            self.local = owner_updates;
         } else {
-            auxiliary_mpi.recv_contig = owner_updates;
+            self.mpi.recv_contig = owner_updates;
         }
 
-        if run.nranks == 1 {
-            reduce_shift_tangent(&mut workers, &mut shift_tangent.values);
+        // Collect and compress `d chi / d E_s` in the representation local to this MPI mode.
+        if nranks == 1 {
+            reduce_shift_tangent(&mut self.workers, &mut self.tangent.values);
         } else {
-            collect_shift_tangent(&mut workers, &mut shift_tangent);
-            exchange_shift_tangent(&mut shift_tangent, &mut mpi, world, &run);
-            shift_tangent.take_sparse(&mut tangent_updates);
+            collect_shift_tangent(&mut self.workers, &mut self.tangent);
+            exchange_shift_tangent(&mut self.tangent, &mut run.mpi, world, &run.run);
+            self.tangent.take_sparse(&mut self.tangent_changes);
         }
-        let tangent_cutoff = if run.nranks == 1 {
+        let tangent_cutoff = if nranks == 1 {
             target_cutoff(
-                &shift_tangent.values,
+                &self.tangent.values,
                 qmc.fri.shift_tangent_target_nnz,
-                tangent_cutoff_hint,
+                self.hints.1,
                 |value| value.abs(),
             )
         } else {
             target_cutoff(
-                &tangent_updates,
+                &self.tangent_changes,
                 qmc.fri.shift_tangent_target_nnz,
-                tangent_cutoff_hint,
+                self.hints.1,
                 |update| update.dn.abs(),
             )
         };
-        tangent_cutoff_hint = tangent_cutoff;
-        if run.nranks == 1 {
+        self.hints.1 = tangent_cutoff;
+        if nranks == 1 {
             compress_dense_to_sparse(
-                &mut shift_tangent.values,
+                &mut self.tangent.values,
                 tangent_cutoff,
                 &mut fri_rng,
-                &mut tangent_updates,
+                &mut self.tangent_changes,
             );
         } else {
-            compress_sparse(&mut tangent_updates, tangent_cutoff, &mut fri_rng);
+            compress_sparse(&mut self.tangent_changes, tangent_cutoff, &mut fri_rng);
         }
-        propagated_tangent.fill(0.0);
-        // `T = \partial N'/\partial E_s = dt S \sum_a\tilde N^{(a)}` for BApply.
-        // The shared tangent controller therefore sees the complete physical population derivative.
-        super::sapply::apply_overlap_population_changes(
-            (&mut propagated_tangent, &tangent_updates),
-            data,
-            (&factorisation, &overlap_factors),
-            &run,
-            (world, &mut mpi),
-            &mut overlap_scratch,
+
+        // `T = \partial N'/\partial E_s = dt S \sum_a\tilde N^{(a)}` for BApply, the complete
+        // physical population derivative seen by the shared tangent controller.
+        self.propagated.fill(0.0);
+        apply_overlap_population_changes(
+            (&mut self.propagated, &self.tangent_changes),
+            run.data,
+            (&self.factorisation, &self.factors),
+            &run.run,
+            (world, &mut run.mpi),
+            &mut self.overlap_scratch,
         );
 
-        // Update projected-energy statistics and the tangent-aware population-control shift.
-        let end = (report + 1) * qmc.ncycles;
-        let (stats, pe) = population_stats_projected_energy(&state.mc, &isref, &run, world);
-        state.pe = pe;
-        state.eprojcur = state.pe.num / state.pe.den;
-        update_shift_tangent(
-            &stats,
-            &mut state,
-            es,
-            &propagated_tangent,
-            &run,
-            world,
-            data.input,
-        );
-        // Honour convergence stops and periodic restart checkpoints before reporting.
-        if let Some(result) = check_stop(
-            report,
-            &mut state,
-            *es,
-            &run,
-            world,
-            data.input.write.write_restart.as_ref(),
-        ) {
-            print_bapply_storage(
-                run.irank,
-                qmc.bapply_factor_tables,
-                initial_factor_bytes,
-                &overlap_factors,
-            );
-            return result;
-        }
-        if let Some(interval) = data.input.write.write_restart_interval
-            && end.is_multiple_of(interval)
-        {
-            write_restart(
-                report,
-                &state,
-                *es,
-                &run,
-                world,
-                data.input.write.write_restart.as_ref(),
-            );
-        }
-        print_row(
-            run.irank,
-            end,
-            &state,
-            &stats,
-            data.space.parents[0].e,
-            *es,
-            propagator,
-        );
+        // Empty the report buffers for the next report's cycles.
+        self.local.clear();
+        self.mpi.send_ranked.clear();
+        Some(&self.propagated)
     }
 
-    // Report final factor-table growth and return the last projected estimate.
-    print_bapply_storage(
-        run.irank,
-        qmc.bapply_factor_tables,
-        initial_factor_bytes,
-        &overlap_factors,
-    );
-    (state.eprojcur, state.mc.excitation_hist)
+    /// Report the factor-table growth of the run.
+    /// # Arguments:
+    /// - `self`: $B$-apply propagator.
+    /// - `run`: Shared run state.
+    /// # Returns
+    /// - `()`: Prints the storage on the root rank.
+    fn finish(
+        &mut self,
+        run: &NOCIRun<'_, C>,
+    ) {
+        let qmc = run.data.input.qmc.as_ref().unwrap();
+        print_bapply_storage(
+            run.run.irank,
+            qmc.bapply_factor_tables,
+            self.initial_bytes,
+            &self.factors,
+        );
+    }
 }
