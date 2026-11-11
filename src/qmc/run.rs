@@ -4,6 +4,9 @@
 //! `n_\text{cyc}\Delta\tau`; a propagator supplies its cycle, its step, its restart and its report
 //! row, and this loop owns their order, the stop request and the restart interval.
 
+// Standard library imports.
+use std::ops::Range;
+
 // External crate imports.
 use mpi::topology::Communicator;
 
@@ -12,13 +15,6 @@ use super::report::stop_requested;
 
 /// A stochastic propagator driven by the shared report loop.
 pub(crate) trait Propagator {
-    /// Return the first report of the run, after any restart.
-    /// # Arguments:
-    /// - `self`: Propagator.
-    /// # Returns
-    /// - `usize`: First report to propagate.
-    fn first_report(&self) -> usize;
-
     /// Spawn one cycle from the frozen populations and accumulate its change.
     /// # Arguments:
     /// - `self`: Propagator.
@@ -64,12 +60,12 @@ pub(crate) trait Propagator {
         end: usize,
     );
 
-    /// Finish the run after its last report or a stop request.
+    /// Finish the run after its last report or a stop request, by default with nothing to do.
     /// # Arguments:
     /// - `self`: Propagator.
     /// # Returns
     /// - `()`: Prints any final diagnostics.
-    fn finish(&mut self);
+    fn finish(&mut self) {}
 }
 
 /// Run every report of a stochastic propagation. After each step, a `STOP` file writes a restart
@@ -77,22 +73,22 @@ pub(crate) trait Propagator {
 /// restart, and every other report prints its row.
 /// # Arguments:
 /// - `propagator`: Propagator to drive.
-/// - `schedule`: Number of reports and cycles per report.
+/// - `schedule`: Reports to propagate, from the first after any restart, and cycles per report.
 /// - `restart`: Restart interval in iterations, if any, and the restart file path.
 /// - `world`: MPI communicator.
 /// # Returns
 /// - `()`: Propagates until the last report or a stop request.
 pub(crate) fn run(
     propagator: &mut impl Propagator,
-    schedule: (usize, usize),
+    schedule: (Range<usize>, usize),
     restart: (Option<usize>, &str),
     world: &impl Communicator,
 ) {
-    let (nreports, ncycles) = schedule;
+    let (reports, ncycles) = schedule;
     let (interval, path) = restart;
     let (irank, nranks) = (world.rank() as usize, world.size() as usize);
 
-    for report in propagator.first_report()..nreports {
+    for report in reports {
         for cycle in 0..ncycles {
             propagator.cycle(report * ncycles + cycle);
         }

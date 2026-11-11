@@ -823,12 +823,8 @@ pub(crate) fn jm_qmc_step(
             &mut shift,
             &mut reached,
             (total, previous),
-            (
-                qmc.target_population,
-                qmc.shift_damping,
-                qmc.population_restoring,
-                dt * qmc.ncycles as f64,
-            ),
+            (qmc.target_population, qmc.population_restoring),
+            Some(qmc.shift_damping / (dt * qmc.ncycles as f64)),
         );
         previous = total;
 

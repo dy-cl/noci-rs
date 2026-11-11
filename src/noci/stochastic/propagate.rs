@@ -1,8 +1,8 @@
 // noci/stochastic/propagate.rs
 //! The NOCIQMC side of the shared report loop. `NOCIRun` holds what every NOCIQMC propagator shares
 //! during one run: the data and topology, the populations and their controller history, the shift,
-//! and the sampling and communication scratch. `NOCIPropagator` is implemented by the $S$-apply,
-//! $B$-apply and unshifted propagators for what differs: their set-up, the spawning of one cycle
+//! and the sampling and communication scratch. `NOCIPropagator` is implemented by the SApply,
+//! BApply and unshifted propagators for what differs: their set-up, the spawning of one cycle
 //! and the update applied at the end of a report. `Propagation` joins the two into one
 //! `qmc::Propagator`.
 
@@ -18,7 +18,7 @@ use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::input::Propagator as PropagatorKind;
 use crate::noci::OverlapFactors;
 use crate::qmc::excitgen::ExcitationHist;
-use crate::qmc::{Propagator, run, stream};
+use crate::qmc::{Propagator, run, stream, update_shift};
 
 // Parent/sibling imports.
 use super::bapply::BApply;
@@ -32,7 +32,7 @@ use super::init::initialise_qmc_state;
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::report::{print_header, print_initial_row, print_row, write_restart};
 use super::sapply::SApply;
-use super::shift::{update_shift, update_shift_tangent};
+use super::shift::tangent_scale;
 use super::state::{
     NOCIMPIScratch, NOCIPropagationResult, NOCIThreadPropagation, OverlapDerivativeSums,
     PopulationStats, PropagationState, QMCRunInfo, ScratchSize,
@@ -193,18 +193,36 @@ impl<'a, C: Communicator> NOCIRun<'a, C> {
         self.state.pe = pe;
         self.state.eprojcur = self.state.pe.num / self.state.pe.den;
 
-        match tangent {
-            Some(tangent) => update_shift_tangent(
-                &stats,
-                &mut self.state,
-                &mut self.shift,
-                tangent,
-                &self.run,
-                self.world,
-                self.data.input,
+        // The range propagators take `\partial N/\partial E_s` from their propagated tangent. The
+        // unshifted shift enters only through death, so
+        // `\partial N/\partial E_s = n_\text{cyc}\Delta\tau N`, and it ignores the restoring term.
+        let qmc = self.data.input.qmc.as_ref().unwrap();
+        let norms = (stats.nw, self.state.prev_pop.nw);
+        let (scale, restoring) = match tangent {
+            Some(tangent) => (
+                tangent_scale(
+                    &self.state.mc.populations,
+                    tangent,
+                    norms,
+                    qmc.shift_damping,
+                    &self.run,
+                    self.world,
+                ),
+                qmc.population_restoring,
             ),
-            None => update_shift(&stats, &mut self.state, &mut self.shift, self.data.input),
-        }
+            None => {
+                let dteff = self.data.input.prop_ref().dt * qmc.ncycles as f64;
+                (Some(qmc.shift_damping / dteff), 0.0)
+            }
+        };
+        update_shift(
+            &mut self.shift,
+            &mut self.state.reached,
+            norms,
+            (qmc.target_population, restoring),
+            scale,
+        );
+        self.state.prev_pop = stats;
         update_overlap_weight(
             &mut self.state,
             &mut self.derivatives,
@@ -263,16 +281,17 @@ pub(in crate::noci::stochastic) trait NOCIPropagator<C: Communicator>:
         report: usize,
     ) -> Option<&[f64]>;
 
-    /// Print the propagator's final diagnostics.
+    /// Print the propagator's final diagnostics, by default none.
     /// # Arguments:
     /// - `self`: Propagator.
-    /// - `run`: Shared run state.
+    /// - `_`: Shared run state.
     /// # Returns
     /// - `()`: Prints on the root rank.
     fn finish(
         &mut self,
-        run: &NOCIRun<'_, C>,
-    );
+        _: &NOCIRun<'_, C>,
+    ) {
+    }
 }
 
 /// One NOCIQMC run: the shared run state and the propagator advancing it.
@@ -284,15 +303,6 @@ struct Propagation<'a, C, P> {
 }
 
 impl<C: Communicator, P: NOCIPropagator<C>> Propagator for Propagation<'_, C, P> {
-    /// Return the report following any restart.
-    /// # Arguments:
-    /// - `self`: NOCIQMC run.
-    /// # Returns
-    /// - `usize`: First report to propagate.
-    fn first_report(&self) -> usize {
-        self.run.state.start_report
-    }
-
     /// Sample the frozen populations and spawn one cycle from them.
     /// # Arguments:
     /// - `self`: NOCIQMC run.
@@ -402,9 +412,10 @@ fn propagate<C: Communicator, P: NOCIPropagator<C>>(
     let qmc = data.input.qmc.as_ref().unwrap();
     let write = &data.input.write;
     let path = write.write_restart.as_deref().unwrap_or("RESTART.H5");
+    let reports = propagation.run.state.start_report..qmc.nreports;
     run(
         &mut propagation,
-        (qmc.nreports, qmc.ncycles),
+        (reports, qmc.ncycles),
         (write.write_restart_interval, path),
         world,
     );

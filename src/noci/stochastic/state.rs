@@ -583,8 +583,19 @@ pub(in crate::noci::stochastic) struct AuxiliaryThreadPropagation {
     pchb_scratch: PchbScratch,
 }
 
-/// Access the shared shift-tangent accumulator of either propagation worker.
-pub(in crate::noci::stochastic) trait TangentWorker {
+/// A persistent per-thread propagation worker of either the retained or the auxiliary space.
+pub(in crate::noci::stochastic) trait PropagationWorker {
+    /// Clear the worker for a new cycle and give it the cycle's random stream.
+    /// # Arguments:
+    /// - `self`: Persistent propagation worker.
+    /// - `rng`: Random stream of this worker's thread and the cycle.
+    /// # Returns:
+    /// - `()`: Clears the worker's per-cycle buffers.
+    fn reset(
+        &mut self,
+        rng: QmcRng,
+    );
+
     /// Borrow this worker's report-level retained-space tangent.
     /// # Arguments:
     /// - `self`: Persistent propagation worker.
@@ -593,7 +604,21 @@ pub(in crate::noci::stochastic) trait TangentWorker {
     fn tangent(&mut self) -> &mut ShiftTangent;
 }
 
-impl TangentWorker for NOCIThreadPropagation {
+impl PropagationWorker for NOCIThreadPropagation {
+    /// Clear the worker's per-cycle buffers and give it the cycle's random stream.
+    /// # Arguments:
+    /// - `self`: Propagation worker.
+    /// - `rng`: Random stream of this worker's thread and the cycle.
+    /// # Returns:
+    /// - `()`: Resets the worker.
+    fn reset(
+        &mut self,
+        rng: QmcRng,
+    ) {
+        self.clear();
+        self.rng = rng;
+    }
+
     /// Borrow the SApply source-path tangent `dt S\tilde N`.
     /// # Arguments:
     /// - `self`: SApply worker.
@@ -604,7 +629,21 @@ impl TangentWorker for NOCIThreadPropagation {
     }
 }
 
-impl TangentWorker for AuxiliaryThreadPropagation {
+impl PropagationWorker for AuxiliaryThreadPropagation {
+    /// Clear the worker's per-cycle buffers and give it the cycle's random stream.
+    /// # Arguments:
+    /// - `self`: Propagation worker.
+    /// - `rng`: Random stream of this worker's thread and the cycle.
+    /// # Returns:
+    /// - `()`: Resets the worker.
+    fn reset(
+        &mut self,
+        rng: QmcRng,
+    ) {
+        self.clear();
+        self.rng = rng;
+    }
+
     /// Borrow the BApply source-path tangent `dt\tilde N`.
     /// # Arguments:
     /// - `self`: BApply worker.

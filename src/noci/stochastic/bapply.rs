@@ -22,13 +22,11 @@ use crate::qmc::{
 // Parent/sibling imports.
 use super::common::propagate_iteration_auxiliary;
 use super::excit::{AuxiliaryGenerator, pchb_generator};
-use super::fri::compress_dense_to_sparse;
 use super::propagate::{NOCIPropagator, NOCIRun};
-use super::sapply::apply_overlap_population_changes;
-use super::shift::{collect_shift_tangent, exchange_shift_tangent, reduce_shift_tangent};
+use super::shift::ReportTangent;
 use super::state::{
     AuxiliaryMPIScratch, AuxiliaryPopulationUpdate, AuxiliaryPropagationResult,
-    AuxiliaryThreadPropagation, NOCIPopulationUpdate, QMCRunInfo, ScratchSize, ShiftTangent,
+    AuxiliaryThreadPropagation, QMCRunInfo, ScratchSize,
 };
 
 /// Accumulate one cycle's `\chi_D^P` events and retain remote events for report exchange.
@@ -113,7 +111,7 @@ fn print_bapply_storage(
     );
 }
 
-/// The $B$-apply range propagator.
+/// The BApply range propagator.
 /// `\chi \simeq -dt(\hat H-E_s)B N` is sampled in parent-orthogonal determinant spaces and the
 /// persistent real range population is updated as `N_{r+1} = N_r + B^\dagger\chi_r`.
 pub(in crate::noci::stochastic) struct BApply {
@@ -139,14 +137,10 @@ pub(in crate::noci::stochastic) struct BApply {
     result: AuxiliaryPropagationResult,
     /// Report change `\chi` owned by this rank.
     local: Vec<AuxiliaryPopulationUpdate>,
+    /// Last FRI cutoff of `\chi`, which seeds the next search.
+    hint: f64,
     /// Report shift tangent.
-    tangent: ShiftTangent,
-    /// Sparse report shift tangent after compression.
-    tangent_changes: Vec<NOCIPopulationUpdate>,
-    /// Propagated shift tangent `\partial N'/\partial E_s`.
-    propagated: Vec<f64>,
-    /// Last FRI cutoffs of `\chi` and the tangent, which seed the next searches.
-    hints: (f64, f64),
+    tangent: ReportTangent,
 }
 
 impl<C: Communicator> NOCIPropagator<C> for BApply {
@@ -158,7 +152,7 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
     /// - `_`: Wick scratch dimensions, unused by the auxiliary workers.
     /// - `world`: MPI communicator.
     /// # Returns
-    /// - `Self`: $B$-apply propagator.
+    /// - `Self`: BApply propagator.
     /// # Panics
     /// - Panics for nonorthogonal parent orbitals, or missing MO caches or Wick data.
     fn new(
@@ -167,7 +161,7 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
         _: ScratchSize,
         world: &C,
     ) -> Self {
-        // Validate BApply's parent-orbital requirements; the input parser has checked the generator.
+        // Validate the parent orbitals; the input parser has already checked the generator.
         let qmc = data.input.qmc.as_ref().unwrap();
         let mocache = data
             .mocache
@@ -230,16 +224,14 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
             workers,
             result: AuxiliaryPropagationResult::new(),
             local: Vec::new(),
-            tangent: ShiftTangent::new(run.ndets),
-            tangent_changes: Vec::new(),
-            propagated: vec![0.0; run.owned.len()],
-            hints: (0.0, 0.0),
+            hint: 0.0,
+            tangent: ReportTangent::new(run),
         }
     }
 
     /// Spawn one cycle of auxiliary events `\chi^{(a)}` from the sampled populations.
     /// # Arguments:
-    /// - `self`: $B$-apply propagator.
+    /// - `self`: BApply propagator.
     /// - `run`: Shared run state.
     /// - `iteration`: Global iteration of the cycle.
     /// # Returns
@@ -269,7 +261,7 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
     /// Coalesce and compress `\chi` on its owners, apply `N' = N + B^\dagger\Phi(\chi)`, and
     /// propagate the compressed tangent through the overlap.
     /// # Arguments:
-    /// - `self`: $B$-apply propagator.
+    /// - `self`: BApply propagator.
     /// - `run`: Shared run state.
     /// - `report`: Report ending with this update.
     /// # Returns
@@ -297,16 +289,15 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
         };
 
         // Compress the auxiliary vector before applying `B^dagger` to physical populations.
-        let chi_cutoff = target_cutoff(
+        self.hint = target_cutoff(
             &owner_updates,
             qmc.fri.pre_overlap_target_nnz,
-            self.hints.0,
+            self.hint,
             |update| update.dn.abs(),
         );
-        self.hints.0 = chi_cutoff;
         let mut fri_rng =
             QmcRng::seed_from_u64(run.run.rank_seed ^ 0xA0761D6478BD642F ^ report as u64);
-        compress_sparse(&mut owner_updates, chi_cutoff, &mut fri_rng);
+        compress_sparse(&mut owner_updates, self.hint, &mut fri_rng);
         let physical_updates: &[AuxiliaryPopulationUpdate] = if nranks == 1 {
             &owner_updates
         } else {
@@ -331,63 +322,23 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
         } else {
             self.mpi.recv_contig = owner_updates;
         }
-
-        // Collect and compress `d chi / d E_s` in the representation local to this MPI mode.
-        if nranks == 1 {
-            reduce_shift_tangent(&mut self.workers, &mut self.tangent.values);
-        } else {
-            collect_shift_tangent(&mut self.workers, &mut self.tangent);
-            exchange_shift_tangent(&mut self.tangent, &mut run.mpi, world, &run.run);
-            self.tangent.take_sparse(&mut self.tangent_changes);
-        }
-        let tangent_cutoff = if nranks == 1 {
-            target_cutoff(
-                &self.tangent.values,
-                qmc.fri.shift_tangent_target_nnz,
-                self.hints.1,
-                |value| value.abs(),
-            )
-        } else {
-            target_cutoff(
-                &self.tangent_changes,
-                qmc.fri.shift_tangent_target_nnz,
-                self.hints.1,
-                |update| update.dn.abs(),
-            )
-        };
-        self.hints.1 = tangent_cutoff;
-        if nranks == 1 {
-            compress_dense_to_sparse(
-                &mut self.tangent.values,
-                tangent_cutoff,
-                &mut fri_rng,
-                &mut self.tangent_changes,
-            );
-        } else {
-            compress_sparse(&mut self.tangent_changes, tangent_cutoff, &mut fri_rng);
-        }
-
-        // `T = \partial N'/\partial E_s = dt S \sum_a\tilde N^{(a)}` for BApply, the complete
-        // physical population derivative seen by the shared tangent controller.
-        self.propagated.fill(0.0);
-        apply_overlap_population_changes(
-            (&mut self.propagated, &self.tangent_changes),
-            run.data,
-            (&self.factorisation, &self.factors),
-            &run.run,
-            (world, &mut run.mpi),
-            &mut self.overlap_scratch,
-        );
-
-        // Empty the report buffers for the next report's cycles.
         self.local.clear();
         self.mpi.send_ranked.clear();
-        Some(&self.propagated)
+
+        // `T = \partial N'/\partial E_s = dt S \sum_a\tilde N^{(a)}` for BApply, compressed on the
+        // continuing `\chi` stream.
+        Some(self.tangent.propagate(
+            &mut self.workers,
+            run,
+            &mut fri_rng,
+            (&self.factorisation, &self.factors),
+            &mut self.overlap_scratch,
+        ))
     }
 
     /// Report the factor-table growth of the run.
     /// # Arguments:
-    /// - `self`: $B$-apply propagator.
+    /// - `self`: BApply propagator.
     /// - `run`: Shared run state.
     /// # Returns
     /// - `()`: Prints the storage on the root rank.

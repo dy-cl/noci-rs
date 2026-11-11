@@ -29,7 +29,7 @@ use super::restart::{basis_hash, population_representation, restart_base_seed};
 use super::state::{
     AuxiliaryPropagationResult, AuxiliaryThreadPropagation, MCState, NOCIMPIScratch,
     NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation, PopulationStats,
-    ProjectedEnergyUpdate, QMCRunInfo, ScratchSize, SparsePopulations,
+    ProjectedEnergyUpdate, PropagationWorker, QMCRunInfo, ScratchSize, SparsePopulations,
 };
 
 /// Accumulate one signed population change in dense/sparse Monte Carlo storage.
@@ -130,6 +130,54 @@ pub(in crate::noci::stochastic) fn exchange_accumulated_updates(
     scratch.send_contig.clear();
 }
 
+/// Spawn from every occupied sampled determinant on the persistent per-thread workers. Each worker
+/// is reset with the random stream of its thread and the iteration, sources are handed out in
+/// chunks of eight as workers become free, sources with zero population are skipped, and every
+/// worker finally resolves its own batched spawns.
+/// # Arguments:
+/// - `sample`: Iteration and sampled populations of the cycle.
+/// - `run`: Rank-local topology of the run.
+/// - `workers`: Per-thread propagation workers.
+/// - `steps`: Work on one source and its population, and the resolution of a worker's spawns.
+/// # Returns
+/// - `()`: Leaves every worker's spawns in the worker.
+fn spawn_on_workers<W: PropagationWorker + Send>(
+    sample: (usize, &SparsePopulations),
+    run: &QMCRunInfo,
+    workers: &mut [Mutex<W>],
+    steps: (impl Fn(&mut W, usize, f64) + Sync, impl Fn(&mut W) + Sync),
+) {
+    let (iteration, sampled) = sample;
+    let (source_step, resolve) = steps;
+    let occupied = sampled.occ();
+    if occupied.is_empty() {
+        return;
+    }
+
+    let next = AtomicUsize::new(0);
+    let workers: &[Mutex<W>] = workers;
+    rayon::broadcast(|context| {
+        let tid = context.index();
+        let mut worker = workers[tid].lock().unwrap();
+        worker.reset(stream(run.rank_seed, tid as u64, iteration as u64));
+
+        // Take chunks of sources until every occupied source has been assigned.
+        loop {
+            let start = next.fetch_add(8, Ordering::Relaxed);
+            if start >= occupied.len() {
+                break;
+            }
+            for &source in &occupied[start..(start + 8).min(occupied.len())] {
+                let population = sampled.get(source);
+                if population != 0.0 {
+                    source_step(&mut worker, source, population);
+                }
+            }
+        }
+        resolve(&mut worker);
+    });
+}
+
 /// Generate one stochastic estimate of the unshifted or SApply NOCI residual.
 /// SApply additionally accumulates `B = \partial\Delta/\partial E_s = dt S\tilde N` from the
 /// same sampled paths; the unshifted propagator omits this tangent.
@@ -168,67 +216,53 @@ pub(in crate::noci::stochastic) fn propagate_iteration(
         }
     }
 
-    // Reset report-independent output buffers before processing occupied sampled determinants.
+    // Spawn from every occupied source on the workers, then batch-evaluate the generated matrix
+    // elements and route realised updates by ownership.
     result.clear();
-    let occupied = sampled.occ();
-    if !occupied.is_empty() {
-        // Distribute fixed-size chunks dynamically across persistent Rayon workers.
-        let next = AtomicUsize::new(0);
-        let workers_shared: &[Mutex<NOCIThreadPropagation>] = workers;
-        rayon::broadcast(|context| {
-            // Reset this worker and derive a deterministic cycle/thread-local random stream.
-            let tid = context.index();
-            let mut worker = workers_shared[tid].lock().unwrap();
-            worker.clear();
-            worker.rng = stream(run.rank_seed, tid as u64, iteration as u64);
-            // Generate diagonal, tangent, and off-diagonal contributions for assigned sources.
-            loop {
-                let start = next.fetch_add(8, Ordering::Relaxed);
-                if start >= occupied.len() {
-                    break;
+    spawn_on_workers(
+        (iteration, sampled),
+        run,
+        workers,
+        (
+            |worker: &mut NOCIThreadPropagation, source, population| {
+                if accumulate_tangent {
+                    // For `d\Delta_x = -dt(H_xx-E_sS_xx)\tilde N_x`,
+                    // `\partial d\Delta_x/\partial E_s = dt S_xx\tilde N_x`.
+                    let dn = dt * run.diagonal_hs[source].1 * population;
+                    worker.shift_tangent.add(source, dn, run.nranks > 1);
                 }
-                for &source in &occupied[start..(start + 8).min(occupied.len())] {
-                    let population = sampled.get(source);
-                    if population == 0.0 {
-                        continue;
-                    }
-                    if accumulate_tangent {
-                        // For `d\Delta_x = -dt(H_xx-E_sS_xx)\tilde N_x`,
-                        // `\partial d\Delta_x/\partial E_s = dt S_xx\tilde N_x`.
-                        let dn = dt * run.diagonal_hs[source].1 * population;
-                        worker.shift_tangent.add(source, dn, run.nranks > 1);
-                    }
-                    worker.diagonal_population_change(
-                        source,
-                        population,
-                        shift,
-                        data,
-                        &run.diagonal_hs,
-                    );
-                    worker.spawning(
-                        source,
-                        population,
-                        shift,
-                        data,
-                        (overlap_factors, overlap_generator, overlap_weight),
-                    );
-                }
-            }
-            // Batch-evaluate generated matrix elements and route realised updates by ownership.
-            worker.resolve_batched_spawning(
-                shift,
-                accumulate_tangent,
-                data,
-                run,
-                (
-                    overlap_factors,
-                    overlap_generator,
-                    overlap_weight,
-                    optimise_overlap_weight,
-                ),
-            );
-        });
-    }
+                worker.diagonal_population_change(
+                    source,
+                    population,
+                    shift,
+                    data,
+                    &run.diagonal_hs,
+                );
+                worker.spawning(
+                    source,
+                    population,
+                    shift,
+                    data,
+                    (overlap_factors, overlap_generator, overlap_weight),
+                );
+            },
+            |worker: &mut NOCIThreadPropagation| {
+                worker.resolve_batched_spawning(
+                    shift,
+                    accumulate_tangent,
+                    data,
+                    run,
+                    (
+                        overlap_factors,
+                        overlap_generator,
+                        overlap_weight,
+                        optimise_overlap_weight,
+                    ),
+                );
+            },
+        ),
+    );
+
     // Gather thread-local physical updates, samples, and overlap-weight derivatives.
     for worker in workers.iter_mut() {
         let worker = worker.get_mut().unwrap();
@@ -268,49 +302,33 @@ pub(in crate::noci::stochastic) fn propagate_iteration_auxiliary(
         worker.get_mut().unwrap().shift_tangent.prepare(run.ndets);
     }
 
-    // Reset shared outputs and distribute occupied sampled determinants dynamically.
+    // Spawn auxiliary residual contributions from every occupied source on the workers, then
+    // resolve the generated orthogonal connections and route the updates by owner.
     result.clear();
-    let occupied = sampled.occ();
-    if !occupied.is_empty() {
-        let next = AtomicUsize::new(0);
-        let workers_shared: &[Mutex<AuxiliaryThreadPropagation>] = workers;
-        rayon::broadcast(|context| {
-            // Reset this worker and derive the same deterministic cycle/thread RNG partition.
-            let tid = context.index();
-            let mut worker = workers_shared[tid].lock().unwrap();
-            worker.clear();
-            worker.rng = stream(run.rank_seed, tid as u64, iteration as u64);
-
-            // Generate auxiliary diagonal, tangent, and off-diagonal residual contributions.
-            loop {
-                let start = next.fetch_add(8, Ordering::Relaxed);
-                if start >= occupied.len() {
-                    break;
-                }
-                for &source in &occupied[start..(start + 8).min(occupied.len())] {
-                    let population = sampled.get(source);
-                    if population == 0.0 {
-                        continue;
-                    }
-                    worker
-                        .shift_tangent
-                        .add(source, dt * population, run.nranks > 1);
-                    worker.diagonal_population_change(
-                        source,
-                        population,
-                        shift,
-                        data,
-                        auxiliary_space,
-                        run,
-                    );
-                    worker.spawning(source, population, generator, data);
-                }
-            }
-
-            // Resolve generated orthogonal connections and route auxiliary updates by owner.
-            worker.resolve_batched_spawning(data, auxiliary_space, run);
-        });
-    }
+    spawn_on_workers(
+        (iteration, sampled),
+        run,
+        workers,
+        (
+            |worker: &mut AuxiliaryThreadPropagation, source, population| {
+                worker
+                    .shift_tangent
+                    .add(source, dt * population, run.nranks > 1);
+                worker.diagonal_population_change(
+                    source,
+                    population,
+                    shift,
+                    data,
+                    auxiliary_space,
+                    run,
+                );
+                worker.spawning(source, population, generator, data);
+            },
+            |worker: &mut AuxiliaryThreadPropagation| {
+                worker.resolve_batched_spawning(data, auxiliary_space, run);
+            },
+        ),
+    );
 
     // Gather thread-local auxiliary updates and generation diagnostics.
     for worker in workers.iter_mut() {

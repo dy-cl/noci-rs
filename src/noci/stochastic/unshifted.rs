@@ -172,16 +172,4 @@ impl<C: Communicator> NOCIPropagator<C> for Unshifted {
         );
         None
     }
-
-    /// The unshifted propagator has no final diagnostics.
-    /// # Arguments:
-    /// - `self`: Unshifted propagator.
-    /// - `_`: Shared run state.
-    /// # Returns
-    /// - `()`: Prints nothing.
-    fn finish(
-        &mut self,
-        _: &NOCIRun<'_, C>,
-    ) {
-    }
 }

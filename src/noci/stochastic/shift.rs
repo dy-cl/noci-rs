@@ -10,117 +10,142 @@ use mpi::traits::*;
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::input::Input;
-use crate::qmc::{exchange_to_owners, update_shift as qmc_update_shift};
+use crate::noci::{OverlapFactors, OverlapScratch, SpinFactorisation};
+use crate::qmc::{QmcRng, compress_sparse, exchange_to_owners, target_cutoff};
 
 // Parent/sibling imports.
+use super::fri::compress_dense_to_sparse;
+use super::propagate::NOCIRun;
+use super::sapply::apply_overlap_population_changes;
 use super::state::{
-    NOCIMPIScratch, PopulationStats, PropagationState, QMCRunInfo, ShiftTangent, TangentWorker,
+    NOCIMPIScratch, NOCIPopulationUpdate, PropagationWorker, QMCRunInfo, ShiftTangent,
 };
 
-/// Update the unshifted propagator's population-control shift.
-/// # Arguments:
-/// - `stats`: Current population statistics.
-/// - `state`: Current propagation state.
-/// - `shift`: Population-control shift.
-/// - `input`: User input options.
-/// # Returns:
-/// - `()`: Updates the shift and cached previous population.
-pub(in crate::noci::stochastic) fn update_shift(
-    stats: &PopulationStats,
-    state: &mut PropagationState,
-    shift: &mut f64,
-    input: &Input,
-) {
-    let qmc = input.qmc.as_ref().unwrap();
-    let dteff = input.prop_ref().dt * qmc.ncycles as f64;
-
-    qmc_update_shift(
-        shift,
-        &mut state.reached,
-        (stats.nw, state.prev_pop.nw),
-        (qmc.target_population, qmc.shift_damping, 0.0, dteff),
-    );
-
-    state.prev_pop = *stats;
+/// The shift tangent of one report of a range propagator, `B = \partial\Delta/\partial E_s`:
+/// gathered from the workers, compressed, and propagated through the overlap to
+/// `\partial N'/\partial E_s = S\Phi(B)`, the Jacobian of the tangent shift controller.
+pub(in crate::noci::stochastic) struct ReportTangent {
+    /// Report tangent gathered from the workers.
+    gathered: ShiftTangent,
+    /// Sparse tangent after compression.
+    sparse: Vec<NOCIPopulationUpdate>,
+    /// Propagated tangent on the owned determinants.
+    propagated: Vec<f64>,
+    /// Last FRI cutoff, which seeds the next search.
+    hint: f64,
 }
 
-/// Update a range-population shift from its already propagated tangent
-/// `T = \partial N'/\partial E_s`.
-/// The damped Newton step uses
-/// `E_s' = E_s - \zeta N_M(\partial N_M/\partial E_s)^{-1}`
-/// `[\ln(N_M/N_M^{prev}) + \kappa\ln(N_M^{prev}/N_*)]`, where
+impl ReportTangent {
+    /// Allocate the report tangent of a run.
+    /// # Arguments:
+    /// - `run`: Rank-local topology of the run.
+    /// # Returns
+    /// - `Self`: Empty report tangent.
+    pub(in crate::noci::stochastic) fn new(run: &QMCRunInfo) -> Self {
+        Self {
+            gathered: ShiftTangent::new(run.ndets),
+            sparse: Vec::new(),
+            propagated: vec![0.0; run.owned.len()],
+            hint: 0.0,
+        }
+    }
+
+    /// Gather the report tangent from the workers, compress it to its target NNZ and propagate it
+    /// through the overlap. `E[\Phi(B)|B] = B`, so linearity of `S` gives `E[S\Phi(B)|B] = SB`.
+    /// # Arguments:
+    /// - `self`: Report tangent.
+    /// - `workers`: Per-thread workers holding their tangent contributions.
+    /// - `run`: Shared run state.
+    /// - `rng`: Random stream of the tangent compression.
+    /// - `overlap`: Factorisation and factor tables of the overlap.
+    /// - `scratch`: Reusable storage of one application of the overlap.
+    /// # Returns
+    /// - `&[f64]`: Propagated tangent `\partial N'/\partial E_s` on the owned determinants.
+    pub(in crate::noci::stochastic) fn propagate<T: PropagationWorker + Send, C: Communicator>(
+        &mut self,
+        workers: &mut [Mutex<T>],
+        run: &mut NOCIRun<'_, C>,
+        rng: &mut QmcRng,
+        overlap: (&SpinFactorisation, &OverlapFactors),
+        scratch: &mut OverlapScratch,
+    ) -> &[f64] {
+        let qmc = run.data.input.qmc.as_ref().unwrap();
+        let target = qmc.fri.shift_tangent_target_nnz;
+
+        // One rank reduces the nearly dense thread tangents; several ranks route them to owners.
+        if run.run.nranks == 1 {
+            reduce_shift_tangent(workers, &mut self.gathered.values);
+            self.hint = target_cutoff(&self.gathered.values, target, self.hint, |v| v.abs());
+            compress_dense_to_sparse(&mut self.gathered.values, self.hint, rng, &mut self.sparse);
+        } else {
+            collect_shift_tangent(workers, &mut self.gathered);
+            exchange_shift_tangent(&mut self.gathered, &mut run.mpi, run.world, &run.run);
+            self.gathered.take_sparse(&mut self.sparse);
+            self.hint = target_cutoff(&self.sparse, target, self.hint, |update| update.dn.abs());
+            compress_sparse(&mut self.sparse, self.hint, rng);
+        }
+
+        // Propagate the compressed tangent through the overlap.
+        self.propagated.fill(0.0);
+        apply_overlap_population_changes(
+            (&mut self.propagated, &self.sparse),
+            run.data,
+            overlap,
+            &run.run,
+            (run.world, &mut run.mpi),
+            scratch,
+        );
+        &self.propagated
+    }
+}
+
+/// Return the Newton scale of the tangent shift controller,
+/// `s = \zeta N_M(\partial N_M/\partial E_s)^{-1}`, where for `N_M = ||N'||_1` and the propagated
+/// tangent `T = \partial N'/\partial E_s`,
 /// `\partial N_M/\partial E_s = \operatorname{sign}(N')^T T`.
+/// The tangent already contains every report-cycle `dt` factor, so no `1/(dt\,n_\text{cyc})`
+/// enters the scale.
 /// # Arguments:
-/// - `stats`: Current population statistics.
-/// - `state`: Current propagation state.
-/// - `shift`: Range-population control shift.
+/// - `populations`: Rank-local populations `N'` after the step.
 /// - `tangent`: Rank-local propagated tangent `T`.
+/// - `norms`: Current and previous population norms `(N_M, N_M^{\text{prev}})`.
+/// - `damping`: Shift damping `\zeta`.
 /// - `run`: Rank-local determinant ownership metadata.
 /// - `world`: MPI communicator.
-/// - `input`: User input options.
 /// # Returns:
-/// - `()`: Updates the shared range-population shift when its Jacobian is usable.
-pub(in crate::noci::stochastic) fn update_shift_tangent(
-    stats: &PopulationStats,
-    state: &mut PropagationState,
-    shift: &mut f64,
+/// - `Option<f64>`: Newton scale, or `None` when the norms or the Jacobian are unusable.
+pub(in crate::noci::stochastic) fn tangent_scale(
+    populations: &[f64],
     tangent: &[f64],
+    norms: (f64, f64),
+    damping: f64,
     run: &QMCRunInfo,
     world: &impl Communicator,
-    input: &Input,
-) {
-    // For `N_M = ||N'||_1` and an already propagated tangent
-    // `T = \partial N'/\partial E_s`, `\partial N_M/\partial E_s = sign(N')^T T`.
-    let local = state
-        .mc
-        .populations
+) -> Option<f64> {
+    let local = populations
         .par_iter()
         .zip(tangent.par_iter())
         .map(|(&population, &derivative)| (population.signum() * derivative, derivative.abs()))
         .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
-    let (range_derivative, tangent_norm) = if run.nranks == 1 {
+    let (derivative, norm) = if run.nranks == 1 {
         local
     } else {
         let mut global = [0.0; 2];
         world.all_reduce_into(&[local.0, local.1], &mut global, SystemOperation::sum());
         (global[0], global[1])
     };
-    let qmc = input.qmc.as_ref().unwrap();
-    let previous = state.prev_pop.nw;
-    let current = stats.nw;
 
-    if !state.reached && current >= qmc.target_population {
-        state.reached = true;
-    }
-
-    let usable = state.reached
-        && current.is_finite()
+    // The step needs positive finite norms and a Jacobian well above rounding of the tangent.
+    let (current, previous) = norms;
+    let usable = current.is_finite()
         && current > 0.0
         && previous.is_finite()
         && previous > 0.0
-        && range_derivative.is_finite()
-        && tangent_norm.is_finite()
-        && tangent_norm > 0.0
-        && range_derivative.abs() > f64::EPSILON * tangent_norm;
-
-    if usable {
-        // The supplied tangent contains every report-cycle `dt` factor. No additional
-        // `1/(dt*ncycles)` belongs in the Newton update.
-        let growth = (current / previous).ln();
-        let residual = if qmc.population_restoring == 0.0 {
-            growth
-        } else {
-            growth + qmc.population_restoring * (previous / qmc.target_population).ln()
-        };
-        let next = *shift - qmc.shift_damping * current / range_derivative * residual;
-
-        if next.is_finite() {
-            *shift = next;
-        }
-    }
-
-    state.prev_pop = *stats;
+        && derivative.is_finite()
+        && norm.is_finite()
+        && norm > 0.0
+        && derivative.abs() > f64::EPSILON * norm;
+    usable.then(|| damping * current / derivative)
 }
 
 /// Exchange remote range-propagator tangent contributions and add them to owner-local storage.
@@ -131,7 +156,7 @@ pub(in crate::noci::stochastic) fn update_shift_tangent(
 /// - `run`: Rank-local determinant ownership metadata.
 /// # Returns:
 /// - `()`: Adds received tangent updates to owner-local dense storage.
-pub(in crate::noci::stochastic) fn exchange_shift_tangent(
+fn exchange_shift_tangent(
     tangent: &mut ShiftTangent,
     mpi: &mut NOCIMPIScratch,
     world: &impl CommunicatorCollectives,
@@ -157,7 +182,7 @@ pub(in crate::noci::stochastic) fn exchange_shift_tangent(
 /// - `tangent`: Dense report-level tangent receiving thread sum.
 /// # Returns:
 /// - `()`: Replaces `tangent` with report tangent and clears thread-local tangents.
-pub(in crate::noci::stochastic) fn reduce_shift_tangent<T: TangentWorker + Send>(
+fn reduce_shift_tangent<T: PropagationWorker + Send>(
     workers: &mut [Mutex<T>],
     tangent: &mut [f64],
 ) {
@@ -184,7 +209,7 @@ pub(in crate::noci::stochastic) fn reduce_shift_tangent<T: TangentWorker + Send>
 /// - `tangent`: Owner-local report tangent and remote contributions.
 /// # Returns:
 /// - `()`: Adds touched worker values and drains remote updates.
-pub(in crate::noci::stochastic) fn collect_shift_tangent<T: TangentWorker>(
+fn collect_shift_tangent<T: PropagationWorker>(
     workers: &mut [Mutex<T>],
     tangent: &mut ShiftTangent,
 ) {
