@@ -117,13 +117,6 @@ pub fn qmc_step(
     // Validate report-aligned checkpointing and construct the rank-local run topology.
     let qmc = data.input.qmc.as_ref().unwrap();
 
-    if let Some(write_restart_interval) = data.input.write.write_restart_interval
-        && (write_restart_interval == 0 || write_restart_interval % qmc.ncycles != 0)
-    {
-        println!("write_restart_interval must be divisible by qmc.ncycles");
-        std::process::exit(1);
-    }
-
     let (isref, scratchsize, run) = super::common::construct_qmc_run(data, c0, ref_indices, world);
 
     // Build overlap-weighted proposal factors only for the corresponding generator.
@@ -251,7 +244,6 @@ pub fn qmc_step(
         state.pe = pe;
         state.eprojcur = state.pe.num / state.pe.den;
         state.prev_pop = stats;
-        state.cur_pop = stats;
         state
     };
 
@@ -324,7 +316,6 @@ pub fn qmc_step(
         let (stats, pe) = population_stats_projected_energy(&state.mc, &isref, &run, world);
         state.pe = pe;
         state.eprojcur = state.pe.num / state.pe.den;
-        state.cur_pop = stats;
 
         update_shift(&stats, &mut state, es, data.input);
         update_overlap_weight(

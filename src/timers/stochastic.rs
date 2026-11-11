@@ -24,12 +24,8 @@ pub struct StepTotals {
     pub take_population_changes: Counter,
     /// Total time spent applying the overlap to range-population changes.
     pub apply_overlap_changes: Counter,
-    /// Total time spent gathering overlap-change counts between MPI ranks.
-    pub overlap_change_gather_counts: Counter,
     /// Total time spent applying locally generated overlap changes.
     pub apply_local_overlap_changes: Counter,
-    /// Total time spent waiting for gathered overlap changes.
-    pub wait_overlap_change_gather: Counter,
     /// Total time spent applying remotely generated overlap changes.
     pub apply_remote_overlap_changes: Counter,
     /// Total time spent gathering sparse populations across MPI ranks.
@@ -70,12 +66,8 @@ impl StepTotals {
             .merge_from(&other.take_population_changes);
         self.apply_overlap_changes
             .merge_from(&other.apply_overlap_changes);
-        self.overlap_change_gather_counts
-            .merge_from(&other.overlap_change_gather_counts);
         self.apply_local_overlap_changes
             .merge_from(&other.apply_local_overlap_changes);
-        self.wait_overlap_change_gather
-            .merge_from(&other.wait_overlap_change_gather);
         self.apply_remote_overlap_changes
             .merge_from(&other.apply_remote_overlap_changes);
         self.gather_all_populations
@@ -292,22 +284,6 @@ pub fn add_apply_overlap_changes(ns: u64) {
     });
 }
 
-/// Add one timed call to the overlap-change count-gather counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds.
-/// # Returns:
-/// - `()`: Updates the current thread-local timing counter.
-#[inline(always)]
-pub fn add_overlap_change_gather_counts(ns: u64) {
-    with_totals(|totals| {
-        totals
-            .stochastic
-            .step
-            .overlap_change_gather_counts
-            .add_ns(ns);
-    });
-}
-
 /// Add one timed call to the local overlap-change application counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds.
@@ -321,18 +297,6 @@ pub fn add_apply_local_overlap_changes(ns: u64) {
             .step
             .apply_local_overlap_changes
             .add_ns(ns);
-    });
-}
-
-/// Add one timed call to the overlap-change communication wait counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds.
-/// # Returns:
-/// - `()`: Updates the current thread-local timing counter.
-#[inline(always)]
-pub fn add_wait_overlap_change_gather(ns: u64) {
-    with_totals(|totals| {
-        totals.stochastic.step.wait_overlap_change_gather.add_ns(ns);
     });
 }
 

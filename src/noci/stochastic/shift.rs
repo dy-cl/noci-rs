@@ -1,5 +1,8 @@
 // noci/stochastic/shift.rs
 
+// Standard library imports.
+use std::sync::Mutex;
+
 // External crate imports.
 use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
@@ -8,10 +11,12 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::input::Input;
-use crate::qmc::update_shift as qmc_update_shift;
+use crate::qmc::{exchange_to_owners, update_shift as qmc_update_shift};
 
 // Parent/sibling imports.
-use super::state::{PopulationStats, PropagationState, QMCRunInfo};
+use super::state::{
+    NOCIMPIScratch, PopulationStats, PropagationState, QMCRunInfo, ShiftTangent, TangentWorker,
+};
 
 /// Update the unshifted propagator's population-control shift.
 /// # Arguments:
@@ -116,4 +121,80 @@ pub(in crate::noci::stochastic) fn update_shift_tangent(
     }
 
     state.prev_pop = *stats;
+}
+
+/// Exchange remote range-propagator tangent contributions and add them to owner-local storage.
+/// # Arguments:
+/// - `tangent`: Report-level shift tangent.
+/// - `mpi`: Reusable MPI communication scratch.
+/// - `world`: MPI communicator.
+/// - `run`: Rank-local determinant ownership metadata.
+/// # Returns:
+/// - `()`: Adds received tangent updates to owner-local dense storage.
+pub(in crate::noci::stochastic) fn exchange_shift_tangent(
+    tangent: &mut ShiftTangent,
+    mpi: &mut NOCIMPIScratch,
+    world: &impl CommunicatorCollectives,
+    run: &QMCRunInfo,
+) {
+    if run.nranks <= 1 {
+        tangent.remote.clear();
+        return;
+    }
+    // Each rank holds partial contributions to `B_w = \sum_a dt \sum_x S_{wx}\tilde N_x`.
+    // Redistribute them by determinant ownership before report-level FRI.
+    mpi.send_ranked.append(&mut tangent.remote);
+    for update in exchange_to_owners(world, run.irank, mpi) {
+        tangent.add(update.det as usize, update.dn, true);
+    }
+    mpi.send_contig.clear();
+}
+
+/// Reduce thread-local dense retained-space tangents into one report-level vector.
+/// Computes `B_w = \sum_t B_w^{(t)}` in determinant-major order for either range propagator.
+/// # Arguments:
+/// - `workers`: Per-thread dense tangent accumulators.
+/// - `tangent`: Dense report-level tangent receiving thread sum.
+/// # Returns:
+/// - `()`: Replaces `tangent` with report tangent and clears thread-local tangents.
+pub(in crate::noci::stochastic) fn reduce_shift_tangent<T: TangentWorker + Send>(
+    workers: &mut [Mutex<T>],
+    tangent: &mut [f64],
+) {
+    // Single-rank B is nearly dense. Reduce determinant-major to avoid touched-index bookkeeping
+    // and sparse materialisation before target-NNZ compression.
+    let sources = workers
+        .iter_mut()
+        .map(|worker| worker.get_mut().unwrap().tangent().values.as_slice())
+        .collect::<Vec<_>>();
+
+    tangent.par_iter_mut().enumerate().for_each(|(det, value)| {
+        *value = sources.iter().map(|source| source[det]).sum();
+    });
+
+    drop(sources);
+    workers.par_iter_mut().for_each(|worker| {
+        worker.get_mut().unwrap().tangent().values.fill(0.0);
+    });
+}
+
+/// Drain sparse worker shift tangents into the report accumulator for MPI exchange.
+/// # Arguments:
+/// - `workers`: Persistent SApply or BApply propagation workers.
+/// - `tangent`: Owner-local report tangent and remote contributions.
+/// # Returns:
+/// - `()`: Adds touched worker values and drains remote updates.
+pub(in crate::noci::stochastic) fn collect_shift_tangent<T: TangentWorker>(
+    workers: &mut [Mutex<T>],
+    tangent: &mut ShiftTangent,
+) {
+    for worker in workers.iter_mut() {
+        let source = worker.get_mut().unwrap().tangent();
+        for det in source.changed.drain(..) {
+            let dn = source.values[det];
+            source.values[det] = 0.0;
+            tangent.add(det, dn, true);
+        }
+        tangent.remote.append(&mut source.remote);
+    }
 }

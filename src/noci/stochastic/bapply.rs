@@ -28,7 +28,9 @@ use super::excit::{AuxiliaryGenerator, pchb_generator};
 use super::fri::{compress_dense_to_sparse, sample_populations};
 use super::init::initialise_qmc_state;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
-use super::shift::update_shift_tangent;
+use super::shift::{
+    collect_shift_tangent, exchange_shift_tangent, reduce_shift_tangent, update_shift_tangent,
+};
 use super::state::{
     AuxiliaryMPIScratch, AuxiliaryPopulationUpdate, AuxiliaryPropagationResult,
     AuxiliaryThreadPropagation, NOCIMPIScratch, NOCIPopulationUpdate, ShiftTangent,
@@ -128,8 +130,7 @@ fn print_bapply_storage(
 /// # Returns
 /// - `(f64, Option<ExcitationHist>)`: Final projected energy and optional spawning histogram.
 /// # Panics
-/// - Panics for unsupported excitation generation, invalid restart intervals, nonorthogonal
-///   parent orbitals, or missing MO caches or Wick data.
+/// - Panics for nonorthogonal parent orbitals, or missing MO caches or Wick data.
 pub fn qmc_step(
     data: &NOCIData<'_, f64>,
     c0: &[f64],
@@ -137,19 +138,8 @@ pub fn qmc_step(
     ref_indices: &[usize],
     world: &impl Communicator,
 ) -> (f64, Option<ExcitationHist>) {
-    // Validate BApply-specific generator, checkpoint, and parent-orbital requirements.
+    // Validate BApply's parent-orbital requirements; the input parser has checked the generator.
     let qmc = data.input.qmc.as_ref().unwrap();
-    if !matches!(
-        qmc.excitation_gen,
-        ExcitationGen::Uniform | ExcitationGen::Pchb
-    ) {
-        panic!("BApply supports excitation_gen = \"uniform\" or \"pchb\"");
-    }
-    if let Some(interval) = data.input.write.write_restart_interval
-        && (interval == 0 || interval % qmc.ncycles != 0)
-    {
-        panic!("write_restart_interval must be divisible by qmc.ncycles");
-    }
     let mocache = data
         .mocache
         .expect("BApply requires parent MO integral caches");
@@ -311,10 +301,10 @@ pub fn qmc_step(
         }
 
         if run.nranks == 1 {
-            super::sapply::reduce_shift_tangent(&mut workers, &mut shift_tangent.values);
+            reduce_shift_tangent(&mut workers, &mut shift_tangent.values);
         } else {
-            super::sapply::collect_shift_tangent(&mut workers, &mut shift_tangent);
-            super::sapply::exchange_shift_tangent(&mut shift_tangent, &mut mpi, world, &run);
+            collect_shift_tangent(&mut workers, &mut shift_tangent);
+            exchange_shift_tangent(&mut shift_tangent, &mut mpi, world, &run);
             shift_tangent.take_sparse(&mut tangent_updates);
         }
         let tangent_cutoff = if run.nranks == 1 {
@@ -360,7 +350,6 @@ pub fn qmc_step(
         let (stats, pe) = population_stats_projected_energy(&state.mc, &isref, &run, world);
         state.pe = pe;
         state.eprojcur = state.pe.num / state.pe.den;
-        state.cur_pop = stats;
         update_shift_tangent(
             &stats,
             &mut state,

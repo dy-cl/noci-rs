@@ -5,11 +5,9 @@ use std::path::Path;
 use std::sync::Mutex;
 
 // External crate imports.
-use mpi::datatype::PartitionMut;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 use rand::SeedableRng;
-use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::elements::NOCIData;
@@ -17,7 +15,7 @@ use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::input::ExcitationGen;
 use crate::noci::{OverlapFactors, OverlapScratch, SpinFactorisation};
 use crate::qmc::excitgen::ExcitationHist;
-use crate::qmc::{QmcRng, coalesce, compress_sparse, exchange_to_owners, stream, target_cutoff};
+use crate::qmc::{QmcRng, coalesce, compress_sparse, gather_updates, stream, target_cutoff};
 use crate::time_call;
 
 // Parent/sibling imports.
@@ -30,10 +28,12 @@ use super::fri::{compress_dense_to_sparse, sample_populations};
 use super::init::initialise_qmc_state;
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
-use super::shift::update_shift_tangent;
+use super::shift::{
+    collect_shift_tangent, exchange_shift_tangent, reduce_shift_tangent, update_shift_tangent,
+};
 use super::state::{
     NOCIMPIScratch, NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation,
-    OverlapDerivativeSums, QMCRunInfo, ShiftTangent, TangentWorker,
+    OverlapDerivativeSums, QMCRunInfo, ShiftTangent,
 };
 
 /// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
@@ -116,38 +116,10 @@ pub(in crate::noci::stochastic) fn apply_overlap_population_changes(
             return;
         }
 
-        // Gather number of updates that each rank will send to this rank.
-        let nsend = dlocal.len() as i32;
-        time_call!(
-            crate::timers::stochastic::add_overlap_change_gather_counts,
-            {
-                world.all_gather_into(&nsend, &mut mpi.gather_counts[..]);
-            }
-        );
-
-        // Calculate displacements for the recieve buffer and the total number of updates across
-        // all ranks.
-        let mut ntot = 0usize;
-        for (i, &n) in mpi.gather_counts.iter().enumerate() {
-            mpi.gather_displs[i] = ntot as i32;
-            ntot += n as usize;
-        }
-        if ntot == 0 {
+        // Gather every rank's updates, so each rank applies the complete change to its owned rows.
+        if gather_updates(world, dlocal, mpi).is_empty() {
             return;
         }
-
-        // Size recieve buffer to hold all updates from all ranks.
-        mpi.gather_recv
-            .resize(ntot, NOCIPopulationUpdate { det: 0, dn: 0.0 });
-
-        let mut recv = PartitionMut::new(
-            &mut mpi.gather_recv[..],
-            &mpi.gather_counts[..],
-            &mpi.gather_displs[..],
-        );
-        time_call!(crate::timers::stochastic::add_wait_overlap_change_gather, {
-            world.all_gather_varcount_into(dlocal, &mut recv);
-        });
 
         // Apply all report updates in one pass. This avoids regrouping local and remote updates
         // separately, which is more expensive than the small all-gather wait on these workloads.
@@ -169,82 +141,6 @@ pub(in crate::noci::stochastic) fn apply_overlap_population_changes(
             }
         );
     })
-}
-
-/// Exchange remote SApply tangent contributions and add them to owner-local storage.
-/// # Arguments:
-/// - `tangent`: Report-level shift tangent.
-/// - `mpi`: Reusable MPI communication scratch.
-/// - `world`: MPI communicator.
-/// - `run`: Rank-local determinant ownership metadata.
-/// # Returns:
-/// - `()`: Adds received tangent updates to owner-local dense storage.
-pub(in crate::noci::stochastic) fn exchange_shift_tangent(
-    tangent: &mut ShiftTangent,
-    mpi: &mut NOCIMPIScratch,
-    world: &impl CommunicatorCollectives,
-    run: &QMCRunInfo,
-) {
-    if run.nranks <= 1 {
-        tangent.remote.clear();
-        return;
-    }
-    // Each rank holds partial contributions to `B_w = \sum_a dt \sum_x S_{wx}\tilde N_x`.
-    // Redistribute them by determinant ownership before report-level FRI.
-    mpi.send_ranked.append(&mut tangent.remote);
-    for update in exchange_to_owners(world, run.irank, mpi) {
-        tangent.add(update.det as usize, update.dn, true);
-    }
-    mpi.send_contig.clear();
-}
-
-/// Reduce thread-local dense retained-space tangents into one report-level vector.
-/// Computes `B_w = \sum_t B_w^{(t)}` in determinant-major order for either range propagator.
-/// # Arguments:
-/// - `workers`: Per-thread dense tangent accumulators.
-/// - `tangent`: Dense report-level tangent receiving thread sum.
-/// # Returns:
-/// - `()`: Replaces `tangent` with report tangent and clears thread-local tangents.
-pub(in crate::noci::stochastic) fn reduce_shift_tangent<T: TangentWorker + Send>(
-    workers: &mut [Mutex<T>],
-    tangent: &mut [f64],
-) {
-    // Single-rank B is nearly dense. Reduce determinant-major to avoid touched-index bookkeeping
-    // and sparse materialisation before target-NNZ compression.
-    let sources = workers
-        .iter_mut()
-        .map(|worker| worker.get_mut().unwrap().tangent().values.as_slice())
-        .collect::<Vec<_>>();
-
-    tangent.par_iter_mut().enumerate().for_each(|(det, value)| {
-        *value = sources.iter().map(|source| source[det]).sum();
-    });
-
-    drop(sources);
-    workers.par_iter_mut().for_each(|worker| {
-        worker.get_mut().unwrap().tangent().values.fill(0.0);
-    });
-}
-
-/// Drain sparse worker shift tangents into the report accumulator for MPI exchange.
-/// # Arguments:
-/// - `workers`: Persistent SApply or BApply propagation workers.
-/// - `tangent`: Owner-local report tangent and remote contributions.
-/// # Returns:
-/// - `()`: Adds touched worker values and drains remote updates.
-pub(in crate::noci::stochastic) fn collect_shift_tangent<T: TangentWorker>(
-    workers: &mut [Mutex<T>],
-    tangent: &mut ShiftTangent,
-) {
-    for worker in workers.iter_mut() {
-        let source = worker.get_mut().unwrap().tangent();
-        for det in source.changed.drain(..) {
-            let dn = source.values[det];
-            source.values[det] = 0.0;
-            tangent.add(det, dn, true);
-        }
-        tangent.remote.append(&mut source.remote);
-    }
 }
 
 /// Perform SApply range-preserving stochastic NOCI propagation.
@@ -274,13 +170,6 @@ pub fn qmc_step(
     world: &impl Communicator,
 ) -> (f64, Option<ExcitationHist>) {
     let qmc = data.input.qmc.as_ref().unwrap();
-
-    if let Some(write_restart_interval) = data.input.write.write_restart_interval
-        && (write_restart_interval == 0 || write_restart_interval % qmc.ncycles != 0)
-    {
-        println!("write_restart_interval must be divisible by qmc.ncycles");
-        std::process::exit(1);
-    }
 
     let (isref, scratchsize, run) = super::common::construct_qmc_run(data, c0, ref_indices, world);
 
@@ -523,8 +412,6 @@ pub fn qmc_step(
         state.pe = pe;
 
         state.eprojcur = state.pe.num / state.pe.den;
-
-        state.cur_pop = stats;
 
         // `dN_\mathrm{range}/dE_s = sign(N')^T SB` supplies the physical Jacobian for the damped
         // Newton

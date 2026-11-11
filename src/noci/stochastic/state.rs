@@ -275,8 +275,6 @@ pub(in crate::noci::stochastic) struct PropagationState {
     pub(in crate::noci::stochastic) pe: ProjectedEnergyUpdate,
     /// Population statistics at the previous shift update.
     pub(in crate::noci::stochastic) prev_pop: PopulationStats,
-    /// Current population statistics.
-    pub(in crate::noci::stochastic) cur_pop: PopulationStats,
     /// Report from which propagation begins.
     pub(in crate::noci::stochastic) start_report: usize,
     /// Whether the persistent population has reached its target.
@@ -312,7 +310,6 @@ impl PropagationState {
             mc,
             pe,
             prev_pop,
-            cur_pop: prev_pop,
             start_report,
             reached,
             eprojcur,

@@ -175,33 +175,13 @@ pub(in crate::noci::stochastic) fn check_stop(
         return None;
     }
 
-    // Transfer owned population and history buffers into the restart record.
-    let restart = RestartState {
-        report,
-        shift,
-        nwprev: state.prev_pop.nw,
-        nrefprev: state.prev_pop.nref,
-        nsampledprev: state.prev_pop.nsampled,
-        nsampledoprev: state.prev_pop.nsampledo,
-        populations: std::mem::take(&mut state.mc.populations),
-        excitation_hist: state.mc.excitation_hist.take(),
-        base_seed: Some(run.base_seed),
-        overlap_weight: Some(state.overlap_weight),
-        ndets: run.ndets,
-        basis_hash: run.basis_hash,
-        representation: Some(run.representation),
-        reached: Some(state.reached),
-        target_population: Some(run.target_population),
-    };
-
-    let restart_path = restart_path.map(String::as_str).unwrap_or("RESTART.H5");
-
-    write_restart_hdf5(restart_path, world, &restart).unwrap();
-
+    // Write the restart before the run ends, then remove the request.
+    write_restart(report, state, shift, run, world, restart_path);
     if run.irank == 0 {
+        let restart_path = restart_path.map(String::as_str).unwrap_or("RESTART.H5");
         let _ = std::fs::remove_file("STOP");
         println!("STOP detected, wrote {restart_path} and exiting");
     }
 
-    Some((state.eprojcur, restart.excitation_hist))
+    Some((state.eprojcur, state.mc.excitation_hist.take()))
 }
