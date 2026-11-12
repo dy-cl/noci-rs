@@ -2,7 +2,6 @@
 
 // Standard library imports.
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 // External crate imports.
 use mpi::collective::SystemOperation;
@@ -20,7 +19,8 @@ use crate::maths::general_evp;
 use crate::mpiutils::broadcast;
 use crate::noci::OverlapFactors;
 use crate::qmc::{
-    PopulationUpdate, basis_hash, exchange_to_owners, owner, rank_seed, restart_seed, stream,
+    PopulationUpdate, basis_hash, exchange_to_owners, owner, rank_seed, restart_seed,
+    spawn_on_workers,
 };
 use crate::time_call;
 
@@ -30,7 +30,7 @@ use super::overlapweighted::OverlapWeightedGenerator;
 use super::state::{
     AuxiliaryPropagationResult, AuxiliaryThreadPropagation, MCState, NOCIMPIScratch,
     NOCIPropagationResult, NOCIThreadPropagation, PopulationRepresentation, PopulationStats,
-    ProjectedEnergyUpdate, PropagationWorker, QMCRunInfo, ScratchSize, SparsePopulations,
+    ProjectedEnergyUpdate, QMCRunInfo, ScratchSize, SparsePopulations,
 };
 
 /// Accumulate one signed population change in dense/sparse Monte Carlo storage.
@@ -131,54 +131,6 @@ pub(in crate::noci::stochastic) fn exchange_accumulated_updates(
     scratch.send_contig.clear();
 }
 
-/// Spawn from every occupied sampled determinant on the persistent per-thread workers. Each worker
-/// is reset with the random stream of its thread and the iteration, sources are handed out in
-/// chunks of eight as workers become free, sources with zero population are skipped, and every
-/// worker finally resolves its own batched spawns.
-/// # Arguments:
-/// - `sample`: Iteration and sampled populations of the cycle.
-/// - `run`: Rank-local topology of the run.
-/// - `workers`: Per-thread propagation workers.
-/// - `steps`: Work on one source and its population, and the resolution of a worker's spawns.
-/// # Returns
-/// - `()`: Leaves every worker's spawns in the worker.
-fn spawn_on_workers<W: PropagationWorker + Send>(
-    sample: (usize, &SparsePopulations),
-    run: &QMCRunInfo,
-    workers: &mut [Mutex<W>],
-    steps: (impl Fn(&mut W, usize, f64) + Sync, impl Fn(&mut W) + Sync),
-) {
-    let (iteration, sampled) = sample;
-    let (source_step, resolve) = steps;
-    let occupied = sampled.occ();
-    if occupied.is_empty() {
-        return;
-    }
-
-    let next = AtomicUsize::new(0);
-    let workers: &[Mutex<W>] = workers;
-    rayon::broadcast(|context| {
-        let tid = context.index();
-        let mut worker = workers[tid].lock().unwrap();
-        worker.reset(stream(run.rank_seed, tid as u64, iteration as u64));
-
-        // Take chunks of sources until every occupied source has been assigned.
-        loop {
-            let start = next.fetch_add(8, Ordering::Relaxed);
-            if start >= occupied.len() {
-                break;
-            }
-            for &source in &occupied[start..(start + 8).min(occupied.len())] {
-                let population = sampled.get(source);
-                if population != 0.0 {
-                    source_step(&mut worker, source, population);
-                }
-            }
-        }
-        resolve(&mut worker);
-    });
-}
-
 /// Generate one stochastic estimate of the unshifted or SApply NOCI residual.
 /// SApply additionally accumulates `B = \partial\Delta/\partial E_s = dt S\tilde N` from the
 /// same sampled paths; the unshifted propagator omits this tangent.
@@ -220,12 +172,18 @@ pub(in crate::noci::stochastic) fn propagate_iteration(
     // Spawn from every occupied source on the workers, then batch-evaluate the generated matrix
     // elements and route realised updates by ownership.
     result.clear();
+    let occupied = sampled.occ();
     spawn_on_workers(
-        (iteration, sampled),
-        run,
+        occupied.len(),
+        (run.rank_seed, iteration),
         workers,
         (
-            |worker: &mut NOCIThreadPropagation, source, population| {
+            |worker: &mut NOCIThreadPropagation, item| {
+                let source = occupied[item];
+                let population = sampled.get(source);
+                if population == 0.0 {
+                    return;
+                }
                 if accumulate_tangent {
                     // For `d\Delta_x = -dt(H_xx-E_sS_xx)\tilde N_x`,
                     // `\partial d\Delta_x/\partial E_s = dt S_xx\tilde N_x`.
@@ -306,12 +264,18 @@ pub(in crate::noci::stochastic) fn propagate_iteration_auxiliary(
     // Spawn auxiliary residual contributions from every occupied source on the workers, then
     // resolve the generated orthogonal connections and route the updates by owner.
     result.clear();
+    let occupied = sampled.occ();
     spawn_on_workers(
-        (iteration, sampled),
-        run,
+        occupied.len(),
+        (run.rank_seed, iteration),
         workers,
         (
-            |worker: &mut AuxiliaryThreadPropagation, source, population| {
+            |worker: &mut AuxiliaryThreadPropagation, item| {
+                let source = occupied[item];
+                let population = sampled.get(source);
+                if population == 0.0 {
+                    return;
+                }
                 worker
                     .shift_tangent
                     .add(source, dt * population, run.nranks > 1);

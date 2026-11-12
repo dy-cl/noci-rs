@@ -81,7 +81,7 @@ impl Projections {
 /// - `x`: Source block.
 /// - `cluster`: Prepared collapsed determinant `|D_C\rangle` and signed weight `w\phi_C`.
 /// - `rng`: Random-number generator.
-/// - `queue`: Prepared cluster determinants and coupling requests of the task.
+/// - `queue`: Prepared cluster determinants and coupling requests of the worker.
 /// # Returns:
 /// - `()`: Queues the cluster's requests.
 pub(super) fn project_cluster(

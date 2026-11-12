@@ -1,10 +1,14 @@
 // nocc/stochastic/state.rs
 
+// External crate imports.
+use rand::SeedableRng;
+
 // Crate-root imports.
 use crate::determinant::DeterminantState;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{DetPair, HamiltonianOverlap, NOCIData, Overlap, calculate_pairs};
 use crate::hash::FastMap;
+use crate::qmc::{QmcRng, Worker};
 
 // Parent/sibling imports.
 use super::coupling::Projections;
@@ -36,7 +40,7 @@ pub(super) struct LinkedBatchedRequest {
 /// the reference row gives `\langle{}^y\Psi|D_C\rangle` and `\langle{}^y\Psi|\hat H|D_C\rangle`,
 /// any other row `\nu` gives `\langle D_\nu|D_C\rangle`, each multiplied by `coefficient`.
 pub(super) struct CouplingBatchedRequest {
-    /// Index of the prepared cluster determinant in the task's cluster list.
+    /// Index of the prepared cluster determinant in the worker's cluster list.
     pub(super) cluster: usize,
     /// Source block `x`.
     pub(super) x: usize,
@@ -48,9 +52,9 @@ pub(super) struct CouplingBatchedRequest {
     pub(super) coefficient: f64,
 }
 
-/// Reusable storage of one parallel task of cluster attempts. Matrix-element requests are
-/// queued during the attempts and resolved together, as in the NOCIQMC propagation workers.
-pub(super) struct JMTaskPropagation {
+/// Persistent per-thread worker of cluster attempts. Matrix-element requests are queued during a
+/// cycle's attempts and resolved together, as in the NOCIQMC propagation workers.
+pub(super) struct JMThreadPropagation {
     /// Population changes per unit time, summed per excitor.
     pub(super) spawns: FastMap<ExcitorIndex, f64>,
     /// Contribution to `N_z H^e_{zz}` of each block.
@@ -75,15 +79,21 @@ pub(super) struct JMTaskPropagation {
     coupling_s: Vec<f64>,
     /// Scratch space for the extended nonorthogonal Wick theorem.
     wick_scratch: Box<WickScratchSpin<f64>>,
+    /// Random stream of this worker's thread and cycle.
+    pub(super) rng: QmcRng,
 }
 
-impl JMTaskPropagation {
-    /// Construct empty task storage for `M` references.
+impl JMThreadPropagation {
+    /// Construct an empty worker for `M` references.
     /// # Arguments:
     /// - `m`: Number of references.
+    /// - `seed`: Seed of the worker's stream before its first cycle.
     /// # Returns:
-    /// - `JMTaskPropagation`: Empty storage.
-    pub(super) fn new(m: usize) -> Self {
+    /// - `JMThreadPropagation`: Empty worker.
+    pub(super) fn new(
+        m: usize,
+        seed: u64,
+    ) -> Self {
         Self {
             spawns: FastMap::default(),
             energy: vec![0.0; m],
@@ -97,12 +107,13 @@ impl JMTaskPropagation {
             coupling_hs: Vec::new(),
             coupling_s: Vec::new(),
             wick_scratch: Box::new(WickScratchSpin::new()),
+            rng: QmcRng::seed_from_u64(seed),
         }
     }
 
-    /// Clear the results of the previous task while retaining every allocation.
+    /// Clear the results of the previous cycle while retaining every allocation.
     /// # Arguments:
-    /// - `self`: Task storage.
+    /// - `self`: Worker.
     /// # Returns:
     /// - `()`: Clears the storage in place.
     pub(super) fn clear(&mut self) {
@@ -116,7 +127,7 @@ impl JMTaskPropagation {
 
     /// Evaluate the queued same-reference requests in one batch and add each term to its target.
     /// # Arguments:
-    /// - `self`: Task storage.
+    /// - `self`: Worker.
     /// - `data`: NOCI data holding the parent frames and MO caches.
     /// # Returns:
     /// - `()`: Adds the terms to `spawns` and `energy` and clears the queue.
@@ -158,7 +169,7 @@ impl JMTaskPropagation {
 
     /// Evaluate the queued coupling requests in one batch and add them to the projections.
     /// # Arguments:
-    /// - `self`: Task storage.
+    /// - `self`: Worker.
     /// - `data`: NOCI data holding the Wick intermediates.
     /// - `spaces`: Prepared references and projection rows of every block.
     /// # Returns:
@@ -227,5 +238,21 @@ impl JMTaskPropagation {
         }
         self.coupling_clusters.clear();
         self.coupling_requests.clear();
+    }
+}
+
+impl Worker for JMThreadPropagation {
+    /// Clear the worker's per-cycle buffers and give it the cycle's random stream.
+    /// # Arguments:
+    /// - `self`: JM-NOCCMC worker.
+    /// - `rng`: Random stream of this worker's thread and the cycle.
+    /// # Returns:
+    /// - `()`: Resets the worker.
+    fn reset(
+        &mut self,
+        rng: QmcRng,
+    ) {
+        self.clear();
+        self.rng = rng;
     }
 }

@@ -2,6 +2,7 @@
 
 // Standard library imports.
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 // External crate imports.
 use mpi::topology::Communicator;
@@ -19,7 +20,8 @@ use crate::nocc::Effective;
 use crate::qmc::{
     AliasTable, ExchangeScratch, PopulationUpdate, Propagator, QmcRng, Restart, basis_hash,
     coalesce, compress_sparse, exchange_to_owners, gather_updates, owner_words, print_table_header,
-    print_table_row, rank_seed, read_restart, run, stream, update_shift, write_restart,
+    print_table_row, rank_seed, read_restart, run, spawn_on_workers, stream, update_shift,
+    write_restart,
 };
 
 // Parent/sibling imports.
@@ -27,14 +29,7 @@ use super::cluster::{collapse, coupling_combinations, select_cluster, select_cou
 use super::coupling::{left_action, project_cluster};
 use super::linked::linked_attempt;
 use super::population::{Block, Excitor, ExcitorIndex, ReferenceSpaces, rank};
-use super::state::JMTaskPropagation;
-
-/// Smallest number of cluster attempts in one parallel task.
-const CHUNK: usize = 256;
-
-/// Number of parallel tasks per block and kind on each Rayon thread, bounding the per-task
-/// spawn maps held at once.
-const TASKSPERTHREAD: usize = 4;
+use super::state::JMThreadPropagation;
 
 /// Kind of propagation recorded in, and required of, JM-NOCCMC restarts.
 const RESTARTKIND: &str = "jmnoccmc";
@@ -48,13 +43,18 @@ const ASSIGNSTRIDE: u64 = 0xD1B54A32D192ED03;
 /// Salt of the rank-local spawn-compression stream.
 const SPAWNSALT: u64 = 0xA0761D6478BD642F;
 
-/// Kind of cluster attempts in one parallel task.
+/// Largest number of queued matrix-element requests of a worker, beyond which they are resolved
+/// at once so each batch stays in cache.
+const BATCH: usize = 4096;
+
+/// One cluster attempt of a block: a linked attempt within its reference, or a coupling attempt
+/// projecting it onto the other references.
 #[derive(Clone, Copy)]
-enum Task {
-    /// Linked same-reference attempts on a block.
-    Linked(usize, usize),
-    /// Coupling attempts projecting a block onto the other references.
-    Coupling(usize, usize),
+enum Attempt {
+    /// Linked same-reference attempt on a block.
+    Linked(usize),
+    /// Coupling attempt projecting a block onto the other references.
+    Coupling(usize),
 }
 
 /// Rank owning an excitor during one report. The assignment is redrawn every report from a salt
@@ -136,78 +136,6 @@ fn blocks(
             }
         })
         .collect()
-}
-
-/// Run one parallel task of cluster attempts, queueing their matrix elements and resolving them
-/// in one batch at the end.
-/// # Arguments:
-/// - `data`: NOCI data holding the parent frames, MO caches and Wick intermediates.
-/// - `spaces`: Projection and expansion spaces of every reference block.
-/// - `blocks`: Block populations of this rank.
-/// - `task`: Task kind with its block and number of attempts.
-/// - `attempts`: Attempts of the task's block on this rank and the number of ranks.
-/// - `rng`: Task random-number generator.
-/// - `out`: Reusable task storage receiving the population changes and projections.
-/// # Returns:
-/// - `()`: Overwrites `out` with the task's results.
-fn run_task(
-    data: &NOCIData<'_, f64>,
-    spaces: &ReferenceSpaces,
-    blocks: &[Block],
-    task: Task,
-    attempts: (f64, f64),
-    mut rng: QmcRng,
-    out: &mut JMTaskPropagation,
-) {
-    let (attempts, ranks) = attempts;
-    out.clear();
-
-    match task {
-        Task::Linked(z, count) => {
-            let smax = 4.min(spaces.cluster_rank + 2);
-            for _ in 0..count {
-                let weight = select_cluster(
-                    &blocks[z],
-                    smax,
-                    attempts,
-                    ranks,
-                    &mut rng,
-                    &mut out.excitors,
-                );
-                linked_attempt(
-                    spaces,
-                    z,
-                    (&out.excitors, weight),
-                    &mut rng,
-                    &mut out.linked_requests,
-                );
-            }
-            out.resolve_linked(data);
-        }
-        Task::Coupling(x, count) => {
-            for _ in 0..count {
-                let weight =
-                    select_coupling_cluster(&blocks[x], attempts, &mut rng, &mut out.excitors);
-                if weight == 0.0 {
-                    continue;
-                }
-                let Some((det, sign)) = collapse(&spaces.references[x], &out.excitors) else {
-                    continue;
-                };
-                if rank(&spaces.references[x], &det) > spaces.expansion_rank {
-                    continue;
-                }
-                project_cluster(
-                    &spaces.rows,
-                    x,
-                    (det, weight * sign),
-                    &mut rng,
-                    (&mut out.coupling_clusters, &mut out.coupling_requests),
-                );
-            }
-            out.resolve_coupling(data, spaces);
-        }
-    }
 }
 
 /// Trial and initial populations: the reference NOCI coefficients normalised to
@@ -298,101 +226,137 @@ fn uncorrelated_effective(
     effective
 }
 
-/// Run one step's cluster attempts. Each block's attempts are divided into linked and, with
-/// several references, coupling tasks of at least `CHUNK` attempts, at most `TASKSPERTHREAD`
-/// per Rayon thread, and each task runs on its own random stream into its reusable storage.
+/// Run one cycle's cluster attempts on the persistent per-thread workers: one linked attempt per
+/// unit of each block's attempts and, between references, as many coupling attempts, each found
+/// from its index without a list of attempts. Each worker draws from the stream of its thread and
+/// queues its attempts' matrix elements, resolving them in batches of at most `BATCH` requests.
 /// # Arguments:
 /// - `data`: NOCI data holding the parent frames, MO caches and Wick intermediates.
 /// - `spaces`: Projection and expansion spaces of every reference block.
-/// - `current`: Block populations of this rank.
+/// - `blocks`: Block populations of this rank.
 /// - `attempts`: Attempts of every block on this rank and the number of ranks.
-/// - `seed`: Rank-local seed and iteration selecting the task streams.
-/// - `workers`: Reusable task storage, grown to the number of tasks.
+/// - `seed`: Rank-local seed and iteration of the cycle's streams.
+/// - `workers`: Persistent per-thread workers.
 /// # Returns:
-/// - `usize`: Number of tasks, whose results are in the leading `workers`.
-fn run_tasks(
+/// - `()`: Leaves every worker's spawns, energies and projections in the worker.
+fn run_attempts(
     data: &NOCIData<'_, f64>,
     spaces: &ReferenceSpaces,
-    current: &[Block],
+    blocks: &[Block],
     attempts: (&[f64], f64),
     seed: (u64, usize),
-    workers: &mut Vec<JMTaskPropagation>,
-) -> usize {
+    workers: &mut [Mutex<JMThreadPropagation>],
+) {
     let (attempts, ranks) = attempts;
-    let (local, iteration) = seed;
-    let m = current.len();
 
-    // Chunks of each block's attempts, one linked and, between references, one coupling task
-    // per chunk.
-    let threads = rayon::current_num_threads();
-    let mut tasks = Vec::new();
-    for (z, &a) in attempts.iter().enumerate() {
-        let a = a as usize;
-        let chunk = CHUNK.max(a.div_ceil(TASKSPERTHREAD * threads));
-        for start in (0..a).step_by(chunk) {
-            let count = chunk.min(a - start);
-            tasks.push(Task::Linked(z, count));
-            if m > 1 {
-                tasks.push(Task::Coupling(z, count));
-            }
+    // Item `k` is the attempt whose kind and block start before it in the cumulative counts:
+    // every block's linked attempts, then, between references, its coupling attempts.
+    let kinds = if blocks.len() > 1 { 2 } else { 1 };
+    let mut ends = Vec::with_capacity(kinds * attempts.len());
+    let mut total = 0;
+    for &a in attempts {
+        for _ in 0..kinds {
+            total += a as usize;
+            ends.push(total);
         }
     }
+    let attempt = |item: usize| {
+        let slot = ends.partition_point(|&end| end <= item);
+        match slot % kinds {
+            0 => Attempt::Linked(slot / kinds),
+            _ => Attempt::Coupling(slot / kinds),
+        }
+    };
+    let smax = 4.min(spaces.cluster_rank + 2);
 
-    // Storage for every task, kept between steps.
-    if workers.len() < tasks.len() {
-        workers.resize_with(tasks.len(), || JMTaskPropagation::new(m));
-    }
-
-    // Each task draws from the stream of its iteration and index, so the results do not
-    // depend on the thread that runs it.
-    tasks
-        .par_iter()
-        .zip(workers.par_iter_mut())
-        .enumerate()
-        .for_each(|(k, (&task, worker))| {
-            let z = match task {
-                Task::Linked(z, _) | Task::Coupling(z, _) => z,
-            };
-            let rng = stream(local, (iteration as u64) << 32, k as u64);
-            run_task(
-                data,
-                spaces,
-                current,
-                task,
-                (attempts[z], ranks),
-                rng,
-                worker,
-            );
-        });
-
-    tasks.len()
+    // Linked attempts queue same-reference elements and coupling attempts queue projections onto
+    // the other references; a full queue is resolved at once, and the rest after the cycle.
+    spawn_on_workers(
+        total,
+        seed,
+        workers,
+        (
+            |worker: &mut JMThreadPropagation, item| match attempt(item) {
+                Attempt::Linked(z) => {
+                    let weight = select_cluster(
+                        &blocks[z],
+                        smax,
+                        attempts[z],
+                        ranks,
+                        &mut worker.rng,
+                        &mut worker.excitors,
+                    );
+                    linked_attempt(
+                        spaces,
+                        z,
+                        (&worker.excitors, weight),
+                        &mut worker.rng,
+                        &mut worker.linked_requests,
+                    );
+                    if worker.linked_requests.len() >= BATCH {
+                        worker.resolve_linked(data);
+                    }
+                }
+                Attempt::Coupling(x) => {
+                    let weight = select_coupling_cluster(
+                        &blocks[x],
+                        attempts[x],
+                        &mut worker.rng,
+                        &mut worker.excitors,
+                    );
+                    if weight == 0.0 {
+                        return;
+                    }
+                    let Some((det, sign)) = collapse(&spaces.references[x], &worker.excitors)
+                    else {
+                        return;
+                    };
+                    if rank(&spaces.references[x], &det) > spaces.expansion_rank {
+                        return;
+                    }
+                    project_cluster(
+                        &spaces.rows,
+                        x,
+                        (det, weight * sign),
+                        &mut worker.rng,
+                        (&mut worker.coupling_clusters, &mut worker.coupling_requests),
+                    );
+                    if worker.coupling_requests.len() >= BATCH {
+                        worker.resolve_coupling(data, spaces);
+                    }
+                }
+            },
+            |worker: &mut JMThreadPropagation| {
+                worker.resolve_linked(data);
+                worker.resolve_coupling(data, spaces);
+            },
+        ),
+    );
 }
 
-/// Combine the tasks in order: spawns per unit time are summed per excitor into `merged`, and
+/// Combine the workers in order: spawns per unit time are summed per excitor into `merged`, and
 /// the block energies `N_zH^e_{zz}` and effective elements `N_xS^e_{yx}` and `N_xH^e_{yx}` into
 /// one vector `[N_zH^e_{zz}, N_xS^e_{yx}, N_xH^e_{yx}]` to be summed over ranks.
 /// # Arguments:
-/// - `workers`: Storage of the step's tasks.
+/// - `workers`: Persistent per-thread workers after a cycle.
 /// - `m`: Number of references.
 /// - `merged`: Reusable map receiving the summed spawns.
 /// # Returns:
 /// - `Vec<f64>`: This rank's energies and effective elements, `m + 2m^2` values.
-fn sum_tasks(
-    workers: &[JMTaskPropagation],
+fn sum_workers(
+    workers: &mut [Mutex<JMThreadPropagation>],
     m: usize,
     merged: &mut FastMap<ExcitorIndex, f64>,
 ) -> Vec<f64> {
-    // Spawns of every task, summed per excitor.
+    // Spawns summed per excitor, then energies in the first `m` entries and `S^e` and `H^e` row
+    // by row.
     merged.clear();
-    for worker in workers {
+    let mut sums = vec![0.0; m + 2 * m * m];
+    for worker in workers.iter_mut() {
+        let worker = worker.get_mut().unwrap();
         for (&key, &dn) in &worker.spawns {
             *merged.entry(key).or_insert(0.0) += dn;
         }
-    }
-
-    // Energies in the first `m` entries, then `S^e` and `H^e` row by row.
-    let mut sums = vec![0.0; m + 2 * m * m];
-    for worker in workers {
         for (e, v) in sums[..m].iter_mut().zip(&worker.energy) {
             *e += v;
         }
@@ -753,8 +717,8 @@ struct JMRun<'a, C> {
     coupled: FastMap<ExcitorIndex, f64>,
     /// Reusable spawns of one cycle.
     merged: FastMap<ExcitorIndex, f64>,
-    /// Per-task propagation storage.
-    workers: Vec<JMTaskPropagation>,
+    /// Persistent per-thread workers.
+    workers: Vec<Mutex<JMThreadPropagation>>,
     /// Population exchange scratch.
     exchange: ExchangeScratch<PopulationUpdate>,
     /// Projected-energy terms per cycle and population statistics of the last report.
@@ -816,6 +780,7 @@ impl<'a, C: Communicator> JMRun<'a, C> {
 
         // Fixed spaces of every block, which also index their excitors.
         let spaces = ReferenceSpaces::new(data, options);
+        let local = rank_seed(base, irank);
 
         // Initial reference populations from the NOCI coefficients and the exact effective
         // Hamiltonian of uncorrelated references, `G = S^{-1}H`.
@@ -863,7 +828,7 @@ impl<'a, C: Communicator> JMRun<'a, C> {
             spaces,
             trial,
             populations,
-            seeds: (base, rank_seed(base, irank)),
+            seeds: (base, local),
             first,
             e0: uncorrelated.he[(0, 0)],
             lagged,
@@ -876,7 +841,9 @@ impl<'a, C: Communicator> JMRun<'a, C> {
             spawns: FastMap::default(),
             coupled: FastMap::default(),
             merged: FastMap::default(),
-            workers: Vec::new(),
+            workers: (0..rayon::current_num_threads())
+                .map(|tid| Mutex::new(JMThreadPropagation::new(m, local ^ tid as u64)))
+                .collect(),
             exchange: ExchangeScratch::new(nranks),
             row: ((0.0, 0.0), (0.0, 0.0, 0)),
             eproj: f64::NAN,
@@ -901,7 +868,7 @@ impl<C: Communicator> Propagator for JMRun<'_, C> {
 
         // Linked and coupling attempts per unit time, with the cycle's energies and effective
         // elements.
-        let ntasks = run_tasks(
+        run_attempts(
             self.data,
             &self.spaces,
             &view.blocks,
@@ -909,13 +876,14 @@ impl<C: Communicator> Propagator for JMRun<'_, C> {
             (self.seeds.1, iteration),
             &mut self.workers,
         );
-        let sums = sum_tasks(&self.workers[..ntasks], m, &mut self.merged);
+        let sums = sum_workers(&mut self.workers, m, &mut self.merged);
         for (&key, &dn) in &self.merged {
             *self.spawns.entry(key).or_insert(0.0) += dn;
         }
 
         // `\sum_{x \ne y}\tilde G_{xy}q^x_y(\nu)` keyed by block `y` and row `\nu`.
-        for worker in &self.workers[..ntasks] {
+        for worker in self.workers.iter_mut() {
+            let worker = worker.get_mut().unwrap();
             for y in 0..m {
                 for x in (0..m).filter(|&x| x != y) {
                     for (&(alpha, beta), &v) in &worker.projections.q[y][x] {

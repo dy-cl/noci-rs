@@ -12,7 +12,7 @@ use crate::elements::{
 use crate::input::ExcitationGen;
 use crate::noci::OverlapFactors;
 use crate::qmc::excitgen::{ExcitationHist, PchbScratch};
-use crate::qmc::{ExchangeScratch, PopulationUpdate, QmcRng, compress_sparse, owner};
+use crate::qmc::{ExchangeScratch, PopulationUpdate, QmcRng, Worker, compress_sparse, owner};
 
 // Parent/sibling imports.
 use super::common::find_hs_batched;
@@ -580,19 +580,8 @@ pub(in crate::noci::stochastic) struct AuxiliaryThreadPropagation {
     pchb_scratch: PchbScratch,
 }
 
-/// A persistent per-thread propagation worker of either the retained or the auxiliary space.
-pub(in crate::noci::stochastic) trait PropagationWorker {
-    /// Clear the worker for a new cycle and give it the cycle's random stream.
-    /// # Arguments:
-    /// - `self`: Persistent propagation worker.
-    /// - `rng`: Random stream of this worker's thread and the cycle.
-    /// # Returns:
-    /// - `()`: Clears the worker's per-cycle buffers.
-    fn reset(
-        &mut self,
-        rng: QmcRng,
-    );
-
+/// Access the shared shift-tangent accumulator of either propagation worker.
+pub(in crate::noci::stochastic) trait TangentWorker {
     /// Borrow this worker's report-level retained-space tangent.
     /// # Arguments:
     /// - `self`: Persistent propagation worker.
@@ -601,7 +590,7 @@ pub(in crate::noci::stochastic) trait PropagationWorker {
     fn tangent(&mut self) -> &mut ShiftTangent;
 }
 
-impl PropagationWorker for NOCIThreadPropagation {
+impl Worker for NOCIThreadPropagation {
     /// Clear the worker's per-cycle buffers and give it the cycle's random stream.
     /// # Arguments:
     /// - `self`: Propagation worker.
@@ -615,7 +604,9 @@ impl PropagationWorker for NOCIThreadPropagation {
         self.clear();
         self.rng = rng;
     }
+}
 
+impl TangentWorker for NOCIThreadPropagation {
     /// Borrow the SApply source-path tangent `dt S\tilde N`.
     /// # Arguments:
     /// - `self`: SApply worker.
@@ -626,7 +617,7 @@ impl PropagationWorker for NOCIThreadPropagation {
     }
 }
 
-impl PropagationWorker for AuxiliaryThreadPropagation {
+impl Worker for AuxiliaryThreadPropagation {
     /// Clear the worker's per-cycle buffers and give it the cycle's random stream.
     /// # Arguments:
     /// - `self`: Propagation worker.
@@ -640,7 +631,9 @@ impl PropagationWorker for AuxiliaryThreadPropagation {
         self.clear();
         self.rng = rng;
     }
+}
 
+impl TangentWorker for AuxiliaryThreadPropagation {
     /// Borrow the BApply source-path tangent `dt\tilde N`.
     /// # Arguments:
     /// - `self`: BApply worker.

@@ -17,7 +17,7 @@ use crate::qmc::{PopulationUpdate, QmcRng, compress_sparse, exchange_to_owners, 
 use super::fri::compress_dense_to_sparse;
 use super::propagate::NOCIRun;
 use super::sapply::apply_overlap_population_changes;
-use super::state::{NOCIMPIScratch, PropagationWorker, QMCRunInfo, ShiftTangent};
+use super::state::{NOCIMPIScratch, QMCRunInfo, ShiftTangent, TangentWorker};
 
 /// The shift tangent of one report of a range propagator, `B = \partial\Delta/\partial E_s`:
 /// gathered from the workers, compressed, and propagated through the overlap to
@@ -59,7 +59,7 @@ impl ReportTangent {
     /// - `scratch`: Reusable storage of one application of the overlap.
     /// # Returns
     /// - `&[f64]`: Propagated tangent `\partial N'/\partial E_s` on the owned determinants.
-    pub(in crate::noci::stochastic) fn propagate<T: PropagationWorker + Send, C: Communicator>(
+    pub(in crate::noci::stochastic) fn propagate<T: TangentWorker + Send, C: Communicator>(
         &mut self,
         workers: &mut [Mutex<T>],
         run: &mut NOCIRun<'_, C>,
@@ -180,7 +180,7 @@ fn exchange_shift_tangent(
 /// - `tangent`: Dense report-level tangent receiving thread sum.
 /// # Returns:
 /// - `()`: Replaces `tangent` with report tangent and clears thread-local tangents.
-fn reduce_shift_tangent<T: PropagationWorker + Send>(
+fn reduce_shift_tangent<T: TangentWorker + Send>(
     workers: &mut [Mutex<T>],
     tangent: &mut [f64],
 ) {
@@ -207,7 +207,7 @@ fn reduce_shift_tangent<T: PropagationWorker + Send>(
 /// - `tangent`: Owner-local report tangent and remote contributions.
 /// # Returns:
 /// - `()`: Adds touched worker values and drains remote updates.
-fn collect_shift_tangent<T: PropagationWorker>(
+fn collect_shift_tangent<T: TangentWorker>(
     workers: &mut [Mutex<T>],
     tangent: &mut ShiftTangent,
 ) {
