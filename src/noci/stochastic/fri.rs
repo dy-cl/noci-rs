@@ -7,35 +7,13 @@ use rand::Rng;
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::qmc::{FriAmplitude, QmcRng, cutoff_candidate, pivotal_push, resolve_pivotal, stream};
+use crate::qmc::{
+    PopulationUpdate, QmcRng, cutoff_candidate, pivotal_push, resolve_pivotal, stream,
+};
 use crate::time_call;
 
 // Parent/sibling imports.
-use super::state::{NOCIPopulationUpdate, QMCRunInfo, SparsePopulations};
-
-impl FriAmplitude for NOCIPopulationUpdate {
-    /// Return one NOCI-coordinate population update amplitude.
-    /// # Arguments:
-    /// - `self`: Sparse population update.
-    /// # Returns:
-    /// - `f64`: Signed population change.
-    fn amplitude(&self) -> f64 {
-        self.dn
-    }
-
-    /// Replace one NOCI-coordinate population update amplitude.
-    /// # Arguments:
-    /// - `self`: Sparse population update.
-    /// - `amplitude`: Replacement population change.
-    /// # Returns:
-    /// - `()`: Updates `dn` in place.
-    fn set_amplitude(
-        &mut self,
-        amplitude: f64,
-    ) {
-        self.dn = amplitude;
-    }
-}
+use super::state::{QMCRunInfo, SparsePopulations};
 
 /// Construct a pivotal FRI sparse sample of persistent populations.
 /// Fixed `population_cutoff=c` gives marginals `p_i=\min(1,|N_i|/c)` and selected fractional
@@ -180,7 +158,7 @@ pub(in crate::noci::stochastic) fn compress_dense_to_sparse(
     values: &mut [f64],
     cutoff: f64,
     rng: &mut QmcRng,
-    updates: &mut Vec<NOCIPopulationUpdate>,
+    updates: &mut Vec<PopulationUpdate>,
 ) {
     updates.clear();
     if cutoff == f64::INFINITY {
@@ -198,8 +176,8 @@ pub(in crate::noci::stochastic) fn compress_dense_to_sparse(
             continue;
         }
         if cutoff <= 0.0 || amplitude.abs() >= cutoff {
-            updates.push(NOCIPopulationUpdate {
-                det: det as u64,
+            updates.push(PopulationUpdate {
+                index: det as u64,
                 dn: amplitude,
             });
         } else if let Some((det, dn)) = pivotal_push(
@@ -207,10 +185,10 @@ pub(in crate::noci::stochastic) fn compress_dense_to_sparse(
             cutoff_candidate(det as u64, amplitude, cutoff),
             rng,
         ) {
-            updates.push(NOCIPopulationUpdate { det, dn });
+            updates.push(PopulationUpdate { index: det, dn });
         }
     }
     if let Some((det, dn)) = resolve_pivotal(pending, rng) {
-        updates.push(NOCIPopulationUpdate { det, dn });
+        updates.push(PopulationUpdate { index: det, dn });
     }
 }

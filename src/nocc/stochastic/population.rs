@@ -1,22 +1,22 @@
 // nocc/stochastic/population.rs
 
-// External crate imports.
-use mpi::traits::*;
-
 // Crate-root imports.
 use crate::basis::{apply_excitation, excitation_phase_bits, undo_excitation};
 use crate::determinant::{DeterminantState, NOCIIndex};
 use crate::elements::NOCIData;
+use crate::hash::FastMap;
 use crate::input::JMNOCCMCOptions;
 use crate::nocc::reference_determinants;
+use crate::qmc::AliasTable;
 use crate::qmc::excitgen::OrthogonalUniformGenerator;
-use crate::qmc::{AliasTable, FriAmplitude, KeyedUpdate};
 
-/// Excitor `(z, D)` of reference block `z`, identified by the occupations of its determinant
-/// `|D\rangle = \hat\tau|{}^z\Psi\rangle` in the parent frame of `z`. The block's reference has
-/// no holes. It is keyed by the block rather than a `DeterminantState`, since several blocks may
-/// share one parent frame.
-pub(super) type ExcitorState = (usize, u128, u128);
+/// Flat index of an excitor `(z, D)` of reference block `z`, with
+/// `|D\rangle = \hat\tau|{}^z\Psi\rangle` in the parent frame of `z`: the offset of block `z`,
+/// then `0` for its reference or `1 + r` for its projection row `r`. Every excitor lies in its
+/// block's rows, since spawns never leave the cluster rank, and the block is part of the index
+/// because several blocks may share one parent frame.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(super) struct ExcitorIndex(pub(super) usize);
 
 /// One excitation `\hat\tau_{z\mu}` of a reference block, with the sign convention
 /// `\hat\tau_{z\mu}|{}^z\Psi\rangle = +|D_\mu\rangle` so that its population is the coefficient
@@ -32,6 +32,52 @@ pub(super) struct Excitor {
     /// Sign `s_\mu` making `s_\mu a^\dagger_{\mathrm{parts}}a_{\mathrm{holes}}` map the reference
     /// to `+|D_\mu\rangle`.
     pub(super) sign: f64,
+}
+
+/// Projection and expansion spaces of every reference block: the block references, their
+/// projection rows up to the cluster rank, the expansion rank of each `e^{\hat T_x}|{}^x\Psi\rangle`
+/// and the Hamiltonian-connection generator of each reference frame.
+pub(super) struct ReferenceSpaces {
+    /// Block reference determinants.
+    pub(super) references: Vec<DeterminantState>,
+    /// Projection rows of every block with ranks `1..=cluster_rank`.
+    pub(super) rows: Vec<Vec<DeterminantState>>,
+    /// Flat index of every block's reference, then the total number of excitors.
+    offsets: Vec<usize>,
+    /// Position within its block, `0` for the reference and `1 + r` for row `r`, of every
+    /// excitor's occupations.
+    positions: Vec<FastMap<(u128, u128), usize>>,
+    /// Number of spatial orbitals of every block.
+    pub(super) norb: Vec<usize>,
+    /// Uniform connection generator of every block.
+    pub(super) generators: Vec<OrthogonalUniformGenerator>,
+    /// Highest excitation rank of the cluster operators.
+    pub(super) cluster_rank: usize,
+    /// Highest rank and cluster size of the expansion of each `e^{\hat T_x}|{}^x\Psi\rangle`.
+    pub(super) expansion_rank: usize,
+}
+
+/// Population of one reference block on this rank for one propagation step: the global
+/// reference population `N_z`, every locally owned excitor with its population `n_{z\mu}`, the
+/// alias table selecting excitors with probability `|n_{z\mu}|/N_{\text{ex}}` for linked
+/// clusters, and the per-level and combination tables of the even selection of coupling
+/// clusters. Its size is the number of occupied excitors, never that of the excitor space.
+pub(super) struct Block {
+    /// Block reference determinant.
+    pub(super) reference: DeterminantState,
+    /// Reference population `N_z`.
+    pub(super) nref: f64,
+    /// Excitors with their populations.
+    pub(super) excitors: Vec<(Excitor, f64)>,
+    /// Alias table over `|n_{z\mu}|` aligned with `excitors`.
+    pub(super) selection: AliasTable,
+    /// Indices into `excitors` of each excitation level `1,\ldots,l`, with an alias table over
+    /// their `|n_{z\mu}|`.
+    pub(super) levels: Vec<(Vec<usize>, AliasTable)>,
+    /// Combinations `\eta` of excitors per level sampled by the coupling.
+    pub(super) combinations: Vec<Vec<usize>>,
+    /// Alias table over the combination weights `a_\eta`, whose total is `A`.
+    pub(super) coupling: AliasTable,
 }
 
 impl Excitor {
@@ -110,39 +156,6 @@ impl Excitor {
     }
 }
 
-/// Excitation rank of a determinant relative to a reference of the same frame.
-/// # Arguments:
-/// - `reference`: Reference determinant.
-/// - `det`: Determinant.
-/// # Returns:
-/// - `usize`: Number of holes in both spins.
-#[inline(always)]
-pub(super) fn rank(
-    reference: &DeterminantState,
-    det: &DeterminantState,
-) -> usize {
-    ((reference.alpha & !det.alpha).count_ones() + (reference.beta & !det.beta).count_ones())
-        as usize
-}
-
-/// Projection and expansion spaces of every reference block: the block references, their
-/// projection rows up to the cluster rank, the expansion rank of each `e^{\hat T_x}|{}^x\Psi\rangle`
-/// and the Hamiltonian-connection generator of each reference frame.
-pub(super) struct ReferenceSpaces {
-    /// Block reference determinants.
-    pub(super) references: Vec<DeterminantState>,
-    /// Projection rows of every block with ranks `1..=cluster_rank`.
-    pub(super) rows: Vec<Vec<DeterminantState>>,
-    /// Number of spatial orbitals of every block.
-    pub(super) norb: Vec<usize>,
-    /// Uniform connection generator of every block.
-    pub(super) generators: Vec<OrthogonalUniformGenerator>,
-    /// Highest excitation rank of the cluster operators.
-    pub(super) cluster_rank: usize,
-    /// Highest rank and cluster size of the expansion of each `e^{\hat T_x}|{}^x\Psi\rangle`.
-    pub(super) expansion_rank: usize,
-}
-
 impl ReferenceSpaces {
     /// Build the spaces of every reference determinant of a NOCI space.
     /// # Arguments:
@@ -162,6 +175,8 @@ impl ReferenceSpaces {
         let mut spaces = Self {
             references: Vec::with_capacity(m),
             rows: Vec::with_capacity(m),
+            offsets: vec![0],
+            positions: Vec::with_capacity(m),
             norb: Vec::with_capacity(m),
             generators: Vec::with_capacity(m),
             cluster_rank: options.cluster_rank,
@@ -195,33 +210,80 @@ impl ReferenceSpaces {
             spaces
                 .generators
                 .push(OrthogonalUniformGenerator::new((oa, ob), &mocache[parent]));
+
+            // Flat indices: the reference first, then the rows in order.
+            let rows = &spaces.rows[z];
+            let positions = std::iter::once((oa, ob))
+                .chain(rows.iter().map(|row| (row.alpha, row.beta)))
+                .enumerate()
+                .map(|(position, occupations)| (occupations, position))
+                .collect();
+            spaces.positions.push(positions);
+            spaces.offsets.push(spaces.offsets[z] + 1 + rows.len());
         }
         spaces.expansion_rank = options.expansion_rank.unwrap_or(nelec).min(nelec);
         spaces
     }
-}
 
-/// Population of one reference block on this rank for one propagation step: the global
-/// reference population `N_z`, every locally owned excitor with its population `n_{z\mu}`, the
-/// alias table selecting excitors with probability `|n_{z\mu}|/N_{\text{ex}}` for linked
-/// clusters, and the per-level and combination tables of the even selection of coupling
-/// clusters. Its size is the number of occupied excitors, never that of the excitor space.
-pub(super) struct Block {
-    /// Block reference determinant.
-    pub(super) reference: DeterminantState,
-    /// Reference population `N_z`.
-    pub(super) nref: f64,
-    /// Excitors with their populations.
-    pub(super) excitors: Vec<(Excitor, f64)>,
-    /// Alias table over `|n_{z\mu}|` aligned with `excitors`.
-    pub(super) selection: AliasTable,
-    /// Indices into `excitors` of each excitation level `1,\ldots,l`, with an alias table over
-    /// their `|n_{z\mu}|`.
-    pub(super) levels: Vec<(Vec<usize>, AliasTable)>,
-    /// Combinations `\eta` of excitors per level sampled by the coupling.
-    pub(super) combinations: Vec<Vec<usize>>,
-    /// Alias table over the combination weights `a_\eta`, whose total is `A`.
-    pub(super) coupling: AliasTable,
+    /// Return the flat index of the excitor of a block with the given occupations.
+    /// # Arguments:
+    /// - `self`: Spaces of every reference block.
+    /// - `block`: Reference block `z`.
+    /// - `occupations`: Alpha and beta occupations of the excitor's determinant.
+    /// # Returns:
+    /// - `ExcitorIndex`: Flat index of the excitor.
+    /// # Panics
+    /// - Panics if the occupations are neither the block's reference nor one of its rows.
+    pub(super) fn index(
+        &self,
+        block: usize,
+        occupations: (u128, u128),
+    ) -> ExcitorIndex {
+        ExcitorIndex(self.offsets[block] + self.positions[block][&occupations])
+    }
+
+    /// Return the block of an excitor.
+    /// # Arguments:
+    /// - `self`: Spaces of every reference block.
+    /// - `index`: Flat excitor index.
+    /// # Returns:
+    /// - `usize`: Reference block `z` of the excitor.
+    pub(super) fn block(
+        &self,
+        index: ExcitorIndex,
+    ) -> usize {
+        self.offsets.partition_point(|&offset| offset <= index.0) - 1
+    }
+
+    /// Return the determinant of an excitor in the parent frame of its block.
+    /// # Arguments:
+    /// - `self`: Spaces of every reference block.
+    /// - `index`: Flat excitor index.
+    /// # Returns:
+    /// - `DeterminantState`: The block's reference or one of its rows.
+    pub(super) fn determinant(
+        &self,
+        index: ExcitorIndex,
+    ) -> DeterminantState {
+        let block = self.block(index);
+        match index.0 - self.offsets[block] {
+            0 => self.references[block],
+            position => self.rows[block][position - 1],
+        }
+    }
+
+    /// Return whether an excitor is its block's reference.
+    /// # Arguments:
+    /// - `self`: Spaces of every reference block.
+    /// - `index`: Flat excitor index.
+    /// # Returns:
+    /// - `bool`: Whether the index is the first of its block.
+    pub(super) fn is_reference(
+        &self,
+        index: ExcitorIndex,
+    ) -> bool {
+        self.offsets.binary_search(&index.0).is_ok()
+    }
 }
 
 impl Block {
@@ -235,85 +297,17 @@ impl Block {
     }
 }
 
-/// Sparse population change of one excitor communicated across MPI ranks. The occupations are
-/// split into 64-bit words for MPI transport.
-#[repr(C)]
-#[derive(Copy, Clone, Default, Equivalence)]
-pub(super) struct ExcitorUpdate {
-    /// Reference block.
-    block: u64,
-    /// Low and high words of the alpha occupation.
-    alpha: [u64; 2],
-    /// Low and high words of the beta occupation.
-    beta: [u64; 2],
-    /// Signed population change.
-    pub(super) dn: f64,
-}
-
-impl ExcitorUpdate {
-    /// Encode one population change.
-    /// # Arguments:
-    /// - `key`: Excitor receiving the change.
-    /// - `dn`: Signed population change.
-    /// # Returns:
-    /// - `ExcitorUpdate`: MPI-safe update.
-    pub(super) fn new(
-        key: ExcitorState,
-        dn: f64,
-    ) -> Self {
-        let words = |x: u128| [x as u64, (x >> 64) as u64];
-        Self {
-            block: key.0 as u64,
-            alpha: words(key.1),
-            beta: words(key.2),
-            dn,
-        }
-    }
-
-    /// Decode the excitor receiving the change.
-    /// # Arguments:
-    /// - `self`: Update.
-    /// # Returns:
-    /// - `ExcitorState`: Reference block and occupations.
-    pub(super) fn excitor(&self) -> ExcitorState {
-        let join = |w: [u64; 2]| w[0] as u128 | ((w[1] as u128) << 64);
-        (self.block as usize, join(self.alpha), join(self.beta))
-    }
-}
-
-impl FriAmplitude for ExcitorUpdate {
-    /// Return the population change.
-    /// # Arguments:
-    /// - `self`: Update.
-    /// # Returns:
-    /// - `f64`: Signed population change.
-    fn amplitude(&self) -> f64 {
-        self.dn
-    }
-
-    /// Replace the population change.
-    /// # Arguments:
-    /// - `self`: Update.
-    /// - `amplitude`: Replacement population change.
-    /// # Returns:
-    /// - `()`: Updates `dn` in place.
-    fn set_amplitude(
-        &mut self,
-        amplitude: f64,
-    ) {
-        self.dn = amplitude;
-    }
-}
-
-impl KeyedUpdate for ExcitorUpdate {
-    type Key = (u64, [u64; 2], [u64; 2]);
-
-    /// Return the excitor key of the update.
-    /// # Arguments:
-    /// - `self`: Update.
-    /// # Returns:
-    /// - `Self::Key`: Block and occupation words.
-    fn key(&self) -> Self::Key {
-        (self.block, self.alpha, self.beta)
-    }
+/// Excitation rank of a determinant relative to a reference of the same frame.
+/// # Arguments:
+/// - `reference`: Reference determinant.
+/// - `det`: Determinant.
+/// # Returns:
+/// - `usize`: Number of holes in both spins.
+#[inline(always)]
+pub(super) fn rank(
+    reference: &DeterminantState,
+    det: &DeterminantState,
+) -> usize {
+    ((reference.alpha & !det.alpha).count_ones() + (reference.beta & !det.beta).count_ones())
+        as usize
 }

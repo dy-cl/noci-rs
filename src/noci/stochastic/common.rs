@@ -2,7 +2,6 @@
 
 // Standard library imports.
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 // External crate imports.
 use mpi::collective::SystemOperation;
@@ -19,16 +18,18 @@ use crate::input::{Input, Propagator};
 use crate::maths::general_evp;
 use crate::mpiutils::broadcast;
 use crate::noci::OverlapFactors;
-use crate::qmc::{exchange_to_owners, owner, rank_seed, stream};
+use crate::qmc::{
+    PopulationUpdate, basis_hash, exchange_to_owners, owner, rank_seed, restart_seed,
+    spawn_on_workers,
+};
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::excit::AuxiliaryGenerator;
 use super::overlapweighted::OverlapWeightedGenerator;
-use super::restart::{basis_hash, population_representation, restart_base_seed};
 use super::state::{
     AuxiliaryPropagationResult, AuxiliaryThreadPropagation, MCState, NOCIMPIScratch,
-    NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation, PopulationStats,
+    NOCIPropagationResult, NOCIThreadPropagation, PopulationRepresentation, PopulationStats,
     ProjectedEnergyUpdate, QMCRunInfo, ScratchSize, SparsePopulations,
 };
 
@@ -61,15 +62,15 @@ fn add_delta(
 /// - `()`: Clears touched dense entries and fills `changes`.
 pub(in crate::noci::stochastic) fn take_population_changes(
     mc: &mut MCState,
-    changes: &mut Vec<NOCIPopulationUpdate>,
+    changes: &mut Vec<PopulationUpdate>,
 ) {
     changes.clear();
     for det in mc.changed.drain(..) {
         let dn = mc.delta[det];
         mc.delta[det] = 0.0;
         if dn != 0.0 {
-            changes.push(NOCIPopulationUpdate {
-                det: det as u64,
+            changes.push(PopulationUpdate {
+                index: det as u64,
                 dn,
             });
         }
@@ -125,7 +126,7 @@ pub(in crate::noci::stochastic) fn exchange_accumulated_updates(
         return;
     }
     for update in exchange_to_owners(world, run.irank, scratch) {
-        add_delta(mc, update.det as usize, update.dn);
+        add_delta(mc, update.index as usize, update.dn);
     }
     scratch.send_contig.clear();
 }
@@ -168,67 +169,62 @@ pub(in crate::noci::stochastic) fn propagate_iteration(
         }
     }
 
-    // Reset report-independent output buffers before processing occupied sampled determinants.
+    // Spawn from every occupied source on the workers, then batch-evaluate the generated matrix
+    // elements and route realised updates by ownership.
     result.clear();
     let occupied = sampled.occ();
-    if !occupied.is_empty() {
-        // Distribute fixed-size chunks dynamically across persistent Rayon workers.
-        let next = AtomicUsize::new(0);
-        let workers_shared: &[Mutex<NOCIThreadPropagation>] = workers;
-        rayon::broadcast(|context| {
-            // Reset this worker and derive a deterministic cycle/thread-local random stream.
-            let tid = context.index();
-            let mut worker = workers_shared[tid].lock().unwrap();
-            worker.clear();
-            worker.rng = stream(run.rank_seed, tid as u64, iteration as u64);
-            // Generate diagonal, tangent, and off-diagonal contributions for assigned sources.
-            loop {
-                let start = next.fetch_add(8, Ordering::Relaxed);
-                if start >= occupied.len() {
-                    break;
+    spawn_on_workers(
+        occupied.len(),
+        (run.rank_seed, iteration),
+        workers,
+        (
+            |worker: &mut NOCIThreadPropagation, item| {
+                let source = occupied[item];
+                let population = sampled.get(source);
+                if population == 0.0 {
+                    return;
                 }
-                for &source in &occupied[start..(start + 8).min(occupied.len())] {
-                    let population = sampled.get(source);
-                    if population == 0.0 {
-                        continue;
-                    }
-                    if accumulate_tangent {
-                        // For `d\Delta_x = -dt(H_xx-E_sS_xx)\tilde N_x`,
-                        // `\partial d\Delta_x/\partial E_s = dt S_xx\tilde N_x`.
-                        let dn = dt * run.diagonal_hs[source].1 * population;
-                        worker.shift_tangent.add(source, dn, run.nranks > 1);
-                    }
-                    worker.diagonal_population_change(
-                        source,
-                        population,
-                        shift,
-                        data,
-                        &run.diagonal_hs,
-                    );
-                    worker.spawning(
-                        source,
-                        population,
-                        shift,
-                        data,
-                        (overlap_factors, overlap_generator, overlap_weight),
-                    );
+
+                if accumulate_tangent {
+                    // For `d\Delta_x = -dt(H_xx-E_sS_xx)\tilde N_x`,
+                    // `\partial d\Delta_x/\partial E_s = dt S_xx\tilde N_x`.
+                    let dn = dt * run.diagonal_hs[source].1 * population;
+                    worker.shift_tangent.add(source, dn, run.nranks > 1);
                 }
-            }
-            // Batch-evaluate generated matrix elements and route realised updates by ownership.
-            worker.resolve_batched_spawning(
-                shift,
-                accumulate_tangent,
-                data,
-                run,
-                (
-                    overlap_factors,
-                    overlap_generator,
-                    overlap_weight,
-                    optimise_overlap_weight,
-                ),
-            );
-        });
-    }
+
+                // Accumulate the diagonal term before queuing the source's off-diagonal spawns.
+                worker.diagonal_population_change(
+                    source,
+                    population,
+                    shift,
+                    data,
+                    &run.diagonal_hs,
+                );
+                worker.spawning(
+                    source,
+                    population,
+                    shift,
+                    data,
+                    (overlap_factors, overlap_generator, overlap_weight),
+                );
+            },
+            |worker: &mut NOCIThreadPropagation| {
+                worker.resolve_batched_spawning(
+                    shift,
+                    accumulate_tangent,
+                    data,
+                    run,
+                    (
+                        overlap_factors,
+                        overlap_generator,
+                        overlap_weight,
+                        optimise_overlap_weight,
+                    ),
+                );
+            },
+        ),
+    );
+
     // Gather thread-local physical updates, samples, and overlap-weight derivatives.
     for worker in workers.iter_mut() {
         let worker = worker.get_mut().unwrap();
@@ -268,49 +264,41 @@ pub(in crate::noci::stochastic) fn propagate_iteration_auxiliary(
         worker.get_mut().unwrap().shift_tangent.prepare(run.ndets);
     }
 
-    // Reset shared outputs and distribute occupied sampled determinants dynamically.
+    // Spawn auxiliary residual contributions from every occupied source on the workers, then
+    // resolve the generated orthogonal connections and route the updates by owner.
     result.clear();
     let occupied = sampled.occ();
-    if !occupied.is_empty() {
-        let next = AtomicUsize::new(0);
-        let workers_shared: &[Mutex<AuxiliaryThreadPropagation>] = workers;
-        rayon::broadcast(|context| {
-            // Reset this worker and derive the same deterministic cycle/thread RNG partition.
-            let tid = context.index();
-            let mut worker = workers_shared[tid].lock().unwrap();
-            worker.clear();
-            worker.rng = stream(run.rank_seed, tid as u64, iteration as u64);
-
-            // Generate auxiliary diagonal, tangent, and off-diagonal residual contributions.
-            loop {
-                let start = next.fetch_add(8, Ordering::Relaxed);
-                if start >= occupied.len() {
-                    break;
+    spawn_on_workers(
+        occupied.len(),
+        (run.rank_seed, iteration),
+        workers,
+        (
+            |worker: &mut AuxiliaryThreadPropagation, item| {
+                let source = occupied[item];
+                let population = sampled.get(source);
+                if population == 0.0 {
+                    return;
                 }
-                for &source in &occupied[start..(start + 8).min(occupied.len())] {
-                    let population = sampled.get(source);
-                    if population == 0.0 {
-                        continue;
-                    }
-                    worker
-                        .shift_tangent
-                        .add(source, dt * population, run.nranks > 1);
-                    worker.diagonal_population_change(
-                        source,
-                        population,
-                        shift,
-                        data,
-                        auxiliary_space,
-                        run,
-                    );
-                    worker.spawning(source, population, generator, data);
-                }
-            }
+                worker
+                    .shift_tangent
+                    .add(source, dt * population, run.nranks > 1);
 
-            // Resolve generated orthogonal connections and route auxiliary updates by owner.
-            worker.resolve_batched_spawning(data, auxiliary_space, run);
-        });
-    }
+                // Accumulate the diagonal term before queuing the source's off-diagonal spawns.
+                worker.diagonal_population_change(
+                    source,
+                    population,
+                    shift,
+                    data,
+                    auxiliary_space,
+                    run,
+                );
+                worker.spawning(source, population, generator, data);
+            },
+            |worker: &mut AuxiliaryThreadPropagation| {
+                worker.resolve_batched_spawning(data, auxiliary_space, run);
+            },
+        ),
+    );
 
     // Gather thread-local auxiliary updates and generation diagnostics.
     for worker in workers.iter_mut() {
@@ -638,22 +626,31 @@ pub(in crate::noci::stochastic) fn construct_qmc_run(
         isref[i] = true;
     }
 
-    // Preserve the established deterministic rank-dependent RNG construction.
+    // A restart's base seed overrides the input seed, so a resumed run continues its streams.
     let compatibility_hash = basis_hash(data.space);
-    let representation = population_representation(data.input.prop_ref().propagator);
-    let restart_seed =
-        data.input.write.read_restart.as_deref().and_then(|path| {
-            restart_base_seed(path, world, ndets, compatibility_hash, representation)
-        });
-    let base_seed = restart_seed.unwrap_or_else(|| qmc.seed.unwrap_or_else(rand::random));
-    if let (Some(restart_seed), Some(input_seed)) = (restart_seed, qmc.seed)
-        && restart_seed != input_seed
+    let representation = match data.input.prop_ref().propagator {
+        Propagator::SApply | Propagator::BApply => PopulationRepresentation::Range,
+        Propagator::Unshifted => PopulationRepresentation::Coefficient,
+    };
+
+    // Validate the saved representation and determinant basis before accepting its base seed.
+    let saved_seed = data
+        .input
+        .write
+        .read_restart
+        .as_deref()
+        .map(|path| restart_seed(path, (representation.as_str(), compatibility_hash)).unwrap());
+
+    let base_seed = saved_seed.unwrap_or_else(|| qmc.seed.unwrap_or_else(rand::random));
+
+    if let (Some(saved_seed), Some(input_seed)) = (saved_seed, qmc.seed)
+        && saved_seed != input_seed
         && irank == 0
     {
-        println!(
-            "Warning: restart base seed {restart_seed} overrides input qmc.seed {input_seed}."
-        );
+        println!("Warning: restart base seed {saved_seed} overrides input qmc.seed {input_seed}.");
     }
+
+    // Derive the rank-local stream only after the restart has selected the shared base seed.
     let rank_seed = rank_seed(base_seed, irank);
 
     // Determine the largest Wick scratch dimensions required by the stochastic basis.
@@ -779,7 +776,6 @@ pub(in crate::noci::stochastic) fn construct_qmc_run(
             base_seed,
             rank_seed,
             representation,
-            target_population: qmc.target_population,
             projection_hs,
             diagonal_hs,
         },

@@ -114,7 +114,9 @@ As in NOCIQMC, the propagation runs deterministically, stochastically, or both, 
   $\bar H_x = e^{-\hat T_x}\hat H e^{\hat T_x}$ terminates after four nested commutators. The
   coupling between references does not terminate, since the exponentials act in different orbital
   frames. It is sampled through projections of clusters of $e^{\hat T_x}$, up to `expansion_rank`,
-  onto the other references' determinants. $G$ is estimated from report-block sums, forgotten over
+  onto the other references' determinants. As in NOCIQMC, the cycles of a report sample the same
+  populations, and the report applies their accumulated change as one step of
+  $n_\text{cyc}\Delta\tau$. $G$ is estimated from report-block sums, forgotten over
   `memory_effective` blocks, and applied one report block late. Populations live in a sparse store
   on occupied excitors only, and no storage scales with the size of the excitor space.
 - **Deterministic.** The `jmnoccmc.det` table runs the same update as its noise-free counterpart

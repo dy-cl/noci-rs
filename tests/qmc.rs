@@ -2,6 +2,8 @@ mod common;
 
 // Standard library imports.
 use std::env;
+use std::fs;
+use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -125,33 +127,38 @@ fn run_qmc_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     (scf_energies, e_ref, e_qmc)
 }
 
-/// Run a QMC fixture through the binary and collect report energies from stdout.
+/// Run a QMC input through the binary and collect report energies from stdout.
 /// # Arguments:
-/// - `fixture`: Name of the test fixture to run.
+/// - `input`: QMC input file to run.
+/// - `workdir`: Working directory of the run, which receives any restart it writes.
 /// # Returns:
 /// - `Vec<f64>`: QMC report energies printed by the binary.
 /// # Panics:
 /// - If the binary cannot be found or run.
 /// - If stdout or stderr are not valid UTF-8.
 /// - If the binary exits with a nonzero status.
-fn qmc_report_energies(fixture: &str) -> Vec<f64> {
+fn qmc_report_energies(
+    input: &Path,
+    workdir: &Path,
+) -> Vec<f64> {
     let exe = env!("CARGO_BIN_EXE_noci-rs");
-    let input_path = fixture_dir(fixture).join("input.lua");
 
     let mut command = qmc_binary_command(exe);
     let output = command
+        .current_dir(workdir)
         .env("RAYON_NUM_THREADS", "1")
         .env("OPENBLAS_NUM_THREADS", "1")
         .env("OPENBLAS_CORETYPE", "CORE2")
         .env("OMP_NUM_THREADS", "1")
         .env("MKL_NUM_THREADS", "1")
-        .arg(input_path)
+        .arg(input)
         .output()
         .unwrap();
 
     assert!(
         output.status.success(),
-        "{fixture}: QMC binary exited with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        "{}: QMC binary exited with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        input.display(),
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -219,18 +226,26 @@ fn qmc_binary_command(exe: &str) -> Command {
 /// Check that a short QMC trajectory matches the stored reported energies.
 /// # Arguments:
 /// - `fixture`: Name of the trajectory fixture to run.
+/// - `workdir`: Working directory of the run, which receives any restart it writes.
 /// # Returns
-/// - `()`: The fixture satisfies its stored trajectory.
+/// - `Vec<f64>`: Report energies of the run, which satisfy the stored trajectory.
 /// # Panics
 /// - If the fixture `expected.json` cannot be read or parsed.
 /// - If the report trajectory length differs from the stored trajectory.
 /// - If any report energy differs from the stored trajectory outside tolerance.
-fn assert_qmc_trajectory(fixture: &str) {
+fn assert_qmc_trajectory(
+    fixture: &str,
+    workdir: &Path,
+) -> Vec<f64> {
     let expected: ExpectedQMCTrajectory = serde_json::from_str(
-        &std::fs::read_to_string(fixture_dir(fixture).join("expected.json")).unwrap(),
+        &fs::read_to_string(fixture_dir(fixture).join("expected.json")).unwrap(),
     )
     .unwrap();
-    let got = qmc_report_energies(fixture);
+    let input = fixture_dir(fixture)
+        .canonicalize()
+        .unwrap()
+        .join("input.lua");
+    let got = qmc_report_energies(&input, workdir);
 
     assert_eq!(
         got.len(),
@@ -241,6 +256,7 @@ fn assert_qmc_trajectory(fixture: &str) {
     for (i, (&got, &expected)) in got.iter().zip(expected.report_energies.iter()).enumerate() {
         assert_close(got, expected, 1e-9, &format!("{fixture} QMC report {i}"));
     }
+    got
 }
 
 /// Test that the H2 STO-3G 1.5 Angstrom fixture reproduces the expected SCF state energies,
@@ -487,7 +503,7 @@ fn qmc_h2_3_21g_1_5_ang_energies_agree() {
 #[test]
 #[serial]
 fn qmc_lih_sto_3g_2_8_ang_trajectory_s_apply() {
-    assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_S_APPLY");
+    assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_S_APPLY", Path::new("."));
 }
 
 /// Test that a short LiH 6-31G SApply QMC trajectory reproduces the stored deterministic QMC trajectory.
@@ -502,7 +518,7 @@ fn qmc_lih_sto_3g_2_8_ang_trajectory_s_apply() {
 #[test]
 #[serial]
 fn qmc_lih_6_31g_2_8_ang_trajectory_s_apply() {
-    assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_S_APPLY");
+    assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_S_APPLY", Path::new("."));
 }
 
 /// Test that an H6 STO-3G SDT Wick SApply QMC trajectory reproduces the stored deterministic QMC trajectory.
@@ -517,7 +533,10 @@ fn qmc_lih_6_31g_2_8_ang_trajectory_s_apply() {
 #[test]
 #[serial]
 fn qmc_h6_sto_3g_1_5_ang_sdt_wicks_trajectory() {
-    assert_qmc_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_S_APPLY_WICKS_SDT");
+    assert_qmc_trajectory(
+        "QMC_H6_STO-3G_1_5_TRAJECTORY_S_APPLY_WICKS_SDT",
+        Path::new("."),
+    );
 }
 
 /// Test that a short H6 STO-3G overlap-weighted Wick QMC trajectory reproduces the stored
@@ -533,7 +552,10 @@ fn qmc_h6_sto_3g_1_5_ang_sdt_wicks_trajectory() {
 #[test]
 #[serial]
 fn qmc_h6_sto_3g_1_5_ang_overlap_weighted_wicks_trajectory() {
-    assert_qmc_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_OVERLAP_WEIGHTED_WICKS");
+    assert_qmc_trajectory(
+        "QMC_H6_STO-3G_1_5_TRAJECTORY_OVERLAP_WEIGHTED_WICKS",
+        Path::new("."),
+    );
 }
 
 /// Test that a short H4 STO-3G stochastic JM-NOCCMC trajectory with two UHF references, through
@@ -549,5 +571,133 @@ fn qmc_h6_sto_3g_1_5_ang_overlap_weighted_wicks_trajectory() {
 #[test]
 #[serial]
 fn jmnoccmc_h4_sto_3g_1_5_ang_trajectory() {
-    assert_qmc_trajectory("QMC_H4_STO-3G_1_5_TRAJECTORY_JMNOCCMC");
+    assert_qmc_trajectory("QMC_H4_STO-3G_1_5_TRAJECTORY_JMNOCCMC", Path::new("."));
+}
+
+/// Test that the H6 STO-3G SDT Wick BApply QMC trajectory with the uniform generator reproduces
+/// the stored deterministic QMC trajectory.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: The trajectory matches the stored report energies.
+/// # Panics
+/// - If the binary run fails.
+/// - If the report trajectory length differs from the stored trajectory.
+/// - If any report energy differs from the stored trajectory outside tolerance.
+#[test]
+#[serial]
+fn qmc_h6_sto_3g_1_5_ang_b_apply_wicks_trajectory() {
+    assert_qmc_trajectory(
+        "QMC_H6_STO-3G_1_5_TRAJECTORY_B_APPLY_WICKS_SDT",
+        Path::new("."),
+    );
+}
+
+/// Test that the H6 STO-3G SDT Wick BApply QMC trajectory with the PCHB generator reproduces the
+/// stored deterministic QMC trajectory.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: The trajectory matches the stored report energies.
+/// # Panics
+/// - If the binary run fails.
+/// - If the report trajectory length differs from the stored trajectory.
+/// - If any report energy differs from the stored trajectory outside tolerance.
+#[test]
+#[serial]
+fn qmc_h6_sto_3g_1_5_ang_b_apply_pchb_wicks_trajectory() {
+    assert_qmc_trajectory(
+        "QMC_H6_STO-3G_1_5_TRAJECTORY_B_APPLY_PCHB_WICKS_SDT",
+        Path::new("."),
+    );
+}
+
+/// Test that the H6 STO-3G SDT Wick unshifted QMC trajectory reproduces the stored deterministic
+/// QMC trajectory.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: The trajectory matches the stored report energies.
+/// # Panics
+/// - If the binary run fails.
+/// - If the report trajectory length differs from the stored trajectory.
+/// - If any report energy differs from the stored trajectory outside tolerance.
+#[test]
+#[serial]
+fn qmc_h6_sto_3g_1_5_ang_unshifted_wicks_trajectory() {
+    assert_qmc_trajectory(
+        "QMC_H6_STO-3G_1_5_TRAJECTORY_UNSHIFTED_WICKS_SDT",
+        Path::new("."),
+    );
+}
+
+/// Check that a trajectory matches its stored energies, and that a run resumed from the restart it
+/// writes reproduces the uninterrupted run from that report on.
+/// # Arguments:
+/// - `fixture`: Name of the fixture, whose `input.lua` writes a restart and `resume.lua` reads it.
+/// - `resumed_from`: Row of the uninterrupted trajectory where the resumed one starts.
+/// # Returns
+/// - `()`: Both runs match the stored and the uninterrupted trajectory.
+/// # Panics
+/// - If either binary run fails.
+/// - If the uninterrupted trajectory differs from the stored trajectory.
+/// - If the resumed trajectory differs from the uninterrupted run from `resumed_from` on.
+fn assert_restart_trajectory(
+    fixture: &str,
+    resumed_from: usize,
+) {
+    // Run the uninterrupted and the resumed input in one directory, which holds the restart.
+    let workdir = env::temp_dir().join(format!("noci-rs-{fixture}-{}", std::process::id()));
+    fs::create_dir_all(&workdir).unwrap();
+    let full = assert_qmc_trajectory(fixture, &workdir);
+    let resume = fixture_dir(fixture)
+        .canonicalize()
+        .unwrap()
+        .join("resume.lua");
+    let resumed = qmc_report_energies(&resume, &workdir);
+    fs::remove_dir_all(&workdir).unwrap();
+
+    assert_eq!(
+        resumed.len() + resumed_from,
+        full.len(),
+        "{fixture}: resumed trajectory length"
+    );
+    for (i, (&got, &expected)) in resumed.iter().zip(&full[resumed_from..]).enumerate() {
+        assert_close(
+            got,
+            expected,
+            1e-9,
+            &format!("{fixture} resumed report {i}"),
+        );
+    }
+}
+
+/// Test that an H6 STO-3G SApply QMC trajectory reproduces the stored deterministic QMC trajectory,
+/// and that a run resumed from the restart it writes after three iterations, which prints that
+/// state as its first row, reproduces the uninterrupted run.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: Both runs match the stored and the uninterrupted trajectory.
+/// # Panics
+/// - If either run differs from its expected trajectory.
+#[test]
+#[serial]
+fn qmc_h6_sto_3g_1_5_ang_s_apply_restart_trajectory() {
+    assert_restart_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_S_APPLY_RESTART", 3);
+}
+
+/// Test that an H4 STO-3G JM-NOCCMC trajectory reproduces the stored trajectory, and that a run
+/// resumed from the restart it writes after twenty reports reproduces the uninterrupted run's last
+/// reports.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: Both runs match the stored and the uninterrupted trajectory.
+/// # Panics
+/// - If either run differs from its expected trajectory.
+#[test]
+#[serial]
+fn jmnoccmc_h4_sto_3g_1_5_ang_restart_trajectory() {
+    assert_restart_trajectory("QMC_H4_STO-3G_1_5_TRAJECTORY_JMNOCCMC_RESTART", 20);
 }

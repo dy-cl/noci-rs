@@ -1,7 +1,6 @@
 // noci/stochastic/state.rs
 
 // External crate imports.
-use mpi::traits::*;
 use rand::{Rng, SeedableRng};
 
 // Crate-root imports.
@@ -13,7 +12,7 @@ use crate::elements::{
 use crate::input::ExcitationGen;
 use crate::noci::OverlapFactors;
 use crate::qmc::excitgen::{ExcitationHist, PchbScratch};
-use crate::qmc::{ExchangeScratch, FriAmplitude, KeyedUpdate, QmcRng, compress_sparse, owner};
+use crate::qmc::{ExchangeScratch, PopulationUpdate, QmcRng, Worker, compress_sparse, owner};
 
 // Parent/sibling imports.
 use super::common::find_hs_batched;
@@ -27,20 +26,6 @@ pub(in crate::noci::stochastic) enum PopulationRepresentation {
     Coefficient,
     /// Population stores signed coordinates in `range(S)`.
     Range,
-}
-
-impl PopulationRepresentation {
-    /// Return restart metadata spelling for this representation.
-    /// # Arguments:
-    /// - `self`: Population representation.
-    /// # Returns:
-    /// - `&'static str`: Stable representation name stored in HDF5 metadata.
-    pub(in crate::noci::stochastic) fn as_str(self) -> &'static str {
-        match self {
-            Self::Coefficient => "coefficient",
-            Self::Range => "range",
-        }
-    }
 }
 
 /// Storage for QMC timings.
@@ -88,8 +73,6 @@ pub(in crate::noci::stochastic) struct QMCRunInfo {
     pub(in crate::noci::stochastic) rank_seed: u64,
     /// Population representation used by this run.
     pub(in crate::noci::stochastic) representation: PopulationRepresentation,
-    /// Target population used by this run.
-    pub(in crate::noci::stochastic) target_population: f64,
     /// Projected-energy Hamiltonian and overlap contractions aligned with `owned`.
     pub(in crate::noci::stochastic) projection_hs: Vec<(f64, f64)>,
     /// Cached diagonal Hamiltonian and overlap matrix elements for each determinant.
@@ -114,6 +97,221 @@ pub(crate) struct SparsePopulations {
     occ: Vec<usize>,
     /// Position of each determinant in `occ`, or `usize::MAX` if unoccupied.
     pos: Vec<usize>,
+}
+
+/// Storage for the range-preserving Monte Carlo state.
+pub(in crate::noci::stochastic) struct MCState {
+    /// Persistent local portion of the real population vector.
+    pub(in crate::noci::stochastic) populations: Vec<f64>,
+    /// Temporary sparse real population vector used for spawning.
+    pub(in crate::noci::stochastic) sampled: SparsePopulations,
+    /// Accumulated real population changes over the full determinant space.
+    pub(in crate::noci::stochastic) delta: Vec<f64>,
+    /// Determinants for which `delta[i]` is nonzero.
+    pub(in crate::noci::stochastic) changed: Vec<usize>,
+    /// Histogrammed spawning magnitudes.
+    pub(in crate::noci::stochastic) excitation_hist: Option<ExcitationHist>,
+}
+
+/// Storage for the current projected-energy numerator and denominator.
+#[derive(Clone, Copy)]
+pub(in crate::noci::stochastic) struct ProjectedEnergyUpdate {
+    /// Numerator of the projected-energy estimator.
+    pub(in crate::noci::stochastic) num: f64,
+    /// Denominator of the projected-energy estimator.
+    pub(in crate::noci::stochastic) den: f64,
+}
+
+/// Storage for current persistent and sampled population statistics.
+#[derive(Clone, Copy)]
+pub(in crate::noci::stochastic) struct PopulationStats {
+    /// `Persistent population 1-norm |N|_1.`
+    pub(in crate::noci::stochastic) nw: f64,
+    /// Persistent population 1-norm on the reference determinants.
+    pub(in crate::noci::stochastic) nref: f64,
+    /// `Sampled-population 1-norm |\tilde N|_1.`
+    pub(in crate::noci::stochastic) nsampled: f64,
+    /// `Number of nonzero sampled populations | \tilde N|_0.`
+    pub(in crate::noci::stochastic) nsampledo: i64,
+}
+
+/// Storage for QMC propagation bookkeeping.
+pub(in crate::noci::stochastic) struct PropagationState {
+    /// Full Monte Carlo state.
+    pub(in crate::noci::stochastic) mc: MCState,
+    /// Current projected-energy numerator and denominator.
+    pub(in crate::noci::stochastic) pe: ProjectedEnergyUpdate,
+    /// Population statistics at the previous shift update.
+    pub(in crate::noci::stochastic) prev_pop: PopulationStats,
+    /// Report from which propagation begins.
+    pub(in crate::noci::stochastic) start_report: usize,
+    /// Whether the persistent population has reached its target.
+    pub(in crate::noci::stochastic) reached: bool,
+    /// Current projected energy.
+    pub(in crate::noci::stochastic) eprojcur: f64,
+    /// Current overlap-weighted mixture probability `p`.
+    pub(in crate::noci::stochastic) overlap_weight: f64,
+}
+
+/// Storage for results of a single propagation step.
+pub(in crate::noci::stochastic) struct NOCIPropagationResult {
+    /// Population updates for determinants owned by current rank.
+    pub(in crate::noci::stochastic) local: Vec<(usize, f64)>,
+    /// Population updates for determinants owned by another rank, grouped with their destination rank.
+    pub(in crate::noci::stochastic) remote: Vec<(usize, PopulationUpdate)>,
+    /// Excitation generation samples.
+    pub(in crate::noci::stochastic) samples: Vec<f64>,
+    /// Report-local adaptive overlap-weight derivative sums.
+    pub(in crate::noci::stochastic) overlap_derivatives: OverlapDerivativeSums,
+}
+
+/// Results of one orthogonal propagation cycle, separated by physical ownership.
+pub(in crate::noci::stochastic) struct AuxiliaryPropagationResult {
+    /// Physical residual updates owned by this rank.
+    pub(in crate::noci::stochastic) local: Vec<PopulationUpdate>,
+    /// Physical residual updates owned by another rank and their destination.
+    pub(in crate::noci::stochastic) remote: Vec<(usize, PopulationUpdate)>,
+    /// Excitation generation samples.
+    pub(in crate::noci::stochastic) samples: Vec<f64>,
+}
+
+/// Report-local derivative sums for adaptive overlap-weight optimisation.
+#[derive(Clone, Copy, Default)]
+pub(in crate::noci::stochastic) struct OverlapDerivativeSums {
+    /// Stochastic estimate of `M2'(p)`.
+    pub(in crate::noci::stochastic) gradient: f64,
+    /// Stochastic estimate of `M2''(p)`.
+    pub(in crate::noci::stochastic) hessian: f64,
+}
+
+/// Batched off-diagonal spawn request with a known generation probability.
+struct NOCIBatchedSpawnRequest {
+    /// Child determinant index.
+    child: usize,
+    /// Parent determinant index.
+    parent: usize,
+    /// Per-attempt sampled parent population.
+    parent_population: f64,
+    /// Exact total generation probability for this determinant pair.
+    pgen: f64,
+}
+
+/// Batched orthogonal spawn request with a relative connection and known proposal probability.
+struct AuxiliaryBatchedSpawnRequest {
+    /// Source-relative orthogonal connection.
+    connection: ConnectionState,
+    /// Retained source determinant index.
+    source: NOCIIndex,
+    /// Per-attempt sampled source population.
+    parent_population: f64,
+    /// Exact generation probability of the connection.
+    pgen: f64,
+}
+
+/// Report-block derivative of the pre-overlap change with respect to the shift.
+/// SApply stores `B = \partial\Delta/\partial E_s = \sum_a dt S\tilde N^{(a)}`;
+/// BApply stores `B = \partial\chi/\partial E_s = \sum_a dt\tilde N^{(a)}`.
+pub(in crate::noci::stochastic) struct ShiftTangent {
+    /// Dense tangent amplitudes indexed by global determinant.
+    pub(in crate::noci::stochastic) values: Vec<f64>,
+    /// Determinants touched on an MPI-owned sparse path.
+    pub(in crate::noci::stochastic) changed: Vec<usize>,
+    /// Tangent contributions owned by another MPI rank.
+    pub(in crate::noci::stochastic) remote: Vec<(usize, PopulationUpdate)>,
+}
+
+/// Storage for per thread propagation quantities.
+pub(in crate::noci::stochastic) struct NOCIThreadPropagation {
+    /// Population changes generated by this thread that belong to determinants owned by current MPI rank.
+    pub(in crate::noci::stochastic) local: Vec<(usize, f64)>,
+    /// Population changes generated by this thread that belong to another MPI rank, grouped with destination.
+    pub(in crate::noci::stochastic) remote: Vec<(usize, PopulationUpdate)>,
+    /// Report-level SApply shift tangent accumulated by this worker.
+    pub(in crate::noci::stochastic) shift_tangent: ShiftTangent,
+    /// Excitation generation samples.
+    pub(in crate::noci::stochastic) samples: Vec<f64>,
+    /// Thread local RNG.
+    pub(in crate::noci::stochastic) rng: QmcRng,
+    /// Batched off-diagonal spawn requests accumulated over one worker propagation iteration.
+    spawn_requests: Vec<NOCIBatchedSpawnRequest>,
+    /// Raw off-diagonal spawn events awaiting one worker-batch pivotal compression.
+    raw_spawn_updates: Vec<PopulationUpdate>,
+    /// Canonically ordered determinant pairs corresponding to `spawn_requests`.
+    spawn_pairs: Vec<DetPair>,
+    /// Hamiltonian and overlap elements corresponding to `spawn_requests`.
+    spawn_hs: Vec<(f64, f64)>,
+    /// Per thread scratch space for extended non-orthogonal Wick's theorem.
+    pub(in crate::noci::stochastic) wick_scratch: Box<WickScratchSpin<f64>>,
+    /// Iteration-local adaptive overlap-weight derivative sums.
+    pub(in crate::noci::stochastic) overlap_derivatives: OverlapDerivativeSums,
+}
+
+/// Reusable per-thread propagation storage for parent-orthogonal BApply spawning.
+pub(in crate::noci::stochastic) struct AuxiliaryThreadPropagation {
+    /// Physical residual updates owned by this MPI rank.
+    pub(in crate::noci::stochastic) local: Vec<PopulationUpdate>,
+    /// Physical residual updates owned by another rank and their destination.
+    pub(in crate::noci::stochastic) remote: Vec<(usize, PopulationUpdate)>,
+    /// Report-level retained-space shift tangent accumulated by this worker.
+    pub(in crate::noci::stochastic) shift_tangent: ShiftTangent,
+    /// Excitation-generation histogram samples.
+    pub(in crate::noci::stochastic) samples: Vec<f64>,
+    /// Thread-local random-number generator.
+    pub(in crate::noci::stochastic) rng: QmcRng,
+    /// Batched relative connection requests for one stochastic iteration.
+    spawn_requests: Vec<AuxiliaryBatchedSpawnRequest>,
+    /// Raw off-diagonal auxiliary events awaiting one worker-batch pivotal compression.
+    raw_spawn_updates: Vec<PopulationUpdate>,
+    /// Compact source and relative connections aligned with requests.
+    spawn_pairs: Vec<(NOCIIndex, ConnectionState)>,
+    /// Parent-orthogonal Hamiltonian results aligned with spawn requests.
+    spawn_h: Vec<f64>,
+    /// Reusable numerical parent-and-sector grouping storage for orthogonal H batches.
+    orthogonal_scratch: OrthogonalHamiltonianScratch,
+    /// Per-source PCHB sampling state.
+    pchb_scratch: PchbScratch,
+}
+
+/// Access the shared shift-tangent accumulator of either propagation worker.
+pub(in crate::noci::stochastic) trait TangentWorker {
+    /// Borrow this worker's report-level retained-space tangent.
+    /// # Arguments:
+    /// - `self`: Persistent propagation worker.
+    /// # Returns:
+    /// - `&mut ShiftTangent`: Shared report tangent storage.
+    fn tangent(&mut self) -> &mut ShiftTangent;
+}
+
+/// Storage for heat-bath excitation related quantities.
+pub(in crate::noci::stochastic) struct HeatBath {
+    /// Total absolute coupling weight over all allowed children.
+    pub(in crate::noci::stochastic) sumxw: f64,
+    /// Cumulative absolute coupling weights used for inverse-CDF sampling.
+    pub(in crate::noci::stochastic) cumulatives: Vec<f64>,
+    /// Child determinant indices corresponding to the cumulative weights.
+    pub(in crate::noci::stochastic) lambdas: Vec<usize>,
+    /// Signed couplings associated with each child determinant.
+    pub(in crate::noci::stochastic) ks: Vec<f64>,
+}
+
+/// Reusable MPI scratch for walker-update collectives.
+pub(crate) type NOCIMPIScratch = ExchangeScratch<PopulationUpdate>;
+
+/// Reusable MPI scratch for parent-orthogonal residual collectives.
+pub(crate) type AuxiliaryMPIScratch = ExchangeScratch<PopulationUpdate>;
+
+impl PopulationRepresentation {
+    /// Return restart metadata spelling for this representation.
+    /// # Arguments:
+    /// - `self`: Population representation.
+    /// # Returns:
+    /// - `&'static str`: Stable representation name stored in HDF5 metadata.
+    pub(in crate::noci::stochastic) fn as_str(self) -> &'static str {
+        match self {
+            Self::Coefficient => "coefficient",
+            Self::Range => "range",
+        }
+    }
 }
 
 impl SparsePopulations {
@@ -194,55 +392,6 @@ impl SparsePopulations {
     }
 }
 
-/// Map one orthogonal determinant to a deterministic MPI owner.
-/// # Arguments:
-/// - `det`: Deterministic flattened auxiliary determinant identity.
-/// - `nranks`: Number of MPI ranks.
-/// # Returns:
-/// - `usize`: MPI rank owning the complete coalesced orthogonal amplitude.
-pub(in crate::noci::stochastic) fn auxiliary_owner(
-    det: AuxiliaryIndex,
-    nranks: usize,
-) -> usize {
-    owner(det.0, nranks)
-}
-
-/// Storage for the range-preserving Monte Carlo state.
-pub(in crate::noci::stochastic) struct MCState {
-    /// Persistent local portion of the real population vector.
-    pub(in crate::noci::stochastic) populations: Vec<f64>,
-    /// Temporary sparse real population vector used for spawning.
-    pub(in crate::noci::stochastic) sampled: SparsePopulations,
-    /// Accumulated real population changes over the full determinant space.
-    pub(in crate::noci::stochastic) delta: Vec<f64>,
-    /// Determinants for which `delta[i]` is nonzero.
-    pub(in crate::noci::stochastic) changed: Vec<usize>,
-    /// Histogrammed spawning magnitudes.
-    pub(in crate::noci::stochastic) excitation_hist: Option<ExcitationHist>,
-}
-
-/// Storage for the current projected-energy numerator and denominator.
-#[derive(Clone, Copy)]
-pub(in crate::noci::stochastic) struct ProjectedEnergyUpdate {
-    /// Numerator of the projected-energy estimator.
-    pub(in crate::noci::stochastic) num: f64,
-    /// Denominator of the projected-energy estimator.
-    pub(in crate::noci::stochastic) den: f64,
-}
-
-/// Storage for current persistent and sampled population statistics.
-#[derive(Clone, Copy)]
-pub(in crate::noci::stochastic) struct PopulationStats {
-    /// `Persistent population 1-norm |N|_1.`
-    pub(in crate::noci::stochastic) nw: f64,
-    /// Persistent population 1-norm on the reference determinants.
-    pub(in crate::noci::stochastic) nref: f64,
-    /// `Sampled-population 1-norm |\tilde N|_1.`
-    pub(in crate::noci::stochastic) nsampled: f64,
-    /// `Number of nonzero sampled populations | \tilde N|_0.`
-    pub(in crate::noci::stochastic) nsampledo: i64,
-}
-
 impl PopulationStats {
     /// Construct population statistics.
     /// # Arguments:
@@ -265,26 +414,6 @@ impl PopulationStats {
             nsampledo,
         }
     }
-}
-
-/// Storage for QMC propagation bookkeeping.
-pub(in crate::noci::stochastic) struct PropagationState {
-    /// Full Monte Carlo state.
-    pub(in crate::noci::stochastic) mc: MCState,
-    /// Current projected-energy numerator and denominator.
-    pub(in crate::noci::stochastic) pe: ProjectedEnergyUpdate,
-    /// Population statistics at the previous shift update.
-    pub(in crate::noci::stochastic) prev_pop: PopulationStats,
-    /// Current population statistics.
-    pub(in crate::noci::stochastic) cur_pop: PopulationStats,
-    /// Report from which propagation begins.
-    pub(in crate::noci::stochastic) start_report: usize,
-    /// Whether the persistent population has reached its target.
-    pub(in crate::noci::stochastic) reached: bool,
-    /// Current projected energy.
-    pub(in crate::noci::stochastic) eprojcur: f64,
-    /// Current overlap-weighted mixture probability `p`.
-    pub(in crate::noci::stochastic) overlap_weight: f64,
 }
 
 impl PropagationState {
@@ -312,35 +441,12 @@ impl PropagationState {
             mc,
             pe,
             prev_pop,
-            cur_pop: prev_pop,
             start_report,
             reached,
             eprojcur,
             overlap_weight,
         }
     }
-}
-
-/// Storage for results of a single propagation step.
-pub(in crate::noci::stochastic) struct NOCIPropagationResult {
-    /// Population updates for determinants owned by current rank.
-    pub(in crate::noci::stochastic) local: Vec<(usize, f64)>,
-    /// Population updates for determinants owned by another rank, grouped with their destination rank.
-    pub(in crate::noci::stochastic) remote: Vec<(usize, NOCIPopulationUpdate)>,
-    /// Excitation generation samples.
-    pub(in crate::noci::stochastic) samples: Vec<f64>,
-    /// Report-local adaptive overlap-weight derivative sums.
-    pub(in crate::noci::stochastic) overlap_derivatives: OverlapDerivativeSums,
-}
-
-/// Results of one orthogonal propagation cycle, separated by physical ownership.
-pub(in crate::noci::stochastic) struct AuxiliaryPropagationResult {
-    /// Physical residual updates owned by this rank.
-    pub(in crate::noci::stochastic) local: Vec<AuxiliaryPopulationUpdate>,
-    /// Physical residual updates owned by another rank and their destination.
-    pub(in crate::noci::stochastic) remote: Vec<(usize, AuxiliaryPopulationUpdate)>,
-    /// Excitation generation samples.
-    pub(in crate::noci::stochastic) samples: Vec<f64>,
 }
 
 impl AuxiliaryPropagationResult {
@@ -366,15 +472,6 @@ impl AuxiliaryPropagationResult {
         self.remote.clear();
         self.samples.clear();
     }
-}
-
-/// Report-local derivative sums for adaptive overlap-weight optimisation.
-#[derive(Clone, Copy, Default)]
-pub(in crate::noci::stochastic) struct OverlapDerivativeSums {
-    /// Stochastic estimate of `M2'(p)`.
-    pub(in crate::noci::stochastic) gradient: f64,
-    /// Stochastic estimate of `M2''(p)`.
-    pub(in crate::noci::stochastic) hessian: f64,
 }
 
 impl OverlapDerivativeSums {
@@ -418,41 +515,6 @@ impl NOCIPropagationResult {
         self.samples.clear();
         self.overlap_derivatives = OverlapDerivativeSums::default();
     }
-}
-
-/// Batched off-diagonal spawn request with a known generation probability.
-struct NOCIBatchedSpawnRequest {
-    /// Child determinant index.
-    child: usize,
-    /// Parent determinant index.
-    parent: usize,
-    /// Per-attempt sampled parent population.
-    parent_population: f64,
-    /// Exact total generation probability for this determinant pair.
-    pgen: f64,
-}
-
-/// Batched orthogonal spawn request with a relative connection and known proposal probability.
-struct AuxiliaryBatchedSpawnRequest {
-    /// Source-relative orthogonal connection.
-    connection: ConnectionState,
-    /// Retained source determinant index.
-    source: NOCIIndex,
-    /// Per-attempt sampled source population.
-    parent_population: f64,
-    /// Exact generation probability of the connection.
-    pgen: f64,
-}
-/// Report-block derivative of the pre-overlap change with respect to the shift.
-/// SApply stores `B = \partial\Delta/\partial E_s = \sum_a dt S\tilde N^{(a)}`;
-/// BApply stores `B = \partial\chi/\partial E_s = \sum_a dt\tilde N^{(a)}`.
-pub(in crate::noci::stochastic) struct ShiftTangent {
-    /// Dense tangent amplitudes indexed by global determinant.
-    pub(in crate::noci::stochastic) values: Vec<f64>,
-    /// Determinants touched on an MPI-owned sparse path.
-    pub(in crate::noci::stochastic) changed: Vec<usize>,
-    /// Tangent contributions owned by another MPI rank.
-    pub(in crate::noci::stochastic) remote: Vec<(usize, NOCIPopulationUpdate)>,
 }
 
 impl ShiftTangent {
@@ -516,7 +578,7 @@ impl ShiftTangent {
     /// - `()`: Clears touched entries and fills `updates`.
     pub(in crate::noci::stochastic) fn take_sparse(
         &mut self,
-        updates: &mut Vec<NOCIPopulationUpdate>,
+        updates: &mut Vec<PopulationUpdate>,
     ) {
         updates.clear();
         // Convert only touched components of `B = \partial\Delta/\partial E_s` and clear them
@@ -525,8 +587,8 @@ impl ShiftTangent {
             let dn = self.values[det];
             self.values[det] = 0.0;
             if dn != 0.0 {
-                updates.push(NOCIPopulationUpdate {
-                    det: det as u64,
+                updates.push(PopulationUpdate {
+                    index: det as u64,
                     dn,
                 });
             }
@@ -534,66 +596,20 @@ impl ShiftTangent {
     }
 }
 
-/// Storage for per thread propagation quantities.
-pub(in crate::noci::stochastic) struct NOCIThreadPropagation {
-    /// Population changes generated by this thread that belong to determinants owned by current MPI rank.
-    pub(in crate::noci::stochastic) local: Vec<(usize, f64)>,
-    /// Population changes generated by this thread that belong to another MPI rank, grouped with destination.
-    pub(in crate::noci::stochastic) remote: Vec<(usize, NOCIPopulationUpdate)>,
-    /// Report-level SApply shift tangent accumulated by this worker.
-    pub(in crate::noci::stochastic) shift_tangent: ShiftTangent,
-    /// Excitation generation samples.
-    pub(in crate::noci::stochastic) samples: Vec<f64>,
-    /// Thread local RNG.
-    pub(in crate::noci::stochastic) rng: QmcRng,
-    /// Batched off-diagonal spawn requests accumulated over one worker propagation iteration.
-    spawn_requests: Vec<NOCIBatchedSpawnRequest>,
-    /// Raw off-diagonal spawn events awaiting one worker-batch pivotal compression.
-    raw_spawn_updates: Vec<NOCIPopulationUpdate>,
-    /// Canonically ordered determinant pairs corresponding to `spawn_requests`.
-    spawn_pairs: Vec<DetPair>,
-    /// Hamiltonian and overlap elements corresponding to `spawn_requests`.
-    spawn_hs: Vec<(f64, f64)>,
-    /// Per thread scratch space for extended non-orthogonal Wick's theorem.
-    pub(in crate::noci::stochastic) wick_scratch: Box<WickScratchSpin<f64>>,
-    /// Iteration-local adaptive overlap-weight derivative sums.
-    pub(in crate::noci::stochastic) overlap_derivatives: OverlapDerivativeSums,
-}
-
-/// Reusable per-thread propagation storage for parent-orthogonal BApply spawning.
-pub(in crate::noci::stochastic) struct AuxiliaryThreadPropagation {
-    /// Physical residual updates owned by this MPI rank.
-    pub(in crate::noci::stochastic) local: Vec<AuxiliaryPopulationUpdate>,
-    /// Physical residual updates owned by another rank and their destination.
-    pub(in crate::noci::stochastic) remote: Vec<(usize, AuxiliaryPopulationUpdate)>,
-    /// Report-level retained-space shift tangent accumulated by this worker.
-    pub(in crate::noci::stochastic) shift_tangent: ShiftTangent,
-    /// Excitation-generation histogram samples.
-    pub(in crate::noci::stochastic) samples: Vec<f64>,
-    /// Thread-local random-number generator.
-    pub(in crate::noci::stochastic) rng: QmcRng,
-    /// Batched relative connection requests for one stochastic iteration.
-    spawn_requests: Vec<AuxiliaryBatchedSpawnRequest>,
-    /// Raw off-diagonal auxiliary events awaiting one worker-batch pivotal compression.
-    raw_spawn_updates: Vec<AuxiliaryPopulationUpdate>,
-    /// Compact source and relative connections aligned with requests.
-    spawn_pairs: Vec<(NOCIIndex, ConnectionState)>,
-    /// Parent-orthogonal Hamiltonian results aligned with spawn requests.
-    spawn_h: Vec<f64>,
-    /// Reusable numerical parent-and-sector grouping storage for orthogonal H batches.
-    orthogonal_scratch: OrthogonalHamiltonianScratch,
-    /// Per-source PCHB sampling state.
-    pchb_scratch: PchbScratch,
-}
-
-/// Access the shared shift-tangent accumulator of either propagation worker.
-pub(in crate::noci::stochastic) trait TangentWorker {
-    /// Borrow this worker's report-level retained-space tangent.
+impl Worker for NOCIThreadPropagation {
+    /// Clear the worker's per-cycle buffers and give it the cycle's random stream.
     /// # Arguments:
-    /// - `self`: Persistent propagation worker.
+    /// - `self`: Propagation worker.
+    /// - `rng`: Random stream of this worker's thread and the cycle.
     /// # Returns:
-    /// - `&mut ShiftTangent`: Shared report tangent storage.
-    fn tangent(&mut self) -> &mut ShiftTangent;
+    /// - `()`: Resets the worker.
+    fn reset(
+        &mut self,
+        rng: QmcRng,
+    ) {
+        self.clear();
+        self.rng = rng;
+    }
 }
 
 impl TangentWorker for NOCIThreadPropagation {
@@ -604,6 +620,22 @@ impl TangentWorker for NOCIThreadPropagation {
     /// - `&mut ShiftTangent`: Worker tangent accumulator.
     fn tangent(&mut self) -> &mut ShiftTangent {
         &mut self.shift_tangent
+    }
+}
+
+impl Worker for AuxiliaryThreadPropagation {
+    /// Clear the worker's per-cycle buffers and give it the cycle's random stream.
+    /// # Arguments:
+    /// - `self`: Propagation worker.
+    /// - `rng`: Random stream of this worker's thread and the cycle.
+    /// # Returns:
+    /// - `()`: Resets the worker.
+    fn reset(
+        &mut self,
+        rng: QmcRng,
+    ) {
+        self.clear();
+        self.rng = rng;
     }
 }
 
@@ -745,8 +777,8 @@ impl NOCIThreadPropagation {
                 } else if tangent_dn != 0.0 {
                     self.shift_tangent.remote.push((
                         run.det_owner[request.child],
-                        NOCIPopulationUpdate {
-                            det: request.child as u64,
+                        PopulationUpdate {
+                            index: request.child as u64,
                             dn: tangent_dn,
                         },
                     ));
@@ -789,8 +821,8 @@ impl NOCIThreadPropagation {
                 self.samples.push(raw.abs());
             }
 
-            self.raw_spawn_updates.push(NOCIPopulationUpdate {
-                det: request.child as u64,
+            self.raw_spawn_updates.push(PopulationUpdate {
+                index: request.child as u64,
                 dn: raw,
             });
         }
@@ -806,7 +838,7 @@ impl NOCIThreadPropagation {
             &mut self.rng,
         );
         for update in &self.raw_spawn_updates {
-            let child = update.det as usize;
+            let child = update.index as usize;
             if run.nranks == 1 {
                 self.local.push((child, update.dn));
             } else {
@@ -998,8 +1030,8 @@ impl NOCIThreadPropagation {
             }
 
             // Preserve individual events until the common compression/communication stage.
-            self.raw_spawn_updates.push(NOCIPopulationUpdate {
-                det: lambda as u64,
+            self.raw_spawn_updates.push(PopulationUpdate {
+                index: lambda as u64,
                 dn: raw,
             });
         }
@@ -1060,7 +1092,10 @@ impl AuxiliaryThreadPropagation {
         dn: f64,
         run: &QMCRunInfo,
     ) {
-        let update = AuxiliaryPopulationUpdate::new(det, dn);
+        let update = PopulationUpdate {
+            index: det.0 as u64,
+            dn,
+        };
         let peer = auxiliary_owner(det, run.nranks);
         if peer == run.irank {
             self.local.push(update);
@@ -1187,8 +1222,10 @@ impl AuxiliaryThreadPropagation {
             }
 
             let child = auxiliary.connected(data.space, request.source, request.connection);
-            self.raw_spawn_updates
-                .push(AuxiliaryPopulationUpdate::new(child, raw));
+            self.raw_spawn_updates.push(PopulationUpdate {
+                index: child.0 as u64,
+                dn: raw,
+            });
         }
 
         self.spawn_requests.clear();
@@ -1206,123 +1243,21 @@ impl AuxiliaryThreadPropagation {
         // iteration-local batch storage.
         for i in 0..self.raw_spawn_updates.len() {
             let update = self.raw_spawn_updates[i];
-            self.route_update(update.index(), update.dn, run);
+            self.route_update(AuxiliaryIndex(update.index as usize), update.dn, run);
         }
         self.raw_spawn_updates.clear();
     }
 }
 
-/// Storage for a sparse real population change communicated across MPI ranks.
-#[repr(C)]
-#[derive(Copy, Clone, Default, Equivalence)]
-pub(crate) struct NOCIPopulationUpdate {
-    /// Determinant index to which the population change applies.
-    pub det: u64,
-    /// Signed real population change.
-    pub dn: f64,
+/// Map one orthogonal determinant to a deterministic MPI owner.
+/// # Arguments:
+/// - `det`: Deterministic flattened auxiliary determinant identity.
+/// - `nranks`: Number of MPI ranks.
+/// # Returns:
+/// - `usize`: MPI rank owning the complete coalesced orthogonal amplitude.
+pub(in crate::noci::stochastic) fn auxiliary_owner(
+    det: AuxiliaryIndex,
+    nranks: usize,
+) -> usize {
+    owner(det.0, nranks)
 }
-
-/// Storage for one sparse parent-orthogonal population change communicated across MPI ranks.
-#[repr(C)]
-#[derive(Copy, Clone, Default, Equivalence)]
-pub(crate) struct AuxiliaryPopulationUpdate {
-    /// Deterministic flattened auxiliary determinant index.
-    pub(crate) det: u64,
-    /// Signed orthogonal-space residual amplitude.
-    pub(crate) dn: f64,
-}
-
-impl KeyedUpdate for NOCIPopulationUpdate {
-    type Key = u64;
-
-    /// Return the determinant index the population change applies to.
-    /// # Arguments:
-    /// - `self`: Sparse population update.
-    /// # Returns:
-    /// - `u64`: Determinant index.
-    fn key(&self) -> u64 {
-        self.det
-    }
-}
-
-impl KeyedUpdate for AuxiliaryPopulationUpdate {
-    type Key = u64;
-
-    /// Return the flattened auxiliary determinant the residual amplitude applies to.
-    /// # Arguments:
-    /// - `self`: Sparse orthogonal population update.
-    /// # Returns:
-    /// - `u64`: Flattened auxiliary determinant index.
-    fn key(&self) -> u64 {
-        self.det
-    }
-}
-
-impl AuxiliaryPopulationUpdate {
-    /// Encode one sparse `\chi_D^P` update for MPI transport.
-    /// # Arguments:
-    /// - `det`: Deterministic flattened auxiliary identity of `D^P`.
-    /// - `dn`: Signed realised residual amplitude.
-    /// # Returns
-    /// - `Self`: MPI-safe orthogonal population update.
-    pub(crate) fn new(
-        det: AuxiliaryIndex,
-        dn: f64,
-    ) -> Self {
-        Self {
-            det: det.0 as u64,
-            dn,
-        }
-    }
-
-    /// Decode the determinant key of one sparse `\chi_D^P` update.
-    /// # Arguments:
-    /// - `self`: MPI-safe orthogonal population update.
-    /// # Returns
-    /// - `AuxiliaryIndex`: Flattened auxiliary determinant defining `D^P`.
-    pub(crate) fn index(&self) -> AuxiliaryIndex {
-        AuxiliaryIndex(self.det as usize)
-    }
-}
-
-impl FriAmplitude for AuxiliaryPopulationUpdate {
-    /// Return one orthogonal-space residual amplitude `\chi_D^P`.
-    /// # Arguments:
-    /// - `self`: Sparse orthogonal population update.
-    /// # Returns
-    /// - `f64`: Signed residual amplitude.
-    fn amplitude(&self) -> f64 {
-        self.dn
-    }
-
-    /// Replace one orthogonal-space residual amplitude `\chi_D^P`.
-    /// # Arguments:
-    /// - `self`: Sparse orthogonal population update.
-    /// - `amplitude`: Replacement signed residual amplitude.
-    /// # Returns
-    /// - `()`: Updates the stored amplitude.
-    fn set_amplitude(
-        &mut self,
-        amplitude: f64,
-    ) {
-        self.dn = amplitude;
-    }
-}
-
-/// Storage for heat-bath excitation related quantities.
-pub(in crate::noci::stochastic) struct HeatBath {
-    /// Total absolute coupling weight over all allowed children.
-    pub(in crate::noci::stochastic) sumxw: f64,
-    /// Cumulative absolute coupling weights used for inverse-CDF sampling.
-    pub(in crate::noci::stochastic) cumulatives: Vec<f64>,
-    /// Child determinant indices corresponding to the cumulative weights.
-    pub(in crate::noci::stochastic) lambdas: Vec<usize>,
-    /// Signed couplings associated with each child determinant.
-    pub(in crate::noci::stochastic) ks: Vec<f64>,
-}
-
-/// Reusable MPI scratch for walker-update collectives.
-pub(crate) type NOCIMPIScratch = ExchangeScratch<NOCIPopulationUpdate>;
-
-/// Reusable MPI scratch for parent-orthogonal residual collectives.
-pub(crate) type AuxiliaryMPIScratch = ExchangeScratch<AuxiliaryPopulationUpdate>;

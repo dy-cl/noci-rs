@@ -1,5 +1,9 @@
 // nocc/stochastic/propagate.rs
 
+// Standard library imports.
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
 // External crate imports.
 use mpi::topology::Communicator;
 use mpi::traits::*;
@@ -7,7 +11,6 @@ use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::determinant::DeterminantState;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{DetPair, HamiltonianOverlap, NOCIData, calculate_pairs};
 use crate::hash::FastMap;
@@ -15,71 +18,600 @@ use crate::input::JMNOCCMCOptions;
 use crate::mpiutils::all_reduce_array1;
 use crate::nocc::Effective;
 use crate::qmc::{
-    AliasTable, ExchangeScratch, QmcRng, coalesce, compress_sparse, exchange_to_owners,
-    gather_updates, owner_words, print_table_header, print_table_row, rank_seed, stop_requested,
-    stream, update_shift,
+    AliasTable, ExchangeScratch, PopulationUpdate, Propagator, QmcRng, Restart, basis_hash,
+    coalesce, compress_sparse, exchange_to_owners, gather_updates, owner_words, print_table_header,
+    print_table_row, rank_seed, read_restart, run, spawn_on_workers, stream, update_shift,
+    write_restart,
 };
 
 // Parent/sibling imports.
 use super::cluster::{collapse, coupling_combinations, select_cluster, select_coupling_cluster};
 use super::coupling::{left_action, project_cluster};
 use super::linked::linked_attempt;
-use super::population::{Block, Excitor, ExcitorState, ExcitorUpdate, ReferenceSpaces, rank};
-use super::state::JMTaskPropagation;
+use super::population::{Block, Excitor, ExcitorIndex, ReferenceSpaces, rank};
+use super::state::JMThreadPropagation;
 
-/// Smallest number of cluster attempts in one parallel task.
-const CHUNK: usize = 256;
+/// Kind of propagation recorded in, and required of, JM-NOCCMC restarts.
+const RESTARTKIND: &str = "jmnoccmc";
 
-/// Number of parallel tasks per block and kind on each Rayon thread, bounding the per-task
-/// spawn maps held at once.
-const TASKSPERTHREAD: usize = 4;
-
-/// Salt of the rank-local population-rounding stream.
-const ROUNDSALT: u64 = 0x8EBC6AF09C88C6E3;
-
-/// Multiplier giving each iteration its own excitor-to-rank assignment.
+/// Fixed odd stride of the report's excitor-to-rank assignment. Multiplication modulo `2^64`
+/// permutes report indices before the ownership hash; it is a stream-separation convention,
+/// independent of the physical model. Keep it stable so keyed restarts retain their assignment.
 const ASSIGNSTRIDE: u64 = 0xD1B54A32D192ED03;
 
-/// Salt of the rank-local spawn-compression stream.
-const SPAWNSALT: u64 = 0xA0761D6478BD642F;
-
-/// Kind of cluster attempts in one parallel task.
+/// One cluster attempt of a block: a linked attempt within its reference, or a coupling attempt
+/// projecting it onto the other references.
 #[derive(Clone, Copy)]
-enum Task {
-    /// Linked same-reference attempts on a block.
-    Linked(usize, usize),
-    /// Coupling attempts projecting a block onto the other references.
-    Coupling(usize, usize),
+enum Attempt {
+    /// Linked same-reference attempt on a block.
+    Linked(usize),
+    /// Coupling attempt projecting a block onto the other references.
+    Coupling(usize),
 }
 
-/// Rank owning an excitor during one iteration. The assignment is redrawn every iteration from
-/// a salt shared by all ranks, so that over the assignment any `s` excitors share a rank with
+/// The populations of one report, frozen through its cycles: the global reference populations,
+/// this rank's blocks, the scaled effective Hamiltonian and the attempts of every block.
+struct ReportView {
+    /// Global reference populations `N_z`.
+    nref: Vec<f64>,
+    /// This rank's view of every block.
+    blocks: Vec<Block>,
+    /// Effective Hamiltonian of the unnormalised correlated references, `\tilde G_{xy}`.
+    gt: Array2<f64>,
+    /// Cluster attempts of every block on this rank.
+    attempts: Vec<f64>,
+}
+
+/// Samples of one report, all taken from the same frozen population view.
+struct JMReport {
+    /// Reference populations, block selection tables, scaled G and attempt counts.
+    view: ReportView,
+    /// Effective overlap and Hamiltonian summed over the report's cycles.
+    effective: Effective,
+    /// Trial-projected energy numerator and denominator summed over the cycles.
+    projected: (f64, f64),
+    /// Linked spawns per unit time accumulated over the cycles.
+    spawns: FastMap<ExcitorIndex, f64>,
+    /// Weighted coupling projections accumulated over the cycles.
+    coupled: FastMap<ExcitorIndex, f64>,
+}
+
+/// Effective-matrix estimator carried between reports: G and the decaying sums defining it.
+struct EffectiveHistory {
+    /// Lagged effective Hamiltonian `G = \bar S^{-1}\bar H`.
+    lagged: Array2<f64>,
+    /// Running effective overlap and Hamiltonian sums with forgetting.
+    running: Effective,
+}
+
+/// Population-control history carried between reports.
+struct PopulationControl {
+    /// Population-control shift `E_s`.
+    shift: f64,
+    /// Whether the population has reached its target.
+    reached: bool,
+    /// Population norm after the previous report.
+    previous: f64,
+}
+
+/// One JM-NOCCMC run on this rank: the spaces and populations, the effective Hamiltonian and the
+/// shift carried between reports, and what the current report accumulates over its cycles.
+struct JMRun<'a, C> {
+    /// NOCI data over the reference determinants.
+    data: &'a NOCIData<'a, f64>,
+    /// MPI communicator.
+    world: &'a C,
+    /// JM-NOCCMC options.
+    options: &'a JMNOCCMCOptions,
+    /// Projection and expansion spaces of every reference block.
+    spaces: ReferenceSpaces,
+    /// Trial coefficients `c_z` of the projected energy.
+    trial: Vec<f64>,
+    /// Excitor populations owned by this rank, references included.
+    populations: FastMap<ExcitorIndex, f64>,
+    /// Base seed shared by every rank and this rank's seed.
+    seeds: (u64, u64),
+    /// First report of the run, after any restart.
+    first: usize,
+    /// Energy of the first reference, the zero of the reported shift.
+    e0: f64,
+    /// Effective-matrix estimator carried between reports.
+    effective: EffectiveHistory,
+    /// Population-control history carried between reports.
+    control: PopulationControl,
+    /// Samples of the current report, collected from its frozen population view.
+    report: JMReport,
+    /// Reusable spawns of one cycle.
+    merged: FastMap<ExcitorIndex, f64>,
+    /// Persistent per-thread workers.
+    workers: Vec<Mutex<JMThreadPropagation>>,
+    /// Population exchange scratch.
+    exchange: ExchangeScratch<PopulationUpdate>,
+    /// Projected-energy terms per cycle and population statistics of the last report.
+    row: ((f64, f64), (f64, f64, i64)),
+    /// Projected energy of the last report.
+    eproj: f64,
+}
+
+impl JMReport {
+    /// Start an empty report with one frozen population view.
+    /// # Arguments:
+    /// - `view`: Reference populations and selection tables shared by every cycle.
+    /// # Returns:
+    /// - `Self`: Zeroed effective matrices, projected-energy sums and spawn maps.
+    fn new(view: ReportView) -> Self {
+        let m = view.nref.len();
+
+        Self {
+            view,
+            effective: Effective::new(m),
+            projected: (0.0, 0.0),
+            spawns: FastMap::default(),
+            coupled: FastMap::default(),
+        }
+    }
+
+    /// Clear the completed report's samples and freeze the next population view.
+    /// # Arguments:
+    /// - `self`: Completed report after its population update.
+    /// - `view`: Population view for the next report.
+    /// # Returns:
+    /// - `()`: Retains the spawn-map allocations and starts zeroed matrix and energy sums.
+    fn start(
+        &mut self,
+        view: ReportView,
+    ) {
+        self.effective = Effective::new(view.nref.len());
+        self.projected = (0.0, 0.0);
+        self.spawns.clear();
+        self.coupled.clear();
+
+        self.view = view;
+    }
+}
+
+impl EffectiveHistory {
+    /// Accumulate `\bar S \leftarrow \lambda\bar S + S^e` and likewise for H, then refresh
+    /// `G = \bar S^{-1}\bar H` when the running overlap is invertible.
+    /// # Arguments:
+    /// - `self`: Effective-matrix estimator carried between reports.
+    /// - `block`: Summed effective matrices of the completed report.
+    /// - `memory`: Forgetting time, with `\lambda = 1 - 1/\text{memory}`.
+    /// # Returns:
+    /// - `()`: Retains the previous G if the running overlap is singular.
+    fn update(
+        &mut self,
+        block: &Effective,
+        memory: f64,
+    ) {
+        self.running.scale(1.0 - 1.0 / memory);
+        self.running.add(block);
+
+        if let Some(g) = self.running.g() {
+            self.lagged = g;
+        }
+    }
+}
+
+impl<'a, C: Communicator> JMRun<'a, C> {
+    /// Start a run from the reference NOCI coefficients and print the report header.
+    /// # Arguments:
+    /// - `data`: NOCI data over the reference determinants.
+    /// - `options`: JM-NOCCMC options with stochastic settings.
+    /// - `c0`: Reference NOCI coefficients setting the initial reference populations.
+    /// - `shift`: Initial population-control shift.
+    /// - `world`: MPI communicator.
+    /// # Returns:
+    /// - `Self`: Run at its first report.
+    /// # Panics
+    /// - Panics if the stochastic options are absent or the reference overlap is singular.
+    fn new(
+        data: &'a NOCIData<'a, f64>,
+        options: &'a JMNOCCMCOptions,
+        c0: &[f64],
+        shift: f64,
+        world: &'a C,
+    ) -> Self {
+        let qmc = options
+            .qmc
+            .as_ref()
+            .expect("jmnoccmc.qmc options are required");
+        let irank = world.rank() as usize;
+        let nranks = world.size() as usize;
+        let m = data.space.len();
+
+        // A restart's populations are those this rank owns under the next report's assignment.
+        let identity = (RESTARTKIND, basis_hash(data.space));
+        let restart = data.input.write.read_restart.as_deref().map(|path| {
+            if irank == 0 {
+                println!("Reading restart from {path}");
+            }
+
+            // A saved report has already exchanged its populations to the next assignment.
+            let owns = |index: u64, (report, base): (usize, u64)| {
+                let next = base ^ ((report + 1) as u64).wrapping_mul(ASSIGNSTRIDE);
+                owner(ExcitorIndex(index as usize), next, nranks) == irank
+            };
+
+            read_restart(path, identity, owns, world).unwrap()
+        });
+
+        // One base seed for every rank, from which the shared assignments and the rank streams
+        // follow; a restart keeps its own.
+        let base = match &restart {
+            Some(restart) => restart.seed,
+            None => {
+                let mut base = qmc.seed.unwrap_or_else(rand::random);
+                world.process_at_rank(0).broadcast_into(&mut base);
+                base
+            }
+        };
+
+        // Fixed spaces of every block, which also index their excitors.
+        let spaces = ReferenceSpaces::new(data, options);
+        let local = rank_seed(base, irank);
+
+        // Initial reference populations from the NOCI coefficients and the exact effective
+        // Hamiltonian of uncorrelated references, `G = S^{-1}H`.
+        let (trial, mut populations) =
+            initial_populations(&spaces, c0, qmc.initial_population, (base, irank, nranks));
+        let uncorrelated = uncorrelated_effective(data, &spaces);
+        let mut effective = EffectiveHistory {
+            lagged: uncorrelated.g().expect("singular reference overlap"),
+            running: Effective::new(m),
+        };
+        let local_norm = populations.values().map(|n: &f64| n.abs()).sum::<f64>();
+        let mut control = PopulationControl {
+            shift,
+            reached: false,
+            previous: all_reduce_array1(world, Array1::from_vec(vec![local_norm]))[0],
+        };
+        let mut first = 0;
+
+        // A restart replaces them with the saved populations, shift and effective sums.
+        if let Some(restart) = restart {
+            populations = restart
+                .populations
+                .iter()
+                .map(|u| (ExcitorIndex(u.index as usize), u.dn))
+                .collect();
+
+            // Restore the running matrix estimator before building the first frozen view.
+            let matrix = |values: &[f64]| Array2::from_shape_vec((m, m), values.to_vec()).unwrap();
+            let sums = &restart.values["running"];
+            effective.running = Effective {
+                se: matrix(&sums[..m * m]),
+                he: matrix(&sums[m * m..]),
+            };
+            effective.lagged = matrix(&restart.values["lagged"]);
+
+            // The controller resumes with its saved shift and previous global population norm.
+            control = PopulationControl {
+                shift: restart.shift,
+                reached: restart.reached,
+                previous: restart.values["previous"][0],
+            };
+            first = restart.report + 1;
+        }
+
+        print_table_header(irank, ["NWalk", "NRef", "-", "NExcitors"]);
+
+        // The first report's view, from the populations in index order.
+        let mut sorted = populations
+            .iter()
+            .map(|(&key, &n)| (key, n))
+            .collect::<Vec<_>>();
+        sorted.par_sort_unstable_by_key(|&(key, _)| key);
+
+        Self {
+            data,
+            world,
+            options,
+            report: JMReport::new(report_view(&spaces, &sorted, &effective.lagged, world)),
+            spaces,
+            trial,
+            populations,
+            seeds: (base, local),
+            first,
+            e0: uncorrelated.he[(0, 0)],
+            effective,
+            control,
+            merged: FastMap::default(),
+            workers: (0..rayon::current_num_threads())
+                .map(|tid| Mutex::new(JMThreadPropagation::new(m, local ^ tid as u64)))
+                .collect(),
+            exchange: ExchangeScratch::new(nranks),
+            row: ((0.0, 0.0), (0.0, 0.0, 0)),
+            eproj: f64::NAN,
+        }
+    }
+}
+
+impl<C: Communicator> Propagator for JMRun<'_, C> {
+    /// Run one cycle of linked and coupling attempts on the frozen populations, accumulating its
+    /// spawns, coupling projections, energies and effective elements over the report.
+    /// # Arguments:
+    /// - `self`: JM-NOCCMC run.
+    /// - `iteration`: Global iteration of the cycle.
+    /// # Returns
+    /// - `()`: Accumulates the cycle into the report.
+    fn cycle(
+        &mut self,
+        iteration: usize,
+    ) {
+        let m = self.spaces.references.len();
+        let view = &self.report.view;
+
+        // Linked and coupling attempts per unit time, with the cycle's energies and effective
+        // elements.
+        run_attempts(
+            self.data,
+            &self.spaces,
+            &view.blocks,
+            (&view.attempts, self.world.size() as f64),
+            (self.seeds.1, iteration),
+            &mut self.workers,
+        );
+        let sums = sum_workers(&mut self.workers, m, &mut self.merged);
+
+        // Add this cycle's linked changes to the report before sampling the next cycle.
+        for (&key, &dn) in &self.merged {
+            *self.report.spawns.entry(key).or_insert(0.0) += dn;
+        }
+
+        // `\sum_{x \ne y}\tilde G_{xy}q^x_y(\nu)` keyed by block `y` and row `\nu`.
+        for worker in self.workers.iter_mut() {
+            let worker = worker.get_mut().unwrap();
+            for y in 0..m {
+                for x in (0..m).filter(|&x| x != y) {
+                    for (&(alpha, beta), &v) in &worker.projections.q[y][x] {
+                        let key = self.spaces.index(y, (alpha, beta));
+                        *self.report.coupled.entry(key).or_insert(0.0) += view.gt[(x, y)] * v;
+                    }
+                }
+            }
+        }
+
+        // Sum the cycle's effective overlap and Hamiltonian over ranks, normalised by `N_x`.
+        let sums = all_reduce_array1(self.world, Array1::from_vec(sums)).to_vec();
+        let nref = &view.nref;
+
+        // Projected energy onto the fixed trial `\langle\Psi_T| = \sum_z c_z\langle{}^z\Psi|`:
+        // `\sum_z c_z\sum_x\langle{}^z\Psi|\hat H|\tilde\Phi_x\rangle` over
+        // `\sum_z c_z\sum_x\langle{}^z\Psi|\tilde\Phi_x\rangle`.
+        for z in 0..m {
+            self.report.projected.0 += self.trial[z] * sums[z];
+            self.report.projected.1 += self.trial[z] * nref[z];
+            for x in (0..m).filter(|&x| x != z) {
+                self.report.projected.0 += self.trial[z] * sums[m + m * m + z * m + x];
+                self.report.projected.1 += self.trial[z] * sums[m + z * m + x];
+            }
+        }
+
+        // This cycle's `S^e_{yx}` and `H^e_{yx}` per unit `N_x`, added to the report block.
+        for x in 0..m {
+            self.report.effective.se[(x, x)] += 1.0;
+            self.report.effective.he[(x, x)] += sums[x] / nref[x];
+            for y in (0..m).filter(|&y| y != x) {
+                self.report.effective.se[(y, x)] += sums[m + y * m + x] / nref[x];
+                self.report.effective.he[(y, x)] += sums[m + m * m + y * m + x] / nref[x];
+            }
+        }
+    }
+
+    /// Apply the report's accumulated spawns and coupling with the death term as one step of
+    /// `n_\text{cyc}\Delta\tau`, move the populations to the next assignment, and update the
+    /// lagged `G` and the shift.
+    /// # Arguments:
+    /// - `self`: JM-NOCCMC run.
+    /// - `report`: Report ending with this step.
+    /// # Returns
+    /// - `()`: Advances the populations and prepares the next report's view.
+    fn step(
+        &mut self,
+        report: usize,
+    ) {
+        let qmc = self.options.qmc.as_ref().unwrap();
+        let dt = self.options.dt;
+        let m = self.spaces.references.len();
+
+        // The coupling of the report's summed projections joins the spawns.
+        if m > 1 {
+            spawn_coupling(
+                &self.report.view.blocks,
+                &self.spaces,
+                (self.world, &mut self.exchange),
+                &self.report.coupled,
+                &mut self.report.spawns,
+            );
+        }
+
+        // Annihilate this rank's spawns of the report and round small ones stochastically.
+        let mut updates = self
+            .report
+            .spawns
+            .iter()
+            .map(|(&key, &dn)| PopulationUpdate {
+                index: key.0 as u64,
+                dn: dt * dn,
+            })
+            .collect::<Vec<_>>();
+        updates.par_sort_unstable_by_key(|u| u.index);
+        coalesce(&mut updates);
+
+        // A fixed stream-family label separates spawn compression from population rounding.
+        // Its value is an RNG convention, shared with the NOCIQMC compression stream, and is
+        // kept stable for seeded trajectories and restarts.
+        let mut rng = stream(self.seeds.1, 0xA0761D6478BD642F, report as u64);
+        compress_sparse(&mut updates, qmc.fri.spawn_cutoff, &mut rng);
+
+        // Fixed-point-preserving death `-n_\text{cyc}\Delta\tau(g_x-E_s)n` on every owned
+        // population, the report's step of the frozen populations.
+        let growth = (0..m)
+            .map(|x| self.report.view.gt.row(x).sum())
+            .collect::<Vec<_>>();
+        let step = qmc.ncycles as f64 * dt;
+
+        for (&key, n) in self.populations.iter_mut() {
+            *n *= 1.0 - step * (growth[self.spaces.block(key)] - self.control.shift);
+        }
+
+        // Spawns and populations to their owners under the next report's assignment, annihilation,
+        // then rounding of small excitors.
+        exchange_populations(
+            &mut self.populations,
+            updates,
+            self.seeds.0 ^ ((report + 1) as u64).wrapping_mul(ASSIGNSTRIDE),
+            (self.world, &mut self.exchange),
+        );
+        round_populations(
+            &mut self.populations,
+            &self.spaces,
+            qmc.fri.population_cutoff,
+            // Use the rounding family's stream, separate from spawn compression above.
+            stream(self.seeds.1, 0x8EBC6AF09C88C6E3, report as u64),
+        );
+
+        // Lagged effective Hamiltonian from the running sums with forgetting.
+        self.effective
+            .update(&self.report.effective, self.options.memory_effective);
+
+        // Population statistics over every rank and the shift update, summed in index order so
+        // they do not depend on the layout of the population map.
+        let mut sorted = self
+            .populations
+            .iter()
+            .map(|(&key, &n)| (key, n))
+            .collect::<Vec<_>>();
+        sorted.par_sort_unstable_by_key(|&(key, _)| key);
+        let stats = population_stats(&sorted, &self.spaces, self.world);
+        update_shift(
+            &mut self.control.shift,
+            &mut self.control.reached,
+            (stats.0, self.control.previous),
+            (qmc.target_population, qmc.population_restoring),
+            Some(qmc.shift_damping / (dt * qmc.ncycles as f64)),
+        );
+        self.control.previous = stats.0;
+
+        // Keep the report's row, averaged over its cycles, then start the next report.
+        let cycles = qmc.ncycles as f64;
+        self.eproj = self.report.projected.0 / self.report.projected.1;
+        self.row = (
+            (
+                self.report.projected.0 / cycles,
+                self.report.projected.1 / cycles,
+            ),
+            stats,
+        );
+
+        self.report.start(report_view(
+            &self.spaces,
+            &sorted,
+            &self.effective.lagged,
+            self.world,
+        ));
+    }
+
+    /// Write the owned populations, the shift and the effective sums and lagged `G` carried to
+    /// the next report.
+    /// # Arguments:
+    /// - `self`: JM-NOCCMC run.
+    /// - `report`: Last completed report.
+    /// # Returns
+    /// - `()`: Writes the restart file.
+    fn write_restart(
+        &mut self,
+        report: usize,
+    ) {
+        let populations = self
+            .populations
+            .iter()
+            .map(|(&key, &n)| PopulationUpdate {
+                index: key.0 as u64,
+                dn: n,
+            })
+            .collect();
+        // Preserve both the decaying S/H sums and the last invertible G, since a singular
+        // next block must retain that G after a restart just as in an uninterrupted run.
+        let running = &self.effective.running;
+        let values = BTreeMap::from([
+            ("previous".to_string(), vec![self.control.previous]),
+            (
+                "running".to_string(),
+                running
+                    .se
+                    .iter()
+                    .chain(running.he.iter())
+                    .copied()
+                    .collect(),
+            ),
+            (
+                "lagged".to_string(),
+                self.effective.lagged.iter().copied().collect(),
+            ),
+        ]);
+        let restart = Restart {
+            report,
+            shift: self.control.shift,
+            reached: self.control.reached,
+            seed: self.seeds.0,
+            populations,
+            values,
+            histogram: None,
+        };
+
+        let path = self.data.input.write.write_restart.as_deref();
+        let identity = (RESTARTKIND, basis_hash(self.data.space));
+        write_restart(path.unwrap_or("RESTART.H5"), identity, &restart, self.world).unwrap();
+    }
+
+    /// Print the report's populations, projected-energy terms and shift.
+    /// # Arguments:
+    /// - `self`: JM-NOCCMC run.
+    /// - `end`: Iteration count at the end of the report.
+    /// # Returns
+    /// - `()`: Prints one row on the root rank.
+    fn print_row(
+        &self,
+        end: usize,
+    ) {
+        let (energy, (total, nref, nexcitors)) = self.row;
+        print_table_row(
+            self.world.rank() as usize,
+            end,
+            energy,
+            (
+                self.e0,
+                if self.control.reached {
+                    self.control.shift
+                } else {
+                    0.0
+                },
+            ),
+            (total, nref, None, Some(nexcitors)),
+        );
+    }
+}
+
+/// Rank owning an excitor during one report. The assignment is redrawn every report from a salt
+/// shared by all ranks, so that over the assignment any `s` excitors share a rank with
 /// probability `P^{-(s-1)}`.
 /// # Arguments:
 /// - `key`: Excitor.
-/// - `assignment`: Salt of the iteration's assignment.
+/// - `assignment`: Salt of the report's assignment.
 /// - `nranks`: Number of ranks `P`.
 /// # Returns:
 /// - `usize`: Owning rank.
 fn owner(
-    key: &ExcitorState,
+    key: ExcitorIndex,
     assignment: u64,
     nranks: usize,
 ) -> usize {
     if nranks == 1 {
         return 0;
     }
-    owner_words(
-        &[
-            assignment,
-            key.0 as u64,
-            key.1 as u64,
-            (key.1 >> 64) as u64,
-            key.2 as u64,
-            (key.2 >> 64) as u64,
-        ],
-        nranks,
-    )
+    owner_words(&[assignment, key.0 as u64], nranks)
 }
 
 /// Build the per-step view of every block from this rank's populations, with excitors in key
@@ -87,19 +619,17 @@ fn owner(
 /// clusters.
 /// # Arguments:
 /// - `spaces`: Projection and expansion spaces of every reference block.
-/// - `populations`: Excitor populations owned by this rank, references included.
+/// - `populations`: Excitor populations owned by this rank, references included, by index.
 /// - `nref`: Global reference populations `N_z`.
 /// - `ranks`: Number of ranks `P` holding the distributed excitors.
 /// # Returns:
 /// - `Vec<Block>`: Block populations of this rank.
 fn blocks(
     spaces: &ReferenceSpaces,
-    populations: &FastMap<ExcitorState, f64>,
+    populations: &[(ExcitorIndex, f64)],
     nref: &[f64],
     ranks: f64,
 ) -> Vec<Block> {
-    let mut keys = populations.keys().copied().collect::<Vec<_>>();
-    keys.par_sort_unstable();
     let mut out = spaces
         .references
         .iter()
@@ -107,17 +637,15 @@ fn blocks(
         .map(|(reference, &nref)| (*reference, nref, Vec::new()))
         .collect::<Vec<_>>();
 
-    for key in keys {
-        let (reference, _, excitors) = &mut out[key.0];
-        let det = DeterminantState {
-            parent: reference.parent,
-            alpha: key.1,
-            beta: key.2,
-        };
-        if det != *reference {
-            excitors.push((Excitor::new(reference, det), populations[&key]));
-        }
+    for &(key, n) in populations
+        .iter()
+        .filter(|&&(key, _)| !spaces.is_reference(key))
+    {
+        let (reference, _, excitors) = &mut out[spaces.block(key)];
+        excitors.push((Excitor::new(reference, spaces.determinant(key)), n));
     }
+
+    // Build the linked and even-selection alias tables from these same frozen populations.
     out.into_iter()
         .map(|(reference, nref, excitors)| {
             let weights = excitors.iter().map(|(_, n)| n.abs()).collect::<Vec<_>>();
@@ -149,78 +677,6 @@ fn blocks(
         .collect()
 }
 
-/// Run one parallel task of cluster attempts, queueing their matrix elements and resolving them
-/// in one batch at the end.
-/// # Arguments:
-/// - `data`: NOCI data holding the parent frames, MO caches and Wick intermediates.
-/// - `spaces`: Projection and expansion spaces of every reference block.
-/// - `blocks`: Block populations of this rank.
-/// - `task`: Task kind with its block and number of attempts.
-/// - `attempts`: Attempts of the task's block on this rank and the number of ranks.
-/// - `rng`: Task random-number generator.
-/// - `out`: Reusable task storage receiving the population changes and projections.
-/// # Returns:
-/// - `()`: Overwrites `out` with the task's results.
-fn run_task(
-    data: &NOCIData<'_, f64>,
-    spaces: &ReferenceSpaces,
-    blocks: &[Block],
-    task: Task,
-    attempts: (f64, f64),
-    mut rng: QmcRng,
-    out: &mut JMTaskPropagation,
-) {
-    let (attempts, ranks) = attempts;
-    out.clear();
-
-    match task {
-        Task::Linked(z, count) => {
-            let smax = 4.min(spaces.cluster_rank + 2);
-            for _ in 0..count {
-                let weight = select_cluster(
-                    &blocks[z],
-                    smax,
-                    attempts,
-                    ranks,
-                    &mut rng,
-                    &mut out.excitors,
-                );
-                linked_attempt(
-                    spaces,
-                    z,
-                    (&out.excitors, weight),
-                    &mut rng,
-                    &mut out.linked_requests,
-                );
-            }
-            out.resolve_linked(data);
-        }
-        Task::Coupling(x, count) => {
-            for _ in 0..count {
-                let weight =
-                    select_coupling_cluster(&blocks[x], attempts, &mut rng, &mut out.excitors);
-                if weight == 0.0 {
-                    continue;
-                }
-                let Some((det, sign)) = collapse(&spaces.references[x], &out.excitors) else {
-                    continue;
-                };
-                if rank(&spaces.references[x], &det) > spaces.expansion_rank {
-                    continue;
-                }
-                project_cluster(
-                    &spaces.rows,
-                    x,
-                    (det, weight * sign),
-                    &mut rng,
-                    (&mut out.coupling_clusters, &mut out.coupling_requests),
-                );
-            }
-            out.resolve_coupling(data, spaces);
-        }
-    }
-}
-
 /// Trial and initial populations: the reference NOCI coefficients normalised to
 /// `\sum_z|c_z| = 1`, or uniform coefficients without them, set the trial and, scaled by the
 /// initial population, the reference populations on their owning ranks.
@@ -230,13 +686,13 @@ fn run_task(
 /// - `initial`: Initial population.
 /// - `ownership`: Salt of the first assignment, this rank and the number of ranks.
 /// # Returns:
-/// - `(Vec<f64>, FastMap<ExcitorState, f64>)`: Trial coefficients and this rank's populations.
+/// - `(Vec<f64>, FastMap<ExcitorIndex, f64>)`: Trial coefficients and this rank's populations.
 fn initial_populations(
     spaces: &ReferenceSpaces,
     c0: &[f64],
     initial: f64,
     ownership: (u64, usize, usize),
-) -> (Vec<f64>, FastMap<ExcitorState, f64>) {
+) -> (Vec<f64>, FastMap<ExcitorIndex, f64>) {
     let (assignment, irank, nranks) = ownership;
     let m = spaces.references.len();
 
@@ -255,8 +711,8 @@ fn initial_populations(
     // Reference populations `N_z = N_0 c_z` on the ranks owning them, with no excitors.
     let mut populations = FastMap::default();
     for (z, reference) in spaces.references.iter().enumerate() {
-        let key = (z, reference.alpha, reference.beta);
-        if owner(&key, assignment, nranks) == irank {
+        let key = spaces.index(z, (reference.alpha, reference.beta));
+        if owner(key, assignment, nranks) == irank {
             populations.insert(key, initial * trial[z]);
         }
     }
@@ -309,101 +765,157 @@ fn uncorrelated_effective(
     effective
 }
 
-/// Run one step's cluster attempts. Each block's attempts are divided into linked and, with
-/// several references, coupling tasks of at least `CHUNK` attempts, at most `TASKSPERTHREAD`
-/// per Rayon thread, and each task runs on its own random stream into its reusable storage.
+/// Run one cycle's cluster attempts on the persistent per-thread workers: one linked attempt per
+/// unit of each block's attempts and, between references, as many coupling attempts, each found
+/// from its index without a list of attempts. Each worker draws from the stream of its thread and
+/// queues its attempts' matrix elements, flushing full queues after each attempt.
 /// # Arguments:
 /// - `data`: NOCI data holding the parent frames, MO caches and Wick intermediates.
 /// - `spaces`: Projection and expansion spaces of every reference block.
-/// - `current`: Block populations of this rank.
+/// - `blocks`: Block populations of this rank.
 /// - `attempts`: Attempts of every block on this rank and the number of ranks.
-/// - `seed`: Rank-local seed and iteration selecting the task streams.
-/// - `workers`: Reusable task storage, grown to the number of tasks.
+/// - `seed`: Rank-local seed and iteration of the cycle's streams.
+/// - `workers`: Persistent per-thread workers.
 /// # Returns:
-/// - `usize`: Number of tasks, whose results are in the leading `workers`.
-fn run_tasks(
+/// - `()`: Leaves every worker's spawns, energies and projections in the worker.
+fn run_attempts(
     data: &NOCIData<'_, f64>,
     spaces: &ReferenceSpaces,
-    current: &[Block],
+    blocks: &[Block],
     attempts: (&[f64], f64),
     seed: (u64, usize),
-    workers: &mut Vec<JMTaskPropagation>,
-) -> usize {
+    workers: &mut [Mutex<JMThreadPropagation>],
+) {
     let (attempts, ranks) = attempts;
-    let (local, iteration) = seed;
-    let m = current.len();
 
-    // Chunks of each block's attempts, one linked and, between references, one coupling task
-    // per chunk.
-    let threads = rayon::current_num_threads();
-    let mut tasks = Vec::new();
-    for (z, &a) in attempts.iter().enumerate() {
-        let a = a as usize;
-        let chunk = CHUNK.max(a.div_ceil(TASKSPERTHREAD * threads));
-        for start in (0..a).step_by(chunk) {
-            let count = chunk.min(a - start);
-            tasks.push(Task::Linked(z, count));
-            if m > 1 {
-                tasks.push(Task::Coupling(z, count));
-            }
+    // Item `k` is the attempt whose kind and block start before it in the cumulative counts:
+    // every block's linked attempts, then, between references, its coupling attempts.
+    let kinds = if blocks.len() > 1 { 2 } else { 1 };
+    let mut ends = Vec::with_capacity(kinds * attempts.len());
+    let mut total = 0;
+
+    for &a in attempts {
+        for _ in 0..kinds {
+            total += a as usize;
+            ends.push(total);
         }
     }
 
-    // Storage for every task, kept between steps.
-    if workers.len() < tasks.len() {
-        workers.resize_with(tasks.len(), || JMTaskPropagation::new(m));
-    }
+    // Decode an item without materialising the potentially large list of cluster attempts.
+    let attempt = |item: usize| {
+        let slot = ends.partition_point(|&end| end <= item);
+        match slot % kinds {
+            0 => Attempt::Linked(slot / kinds),
+            _ => Attempt::Coupling(slot / kinds),
+        }
+    };
 
-    // Each task draws from the stream of its iteration and index, so the results do not
-    // depend on the thread that runs it.
-    tasks
-        .par_iter()
-        .zip(workers.par_iter_mut())
-        .enumerate()
-        .for_each(|(k, (&task, worker))| {
-            let z = match task {
-                Task::Linked(z, _) | Task::Coupling(z, _) => z,
-            };
-            let rng = stream(local, (iteration as u64) << 32, k as u64);
-            run_task(
-                data,
-                spaces,
-                current,
-                task,
-                (attempts[z], ranks),
-                rng,
-                worker,
-            );
-        });
+    // The linked expansion has at most four Hamiltonian commutators and the projection rank
+    // limits the cluster sizes that can contribute to the sampled residual.
+    let smax = 4.min(spaces.cluster_rank + 2);
 
-    tasks.len()
+    // Linked attempts queue same-reference elements and coupling attempts queue projections onto
+    // the other references; a full queue is resolved at once, and the rest after the cycle.
+    spawn_on_workers(
+        total,
+        seed,
+        workers,
+        (
+            |worker: &mut JMThreadPropagation, item| {
+                match attempt(item) {
+                    Attempt::Linked(z) => {
+                        // Select excitors from this rank's block and include the inverse
+                        // selection probability and rank-assignment weight in the cluster.
+                        let weight = select_cluster(
+                            &blocks[z],
+                            smax,
+                            attempts[z],
+                            ranks,
+                            &mut worker.rng,
+                            &mut worker.excitors,
+                        );
+
+                        // Queue the connected commutator contributions to `N_z H^e_{zz}` and
+                        // `N_z R_{z\mu}`; the worker evaluates their matrix elements together.
+                        linked_attempt(
+                            spaces,
+                            z,
+                            (&worker.excitors, weight),
+                            &mut worker.rng,
+                            &mut worker.linked_requests,
+                        );
+                    }
+                    Attempt::Coupling(x) => {
+                        // The even cluster selection estimates
+                        // `|\Phi_x\rangle = e^{\hat T_x}|{}^x\Psi\rangle`.
+                        let weight = select_coupling_cluster(
+                            &blocks[x],
+                            attempts[x],
+                            &mut worker.rng,
+                            &mut worker.excitors,
+                        );
+
+                        // Empty selections or Pauli-forbidden collapsed clusters contribute zero.
+                        if weight == 0.0 {
+                            return;
+                        }
+
+                        let Some((det, sign)) = collapse(&spaces.references[x], &worker.excitors)
+                        else {
+                            return;
+                        };
+
+                        if rank(&spaces.references[x], &det) > spaces.expansion_rank {
+                            return;
+                        }
+
+                        // Sample projections `q_y^x(\nu)` on the other references' rows.
+                        // Their weighted sum is acted on by `e^{-\hat T_y}` once per report.
+                        project_cluster(
+                            &spaces.rows,
+                            x,
+                            (det, weight * sign),
+                            &mut worker.rng,
+                            (&mut worker.coupling_clusters, &mut worker.coupling_requests),
+                        );
+                    }
+                }
+
+                // Finish the whole attempt before enforcing the worker's queue watermark.
+                worker.resolve_if_full(data, spaces);
+            },
+            |worker: &mut JMThreadPropagation| {
+                // Flush the final partial queues after all items assigned to this worker.
+                worker.resolve_linked(data);
+                worker.resolve_coupling(data, spaces);
+            },
+        ),
+    );
 }
 
-/// Combine the tasks in order: spawns per unit time are summed per excitor into `merged`, and
+/// Combine the workers in order: spawns per unit time are summed per excitor into `merged`, and
 /// the block energies `N_zH^e_{zz}` and effective elements `N_xS^e_{yx}` and `N_xH^e_{yx}` into
 /// one vector `[N_zH^e_{zz}, N_xS^e_{yx}, N_xH^e_{yx}]` to be summed over ranks.
 /// # Arguments:
-/// - `workers`: Storage of the step's tasks.
+/// - `workers`: Persistent per-thread workers after a cycle.
 /// - `m`: Number of references.
 /// - `merged`: Reusable map receiving the summed spawns.
 /// # Returns:
 /// - `Vec<f64>`: This rank's energies and effective elements, `m + 2m^2` values.
-fn sum_tasks(
-    workers: &[JMTaskPropagation],
+fn sum_workers(
+    workers: &mut [Mutex<JMThreadPropagation>],
     m: usize,
-    merged: &mut FastMap<ExcitorState, f64>,
+    merged: &mut FastMap<ExcitorIndex, f64>,
 ) -> Vec<f64> {
-    // Spawns of every task, summed per excitor.
+    // Spawns summed per excitor, then energies in the first `m` entries and `S^e` and `H^e` row
+    // by row.
     merged.clear();
-    for worker in workers {
+    let mut sums = vec![0.0; m + 2 * m * m];
+    for worker in workers.iter_mut() {
+        let worker = worker.get_mut().unwrap();
         for (&key, &dn) in &worker.spawns {
             *merged.entry(key).or_insert(0.0) += dn;
         }
-    }
-
-    // Energies in the first `m` entries, then `S^e` and `H^e` row by row.
-    let mut sums = vec![0.0; m + 2 * m * m];
-    for worker in workers {
         for (e, v) in sums[..m].iter_mut().zip(&worker.energy) {
             *e += v;
         }
@@ -420,75 +932,56 @@ fn sum_tasks(
 
 /// Spawn the coupling between references,
 /// `-\sum_{x \ne y}G_{xy}\langle{}^y\Psi|\hat\tau_{y\mu}^\dagger e^{-\hat T_y}|\Phi_x\rangle`
-/// for every excitor `\mu` of every block `y`, scaled by `N_y`. The sampled projections
-/// `q^x_y(\nu) = N_x\langle D_\nu|\Phi_x\rangle` of every task are weighted by
-/// `\tilde G_{xy} = G_{xy}N_y/N_x` and summed per row `\nu`, completed over ranks, and acted on
-/// from the left by `e^{-\hat T_y}` with this rank's excitors of `y`.
+/// for every excitor `\mu` of every block `y`, scaled by `N_y`. The report's projections
+/// `\sum_{x \ne y}\tilde G_{xy}q^x_y(\nu)`, summed over its cycles per row `\nu`, are completed
+/// over ranks and acted on from the left by `e^{-\hat T_y}` with this rank's excitors of `y`.
 /// # Arguments:
-/// - `workers`: Storage of the step's tasks.
-/// - `gt`: Scaled effective Hamiltonian `\tilde G`.
 /// - `current`: Block populations of this rank.
 /// - `spaces`: Projection and expansion spaces of every reference block.
 /// - `comm`: MPI communicator and exchange scratch.
-/// - `coupled`: Reusable map of this rank's weighted projections.
+/// - `coupled`: This rank's weighted projections of the report.
 /// - `merged`: Spawns per unit time, receiving the coupling.
 /// # Returns:
 /// - `()`: Adds the coupling to `merged`.
 fn spawn_coupling<C: Communicator>(
-    workers: &[JMTaskPropagation],
-    gt: &Array2<f64>,
     current: &[Block],
     spaces: &ReferenceSpaces,
-    comm: (&C, &mut ExchangeScratch<ExcitorUpdate>),
-    coupled: &mut FastMap<ExcitorState, f64>,
-    merged: &mut FastMap<ExcitorState, f64>,
+    comm: (&C, &mut ExchangeScratch<PopulationUpdate>),
+    coupled: &FastMap<ExcitorIndex, f64>,
+    merged: &mut FastMap<ExcitorIndex, f64>,
 ) {
     let (world, exchange) = comm;
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
-    let m = current.len();
-
-    // `\sum_{x \ne y}\tilde G_{xy}q^x_y(\nu)` keyed by block `y` and row `\nu`.
-    coupled.clear();
-    for worker in workers {
-        for y in 0..m {
-            for x in (0..m).filter(|&x| x != y) {
-                for (&(alpha, beta), &v) in &worker.projections.q[y][x] {
-                    *coupled.entry((y, alpha, beta)).or_insert(0.0) += gt[(x, y)] * v;
-                }
-            }
-        }
-    }
 
     // Every rank needs the complete projection, since its excitors of `y` act on all rows.
     let q = coupled
         .iter()
-        .map(|(&key, &v)| ExcitorUpdate::new(key, v))
+        .map(|(&key, &dn)| PopulationUpdate {
+            index: key.0 as u64,
+            dn,
+        })
         .collect::<Vec<_>>();
     let mut q = if nranks > 1 {
         gather_updates(world, &q, exchange).to_vec()
     } else {
         q
     };
-    q.par_sort_unstable_by_key(|u| u.excitor());
+    q.par_sort_unstable_by_key(|u| u.index);
     coalesce(&mut q);
 
     // Left action of `e^{-\hat T_y}` on the rows of each block, added to the spawns.
     for (y, b) in current.iter().enumerate() {
         let entries = q
             .iter()
-            .map(|u| u.excitor())
-            .zip(q.iter().map(|u| u.dn))
-            .filter(|((block, _, _), _)| *block == y)
-            .map(|((_, alpha, beta), v)| ((alpha, beta), v))
+            .map(|u| (ExcitorIndex(u.index as usize), u.dn))
+            .filter(|&(key, _)| spaces.block(key) == y)
+            .map(|(key, dn)| {
+                let det = spaces.determinant(key);
+                ((det.alpha, det.beta), dn)
+            })
             .collect::<Vec<_>>();
-        for (key, dn) in left_action(
-            b,
-            y,
-            &entries,
-            spaces.cluster_rank,
-            (nranks as f64, irank == 0),
-        ) {
+        for (key, dn) in left_action(b, y, &entries, spaces, (nranks as f64, irank == 0)) {
             *merged.entry(key).or_insert(0.0) += dn;
         }
     }
@@ -505,10 +998,10 @@ fn spawn_coupling<C: Communicator>(
 /// # Returns:
 /// - `()`: Updates `populations` in place.
 fn exchange_populations<C: Communicator>(
-    populations: &mut FastMap<ExcitorState, f64>,
-    updates: Vec<ExcitorUpdate>,
+    populations: &mut FastMap<ExcitorIndex, f64>,
+    updates: Vec<PopulationUpdate>,
     next: u64,
-    comm: (&C, &mut ExchangeScratch<ExcitorUpdate>),
+    comm: (&C, &mut ExchangeScratch<PopulationUpdate>),
 ) {
     let (world, exchange) = comm;
     let irank = world.rank() as usize;
@@ -519,21 +1012,25 @@ fn exchange_populations<C: Communicator>(
         // Route every spawn to the next owner of its excitor.
         exchange.send_ranked.clear();
         for update in updates {
-            let peer = owner(&update.excitor(), next, nranks);
+            let peer = owner(ExcitorIndex(update.index as usize), next, nranks);
             exchange.send_ranked.push((peer, update));
         }
 
         // Move the populations whose excitor changes owner under the next assignment.
         let moving = populations
             .keys()
-            .filter(|key| owner(key, next, nranks) != irank)
+            .filter(|&&key| owner(key, next, nranks) != irank)
             .copied()
             .collect::<Vec<_>>();
         for key in moving {
             let n = populations.remove(&key).unwrap();
+            let update = PopulationUpdate {
+                index: key.0 as u64,
+                dn: n,
+            };
             exchange
                 .send_ranked
-                .push((owner(&key, next, nranks), ExcitorUpdate::new(key, n)));
+                .push((owner(key, next, nranks), update));
         }
 
         exchange_to_owners(world, irank, exchange)
@@ -543,7 +1040,9 @@ fn exchange_populations<C: Communicator>(
 
     // Annihilate the arrivals with the owned populations.
     for update in &received {
-        *populations.entry(update.excitor()).or_insert(0.0) += update.dn;
+        *populations
+            .entry(ExcitorIndex(update.index as usize))
+            .or_insert(0.0) += update.dn;
     }
 }
 
@@ -551,51 +1050,54 @@ fn exchange_populations<C: Communicator>(
 /// removed.
 /// # Arguments:
 /// - `populations`: Excitor populations owned by this rank, references included.
-/// - `is_reference`: Whether an excitor key is a block reference.
+/// - `spaces`: Spaces of every reference block, which tell its references apart.
 /// - `cutoff`: Population cutoff.
 /// - `rng`: Rank-local rounding stream of the iteration.
 /// # Returns:
 /// - `()`: Updates `populations` in place.
 fn round_populations(
-    populations: &mut FastMap<ExcitorState, f64>,
-    is_reference: &impl Fn(&ExcitorState) -> bool,
+    populations: &mut FastMap<ExcitorIndex, f64>,
+    spaces: &ReferenceSpaces,
     cutoff: f64,
     mut rng: QmcRng,
 ) {
     // Take out the small excitor populations in key order, so the rounding is reproducible.
     let mut small = populations
         .iter()
-        .filter(|(key, n)| !is_reference(key) && n.abs() < cutoff)
-        .map(|(&key, &n)| ExcitorUpdate::new(key, n))
+        .filter(|&(&key, n)| !spaces.is_reference(key) && n.abs() < cutoff)
+        .map(|(&key, &n)| PopulationUpdate {
+            index: key.0 as u64,
+            dn: n,
+        })
         .collect::<Vec<_>>();
-    small.sort_unstable_by_key(|u| u.excitor());
+    small.sort_unstable_by_key(|u| u.index);
     for update in &small {
-        populations.remove(&update.excitor());
+        populations.remove(&ExcitorIndex(update.index as usize));
     }
 
     // Each survives as `\pm c` with probability `|n|/c` and the survivors return.
     compress_sparse(&mut small, cutoff, &mut rng);
-    populations.extend(small.iter().map(|u| (u.excitor(), u.dn)));
+    populations.extend(small.iter().map(|u| (ExcitorIndex(u.index as usize), u.dn)));
 }
 
 /// Population statistics over every rank: the total population `\sum|n|`, the reference
 /// population `\sum_x|N_x|` and the number of occupied excitors.
 /// # Arguments:
-/// - `populations`: Excitor populations owned by this rank, references included.
-/// - `is_reference`: Whether an excitor key is a block reference.
+/// - `populations`: Excitor populations owned by this rank, references included, by index.
+/// - `spaces`: Spaces of every reference block, which tell its references apart.
 /// - `world`: MPI communicator.
 /// # Returns:
 /// - `(f64, f64, i64)`: Total population, reference population and occupied excitors.
 fn population_stats(
-    populations: &FastMap<ExcitorState, f64>,
-    is_reference: &impl Fn(&ExcitorState) -> bool,
+    populations: &[(ExcitorIndex, f64)],
+    spaces: &ReferenceSpaces,
     world: &impl Communicator,
 ) -> (f64, f64, i64) {
     // This rank's contributions.
     let mut stats = vec![0.0; 3];
-    for (key, n) in populations {
+    for &(key, n) in populations {
         stats[0] += n.abs();
-        if is_reference(key) {
+        if spaces.is_reference(key) {
             stats[1] += n.abs();
         } else {
             stats[2] += 1.0;
@@ -623,10 +1125,13 @@ fn population_stats(
 /// `\bar H \leftarrow \lambda\bar H+H^e` of the report blocks so far, with
 /// `\lambda = 1 - 1/\text{memory\_effective}`, so that one noisy
 /// block with a nearly singular `S^e` cannot make `G` diverge.
+/// As in NOCIQMC, the `n_\text{cyc}` cycles of a report sample the same frozen populations and
+/// accumulate their spawns and coupling projections, and the report applies the accumulated
+/// change with the death term as one step of `n_\text{cyc}\Delta\tau`.
 /// The populations are distributed over the MPI ranks by a hash of the excitor redrawn every
-/// iteration: each rank forms clusters from its own excitors with the weight `P^{s-1}`, its
-/// spawns and the excitors changing owner are exchanged in one step, and annihilation happens on
-/// the owner. Within a rank the attempts, the left action and the sorts run on Rayon threads.
+/// report: each rank forms clusters from its own excitors with the weight `P^{s-1}`, its spawns
+/// and the excitors changing owner are exchanged once per report, and annihilation happens on the
+/// owner. Within a rank the attempts, the left action and the sorts run on Rayon threads.
 /// # Arguments:
 /// - `data`: NOCI data over the reference determinants.
 /// - `options`: JM-NOCCMC options with stochastic settings.
@@ -649,204 +1154,70 @@ pub(crate) fn jm_qmc_step(
     data: &NOCIData<'_, f64>,
     options: &JMNOCCMCOptions,
     c0: &[f64],
-    mut shift: f64,
+    shift: f64,
     world: &impl Communicator,
 ) -> f64 {
-    let qmc = options
-        .qmc
-        .as_ref()
-        .expect("jmnoccmc.qmc options are required");
-    let irank = world.rank() as usize;
-    let nranks = world.size() as usize;
-    let m = data.space.len();
-    let dt = options.dt;
+    let mut jm = JMRun::new(data, options, c0, shift, world);
+    let (qmc, write) = (jm.options.qmc.as_ref().unwrap(), &data.input.write);
+    let path = write.write_restart.as_deref().unwrap_or("RESTART.H5");
+    let reports = jm.first..qmc.nreports;
 
-    // One base seed for every rank, from which the shared assignments and the rank streams follow.
-    let mut base = qmc.seed.unwrap_or_else(rand::random);
-    world.process_at_rank(0).broadcast_into(&mut base);
-    let local = rank_seed(base, irank);
-    let assignment = |iteration: usize| base ^ (iteration as u64).wrapping_mul(ASSIGNSTRIDE);
-
-    // Fixed spaces of every block, and the test for a block's reference among the excitor keys.
-    let spaces = ReferenceSpaces::new(data, options);
-    let is_reference = |key: &ExcitorState| {
-        let reference = &spaces.references[key.0];
-        (key.1, key.2) == (reference.alpha, reference.beta)
-    };
-
-    // Initial reference populations from the NOCI coefficients and the exact effective
-    // Hamiltonian of uncorrelated references, `G = S^{-1}H`.
-    let (trial, mut populations) = initial_populations(
-        &spaces,
-        c0,
-        qmc.initial_population,
-        (assignment(0), irank, nranks),
+    // The shared driver samples the frozen view for every cycle, then advances one report.
+    run(
+        &mut jm,
+        (reports, qmc.ncycles),
+        (write.write_restart_interval, path),
+        world,
     );
-    let uncorrelated = uncorrelated_effective(data, &spaces);
-    let mut lagged = uncorrelated.g().expect("singular reference overlap");
-    let e0 = uncorrelated.he[(0, 0)];
 
-    // Report table, and the shift control, scratch storage and effective Hamiltonian carried
-    // between iterations.
-    print_table_header(irank, ["NWalk", "NRef", "-", "NExcitors"]);
-    let mut reached = false;
-    let local_norm = populations.values().map(|n: &f64| n.abs()).sum::<f64>();
-    let mut previous = all_reduce_array1(world, Array1::from_vec(vec![local_norm]))[0];
-    let mut exchange = ExchangeScratch::new(nranks);
-    let mut workers = Vec::<JMTaskPropagation>::new();
-    let mut merged = FastMap::<ExcitorState, f64>::default();
-    let mut coupled = FastMap::<ExcitorState, f64>::default();
-    let mut running = Effective::new(m);
-    let mut eproj = f64::NAN;
+    jm.eproj
+}
 
-    for report in 0..qmc.nreports {
-        let mut block = Effective::new(m);
-        let mut projected = (0.0, 0.0);
+/// Build the frozen view of the populations for the next report.
+/// # Arguments:
+/// - `spaces`: Projection and expansion spaces of every reference block.
+/// - `populations`: Excitor populations owned by this rank, references included, by index.
+/// - `lagged`: Lagged effective Hamiltonian `G`.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `ReportView`: Reference populations, blocks, `\tilde G` and attempts of the report.
+fn report_view(
+    spaces: &ReferenceSpaces,
+    populations: &[(ExcitorIndex, f64)],
+    lagged: &Array2<f64>,
+    world: &impl Communicator,
+) -> ReportView {
+    let m = spaces.references.len();
+    let ranks = world.size() as f64;
 
-        for cycle in 0..qmc.ncycles {
-            let iteration = report * qmc.ncycles + cycle;
-            let ranks = nranks as f64;
-
-            // Global reference populations and excitor norms, then this rank's block view.
-            let mut totals = vec![0.0; 2 * m];
-            for (key, &n) in &populations {
-                if is_reference(key) {
-                    totals[key.0] += n;
-                } else {
-                    totals[m + key.0] += n.abs();
-                }
-            }
-            let totals = all_reduce_array1(world, Array1::from_vec(totals)).to_vec();
-            let nref = totals[..m].to_vec();
-            let current = blocks(&spaces, &populations, &nref, ranks);
-
-            // Effective Hamiltonian of the unnormalised correlated references
-            // `|\tilde\Phi_x\rangle = N_x|\Phi_x\rangle`, `\tilde G_{xy} = G_{xy}N_y/N_x`, whose row sums
-            // `g_x = (GN)_x/N_x` are the growth rates of the reference populations.
-            let gt =
-                Array2::from_shape_fn(lagged.dim(), |(x, y)| lagged[(x, y)] * nref[y] / nref[x]);
-
-            // Every block's attempts, one per unit of its population, shared evenly between ranks.
-            let attempts = (0..m)
-                .map(|z| ((nref[z].abs() + totals[m + z]) / ranks).ceil().max(1.0))
-                .collect::<Vec<_>>();
-
-            // Linked and coupling spawns per unit time, with the step's energies and effective
-            // elements.
-            let ntasks = run_tasks(
-                data,
-                &spaces,
-                &current,
-                (&attempts, ranks),
-                (local, iteration),
-                &mut workers,
-            );
-            let sums = sum_tasks(&workers[..ntasks], m, &mut merged);
-            if m > 1 {
-                spawn_coupling(
-                    &workers[..ntasks],
-                    &gt,
-                    &current,
-                    &spaces,
-                    (world, &mut exchange),
-                    &mut coupled,
-                    &mut merged,
-                );
-            }
-
-            // Annihilate this rank's spawns and round small ones stochastically.
-            let mut updates = merged
-                .iter()
-                .map(|(&key, &dn)| ExcitorUpdate::new(key, dt * dn))
-                .collect::<Vec<_>>();
-            updates.par_sort_unstable_by_key(|u| u.excitor());
-            coalesce(&mut updates);
-            let mut rng = stream(local, SPAWNSALT, iteration as u64);
-            compress_sparse(&mut updates, qmc.fri.spawn_cutoff, &mut rng);
-
-            // Sum the step's effective overlap and Hamiltonian over ranks, normalised by `N_x`.
-            let sums = all_reduce_array1(world, Array1::from_vec(sums)).to_vec();
-
-            // Projected energy onto the fixed trial `\langle\Psi_T| = \sum_z c_z\langle{}^z\Psi|`:
-            // `\sum_z c_z\sum_x\langle{}^z\Psi|\hat H|\tilde\Phi_x\rangle` over
-            // `\sum_z c_z\sum_x\langle{}^z\Psi|\tilde\Phi_x\rangle`.
-            for z in 0..m {
-                projected.0 += trial[z] * sums[z];
-                projected.1 += trial[z] * nref[z];
-                for x in (0..m).filter(|&x| x != z) {
-                    projected.0 += trial[z] * sums[m + m * m + z * m + x];
-                    projected.1 += trial[z] * sums[m + z * m + x];
-                }
-            }
-
-            // This step's `S^e_{yx}` and `H^e_{yx}` per unit `N_x`, added to the report block.
-            for x in 0..m {
-                block.se[(x, x)] += 1.0;
-                block.he[(x, x)] += sums[x] / nref[x];
-                for y in (0..m).filter(|&y| y != x) {
-                    block.se[(y, x)] += sums[m + y * m + x] / nref[x];
-                    block.he[(y, x)] += sums[m + m * m + y * m + x] / nref[x];
-                }
-            }
-
-            // Fixed-point-preserving death `-\Delta\tau(g_x-E_s)n` on every owned population.
-            let growth = (0..m).map(|x| gt.row(x).sum()).collect::<Vec<_>>();
-            for (key, n) in populations.iter_mut() {
-                *n *= 1.0 - dt * (growth[key.0] - shift);
-            }
-
-            // Spawns to their owners and annihilation, then rounding of small excitors.
-            exchange_populations(
-                &mut populations,
-                updates,
-                assignment(iteration + 1),
-                (world, &mut exchange),
-            );
-            round_populations(
-                &mut populations,
-                &is_reference,
-                qmc.fri.population_cutoff,
-                stream(local, ROUNDSALT, iteration as u64),
-            );
-        }
-
-        // Lagged effective Hamiltonian from the running sums with forgetting.
-        running.scale(1.0 - 1.0 / options.memory_effective);
-        running.add(&block);
-        if let Some(g) = running.g() {
-            lagged = g;
-        }
-
-        // Population statistics over every rank and the shift update.
-        let (total, nref, nexcitors) = population_stats(&populations, &is_reference, world);
-        update_shift(
-            &mut shift,
-            &mut reached,
-            (total, previous),
-            (
-                qmc.target_population,
-                qmc.shift_damping,
-                qmc.population_restoring,
-                dt * qmc.ncycles as f64,
-            ),
-        );
-        previous = total;
-
-        // Report row, averaged over the block's cycles; the projected energy is their ratio.
-        eproj = projected.0 / projected.1;
-        let cycles = qmc.ncycles as f64;
-        print_table_row(
-            irank,
-            (report + 1) * qmc.ncycles,
-            (projected.0 / cycles, projected.1 / cycles),
-            (e0, if reached { shift } else { 0.0 }),
-            (total, nref, None, Some(nexcitors)),
-        );
-
-        if stop_requested(irank, nranks, world) {
-            break;
+    // Global reference populations and excitor norms, then this rank's block view.
+    let mut totals = vec![0.0; 2 * m];
+    for &(key, n) in populations {
+        if spaces.is_reference(key) {
+            totals[spaces.block(key)] += n;
+        } else {
+            totals[m + spaces.block(key)] += n.abs();
         }
     }
+    let totals = all_reduce_array1(world, Array1::from_vec(totals)).to_vec();
+    let nref = totals[..m].to_vec();
 
-    eproj
+    let blocks = blocks(spaces, populations, &nref, ranks);
+
+    // Effective Hamiltonian of the unnormalised correlated references
+    // `|\tilde\Phi_x\rangle = N_x|\Phi_x\rangle`, `\tilde G_{xy} = G_{xy}N_y/N_x`, whose row sums
+    // `g_x = (GN)_x/N_x` are the growth rates of the reference populations.
+    let gt = Array2::from_shape_fn(lagged.dim(), |(x, y)| lagged[(x, y)] * nref[y] / nref[x]);
+
+    // Every block's attempts, one per unit of its population, shared evenly between ranks.
+    let attempts = (0..m)
+        .map(|z| ((nref[z].abs() + totals[m + z]) / ranks).ceil().max(1.0))
+        .collect();
+
+    ReportView {
+        nref,
+        blocks,
+        gt,
+        attempts,
+    }
 }

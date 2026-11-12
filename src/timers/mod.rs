@@ -64,9 +64,7 @@ macro_rules! for_each_counter {
         $f!($tot.stochastic.step.unpack_population_changes);
         $f!($tot.stochastic.step.take_population_changes);
         $f!($tot.stochastic.step.apply_overlap_changes);
-        $f!($tot.stochastic.step.overlap_change_gather_counts);
         $f!($tot.stochastic.step.apply_local_overlap_changes);
-        $f!($tot.stochastic.step.wait_overlap_change_gather);
         $f!($tot.stochastic.step.apply_remote_overlap_changes);
         $f!($tot.stochastic.step.gather_all_populations);
         $f!($tot.stochastic.step.compute_population_stats);

@@ -1,15 +1,19 @@
 // noci/stochastic/report.rs
 
+// Standard library imports.
+use std::collections::BTreeMap;
+
 // External crate imports.
 use mpi::topology::Communicator;
 
 // Crate-root imports.
 use crate::input::Propagator;
-use crate::qmc::excitgen::ExcitationHist;
-use crate::qmc::{print_table_header, print_table_row, stop_requested};
+use crate::qmc::{
+    PopulationUpdate, Restart, print_table_header, print_table_row,
+    write_restart as qmc_write_restart,
+};
 
 // Parent/sibling imports.
-use super::restart::{RestartState, write_restart_hdf5};
 use super::state::{PopulationStats, PropagationState, QMCRunInfo};
 
 /// Print the iteration table header on rank zero.
@@ -129,79 +133,41 @@ pub(in crate::noci::stochastic) fn write_restart(
     world: &impl Communicator,
     restart_path: Option<&String>,
 ) {
-    let restart = RestartState {
+    // Owned populations keyed by determinant, and the controller history the propagators need.
+    let populations = run
+        .owned
+        .iter()
+        .zip(&state.mc.populations)
+        .filter(|&(_, &n)| n != 0.0)
+        .map(|(&det, &n)| PopulationUpdate {
+            index: det as u64,
+            dn: n,
+        })
+        .collect();
+    let previous = &state.prev_pop;
+    let values = BTreeMap::from([
+        (
+            "previous".to_string(),
+            vec![
+                previous.nw,
+                previous.nref,
+                previous.nsampled,
+                previous.nsampledo as f64,
+            ],
+        ),
+        ("overlap_weight".to_string(), vec![state.overlap_weight]),
+    ]);
+    let restart = Restart {
         report,
         shift,
-        nwprev: state.prev_pop.nw,
-        nrefprev: state.prev_pop.nref,
-        nsampledprev: state.prev_pop.nsampled,
-        nsampledoprev: state.prev_pop.nsampledo,
-        populations: state.mc.populations.clone(),
-        excitation_hist: state.mc.excitation_hist.clone(),
-        base_seed: Some(run.base_seed),
-        overlap_weight: Some(state.overlap_weight),
-        ndets: run.ndets,
-        basis_hash: run.basis_hash,
-        representation: Some(run.representation),
-        reached: Some(state.reached),
-        target_population: Some(run.target_population),
+        reached: state.reached,
+        seed: run.base_seed,
+        populations,
+        values,
+        histogram: state.mc.excitation_hist.clone(),
     };
 
     let restart_path = restart_path.map(String::as_str).unwrap_or("RESTART.H5");
-
-    write_restart_hdf5(restart_path, world, &restart).unwrap();
-}
-
-/// Check for a `STOP` file, write a restart if required, and return early.
-/// # Arguments:
-/// - `report`: Current report number.
-/// - `state`: Propagation state containing QMC bookkeeping data.
-/// - `shift`: Current population-control shift.
-/// - `run`: Rank-local propagation metadata.
-/// - `world`: MPI communicator.
-/// - `restart_path`: Optional restart file path.
-/// # Returns:
-/// - `Option<(f64, Option<ExcitationHist>)>`: Final result if stopping.
-pub(in crate::noci::stochastic) fn check_stop(
-    report: usize,
-    state: &mut PropagationState,
-    shift: f64,
-    run: &QMCRunInfo,
-    world: &impl Communicator,
-    restart_path: Option<&String>,
-) -> Option<(f64, Option<ExcitationHist>)> {
-    // Every rank receives one decision so all ranks enter the collective restart write together.
-    if !stop_requested(run.irank, run.nranks, world) {
-        return None;
-    }
-
-    // Transfer owned population and history buffers into the restart record.
-    let restart = RestartState {
-        report,
-        shift,
-        nwprev: state.prev_pop.nw,
-        nrefprev: state.prev_pop.nref,
-        nsampledprev: state.prev_pop.nsampled,
-        nsampledoprev: state.prev_pop.nsampledo,
-        populations: std::mem::take(&mut state.mc.populations),
-        excitation_hist: state.mc.excitation_hist.take(),
-        base_seed: Some(run.base_seed),
-        overlap_weight: Some(state.overlap_weight),
-        ndets: run.ndets,
-        basis_hash: run.basis_hash,
-        representation: Some(run.representation),
-        reached: Some(state.reached),
-        target_population: Some(run.target_population),
-    };
-
-    let restart_path = restart_path.map(String::as_str).unwrap_or("RESTART.H5");
-
-    write_restart_hdf5(restart_path, world, &restart).unwrap();
-
-    if run.irank == 0 {
-        let _ = std::fs::remove_file("STOP");
-        println!("STOP detected, wrote {restart_path} and exiting");
-    }
-
-    Some((state.eprojcur, restart.excitation_hist))
+    let identity = (run.representation.as_str(), run.basis_hash);
+    qmc_write_restart(restart_path, identity, &restart, world).unwrap();
 }

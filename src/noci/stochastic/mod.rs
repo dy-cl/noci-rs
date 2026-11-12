@@ -94,7 +94,6 @@ mod init;
 mod overlapweighted;
 mod propagate;
 mod report;
-mod restart;
 mod sapply;
 mod shift;
 mod state;

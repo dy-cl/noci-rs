@@ -163,7 +163,7 @@ pub(super) fn linked_attempt(
 ) {
     let (excitors, weight) = cluster;
     let reference = &spaces.references[z];
-    let key = |det: &DeterminantState| Target::Excitor((z, det.alpha, det.beta));
+    let key = |det: &DeterminantState| Target::Excitor(spaces.index(z, (det.alpha, det.beta)));
 
     // Reference projection and death on the collapsed cluster.
     if let Some((collapsed, sign)) = collapse(reference, excitors) {

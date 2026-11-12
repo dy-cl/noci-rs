@@ -25,7 +25,7 @@ use crate::hash::FastMap;
 use crate::qmc::QmcRng;
 
 // Parent/sibling imports.
-use super::population::{Block, Excitor, ExcitorState, rank};
+use super::population::{Block, Excitor, ExcitorIndex, ReferenceSpaces, rank};
 use super::state::CouplingBatchedRequest;
 
 /// Number of non-reference projection rows drawn per cluster and coupled block.
@@ -81,7 +81,7 @@ impl Projections {
 /// - `x`: Source block.
 /// - `cluster`: Prepared collapsed determinant `|D_C\rangle` and signed weight `w\phi_C`.
 /// - `rng`: Random-number generator.
-/// - `queue`: Prepared cluster determinants and coupling requests of the task.
+/// - `queue`: Prepared cluster determinants and coupling requests of the worker.
 /// # Returns:
 /// - `()`: Queues the cluster's requests.
 pub(super) fn project_cluster(
@@ -138,17 +138,17 @@ pub(super) fn project_cluster(
 /// - `block`: Population of block `y` on this rank.
 /// - `index`: Block index `y`.
 /// - `q`: Complete projection `q(\nu)` keyed by occupations.
-/// - `cluster_rank`: Highest excitation rank of the cluster operator.
+/// - `spaces`: Projection and expansion spaces of every reference block.
 /// - `distribution`: Number of ranks `P` and whether this rank adds the empty set.
 /// # Returns:
-/// - `Vec<(ExcitorState, f64)>`: Population changes per unit time.
+/// - `Vec<(ExcitorIndex, f64)>`: Population changes per unit time.
 pub(super) fn left_action(
     block: &Block,
     index: usize,
     q: &[((u128, u128), f64)],
-    cluster_rank: usize,
+    spaces: &ReferenceSpaces,
     distribution: (f64, bool),
-) -> Vec<(ExcitorState, f64)> {
+) -> Vec<(ExcitorIndex, f64)> {
     let reference = &block.reference;
     let (ranks, empty) = distribution;
 
@@ -177,13 +177,13 @@ pub(super) fn left_action(
 
             // The empty set enters once with weight one, the other sets with `P^{|K|-1}`.
             if empty && r > 0 {
-                out.push(((index, alpha, beta), value));
+                out.push((spaces.index(index, (alpha, beta)), value));
             }
             apply_negative_exponential(
                 &amplitudes,
                 (nu, r, value / ranks),
                 index,
-                cluster_rank,
+                spaces,
                 &mut out,
             );
             out
@@ -204,7 +204,7 @@ pub(super) fn left_action(
 ///   rank.
 /// - `row`: Row determinant `|D_\nu\rangle`, its rank and its weight `w`.
 /// - `index`: Block index `y`.
-/// - `cluster_rank`: Highest excitation rank of the cluster operator.
+/// - `spaces`: Projection and expansion spaces of every reference block.
 /// - `out`: Population changes per unit time, receiving the sets.
 /// # Returns:
 /// - `()`: Appends one change per nonempty set with a nonvanishing image.
@@ -212,19 +212,20 @@ fn apply_negative_exponential(
     amplitudes: &[(Excitor, f64, usize)],
     row: (DeterminantState, usize, f64),
     index: usize,
-    cluster_rank: usize,
-    out: &mut Vec<(ExcitorState, f64)>,
+    spaces: &ReferenceSpaces,
+    out: &mut Vec<(ExcitorIndex, f64)>,
 ) {
     let mut stack = vec![(row.0, row.1, row.2, 0)];
     while let Some((det, r, coefficient, start)) = stack.pop() {
         // Every set but the empty one, which the caller adds.
         if start > 0 {
-            out.push(((index, det.alpha, det.beta), coefficient));
+            out.push((spaces.index(index, (det.alpha, det.beta)), coefficient));
         }
 
         // Children `K \cup \{k\}` for the later excitors that keep the image within the cluster
         // rank, pushed in reverse to be visited in increasing order.
-        let end = start.max(amplitudes.partition_point(|&(_, _, rk)| r + rk <= cluster_rank));
+        let end =
+            start.max(amplitudes.partition_point(|&(_, _, rk)| r + rk <= spaces.cluster_rank));
         for k in (start..end).rev() {
             let (excitor, c, rk) = amplitudes[k];
             if let Some((next, sign)) = excitor.apply(&det) {

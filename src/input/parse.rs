@@ -1201,6 +1201,20 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
     let prop = read_prop(prop_tbl);
     let qmc = read_qmc(qmc_tbl, prop.as_ref().map(|options| options.propagator));
 
+    // Restarts are written at the end of a report, so the interval is a whole number of reports
+    // of either stochastic method.
+    let write = read_write(write_tbl);
+    let jmnoccmc = read_jmnoccmc(jmnoccmc_tbl);
+    let jmqmc = jmnoccmc.as_ref().and_then(|options| options.qmc.as_ref());
+    for qmc in [qmc.as_ref(), jmqmc].into_iter().flatten() {
+        if let Some(interval) = write.write_restart_interval
+            && (interval == 0 || interval % qmc.ncycles != 0)
+        {
+            eprintln!("write_restart_interval must be a positive multiple of qmc.ncycles");
+            std::process::exit(1);
+        }
+    }
+
     // ResHF optimises real SCF states only, so it cannot follow holomorphic recipes.
     let states = read_states(state_tbl);
     let reshf = read_reshf(reshf_tbl);
@@ -1214,13 +1228,13 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
     Ok(Input {
         mol: read_mol(mol_tbl),
         scf: read_scf(scf_tbl),
-        write: read_write(write_tbl),
+        write,
         states,
         det: read_det(det_tbl),
         qmc,
         snoci: read_snoci(snoci_tbl),
         gnoccmc: read_gnoccmc(gnoccmc_tbl),
-        jmnoccmc: read_jmnoccmc(jmnoccmc_tbl),
+        jmnoccmc,
         excit: read_excit(excit_tbl),
         prop,
         wicks: read_wicks(wicks_tbl),

@@ -47,9 +47,9 @@
 //! reference up to the cluster rank, from which the coupling draws projection rows uniformly; it
 //! is to be replaced by drawing the rows on the fly.
 //!
-//! Wherever the two methods do the same thing, the structure mirrors NOCIQMC: each parallel
-//! task queues its matrix-element requests in reusable storage and resolves them in one call to
-//! the batched element dispatch.
+//! Wherever the two methods do the same thing, they share the code: both run on the report loop,
+//! restarts and per-thread workers of `qmc`, and each worker queues its cycle's matrix-element
+//! requests and resolves them in one call to the batched element dispatch.
 //!
 //! # References
 //! - B. Jeziorski and H. J. Monkhorst, *Phys. Rev. A* **24**, 1668 (1981),
