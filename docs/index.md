@@ -116,9 +116,16 @@ results
 
 ```{toctree}
 :hidden:
+:caption: Development
+
+development/architecture
+Contributing <https://github.com/dy-cl/noci-rs/blob/main/CONTRIBUTING.md>
+```
+
+```{toctree}
+:hidden:
 :caption: About
 
 citing
 references
-Contributing <https://github.com/dy-cl/noci-rs/blob/main/CONTRIBUTING.md>
 ```

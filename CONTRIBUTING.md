@@ -3,6 +3,9 @@
 Contributions to `noci-rs` are welcome. For substantial changes, please open an
 issue first so the approach can be discussed before significant work begins.
 
+The [code architecture guide](docs/development/architecture.md) maps the source
+modules, shared interfaces and dependency boundaries for contributors.
+
 ## Development workflow
 
 1. Fork the repository and create a branch from `main`.
