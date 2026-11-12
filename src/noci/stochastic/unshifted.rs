@@ -28,28 +28,6 @@ use super::overlapweighted::OverlapWeightedGenerator;
 use super::propagate::{NOCIPropagator, NOCIRun};
 use super::state::{NOCIPropagationResult, NOCIThreadPropagation, QMCRunInfo, ScratchSize};
 
-/// Apply direct coefficient-population changes to rank-local populations.
-/// # Arguments:
-/// - `populations`: Rank-local coefficient population vector.
-/// - `changes`: Coalesced sparse global population changes.
-/// - `local_pos`: Global determinant to rank-local position map.
-/// # Returns:
-/// - `()`: Updates rank-local populations in place.
-fn apply_population_changes(
-    populations: &mut [f64],
-    changes: &[PopulationUpdate],
-    local_pos: &[usize],
-) {
-    for update in changes {
-        let det = update.index as usize;
-        let pos = local_pos[det];
-
-        if pos != usize::MAX {
-            populations[pos] += update.dn;
-        }
-    }
-}
-
 /// The unshifted propagator of coefficient populations, `c' = c - \Delta\tau(H - E_s S)c`, with
 /// the logarithmic shift controller.
 pub(in crate::noci::stochastic) struct Unshifted {
@@ -169,5 +147,27 @@ impl<C: Communicator> NOCIPropagator<C> for Unshifted {
             &self.positions,
         );
         None
+    }
+}
+
+/// Apply direct coefficient-population changes to rank-local populations.
+/// # Arguments:
+/// - `populations`: Rank-local coefficient population vector.
+/// - `changes`: Coalesced sparse global population changes.
+/// - `local_pos`: Global determinant to rank-local position map.
+/// # Returns:
+/// - `()`: Updates rank-local populations in place.
+fn apply_population_changes(
+    populations: &mut [f64],
+    changes: &[PopulationUpdate],
+    local_pos: &[usize],
+) {
+    for update in changes {
+        let det = update.index as usize;
+        let pos = local_pos[det];
+
+        if pos != usize::MAX {
+            populations[pos] += update.dn;
+        }
     }
 }

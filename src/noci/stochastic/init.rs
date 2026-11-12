@@ -159,7 +159,9 @@ pub(in crate::noci::stochastic) fn initialise_qmc_state(
         let identity = (run.representation.as_str(), run.basis_hash);
         let owns = |det: u64, _| run.det_owner[det as usize] == run.irank;
         let restart = read_restart(path, identity, owns, world).unwrap();
+
         let mut populations = vec![0.0; run.owned.len()];
+
         for update in &restart.populations {
             let position = run.owned.binary_search(&(update.index as usize)).unwrap();
             populations[position] = update.dn;

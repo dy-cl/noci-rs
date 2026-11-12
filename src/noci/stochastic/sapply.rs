@@ -28,113 +28,6 @@ use super::state::{
     NOCIMPIScratch, NOCIPropagationResult, NOCIThreadPropagation, QMCRunInfo, ScratchSize,
 };
 
-/// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
-/// # Arguments:
-/// - `populations`: `Rank-local persistent populations N_w.`
-/// - `updates`: `Sparse pre-overlap changes \Omega, \Delta_\Omega.`
-/// - `data`: Immutable NOCI data.
-/// - `overlap_factor`: Precomputed determinant and spin-component mappings.
-/// - `overlap_factors`: Persistent cross-parent overlap factors.
-/// - `targets`: Global determinant indices for rank-local rows.
-/// - `scratch`: `Reusable allocation storage for one application of S\Delta.`
-/// # Returns:
-/// - `()`: `Applies N_w \leftarrow N_w + \delta N_w.`
-fn apply_population_changes_local<I>(
-    populations: &mut [f64],
-    updates: I,
-    data: &NOCIData<'_, f64>,
-    overlap_factor: &SpinFactorisation,
-    overlap_factors: &OverlapFactors,
-    targets: &[usize],
-    scratch: &mut OverlapScratch,
-) where
-    I: IntoIterator<Item = (usize, f64)>,
-{
-    overlap_factor.apply_overlap_sparse(
-        populations,
-        targets,
-        updates,
-        data,
-        overlap_factors,
-        scratch,
-    );
-}
-
-/// Apply the overlap to the global range-population change, `N \leftarrow N + S\Delta`.
-/// Each rank initially owns a subset of the accumulated changes
-/// `\Delta_\Omega`. The changes are gathered across MPI ranks and each
-/// rank updates its locally owned persistent populations according to
-/// `N_w \leftarrow N_w + \sum_\Omega S_{w\Omega}\Delta_\Omega`.
-/// Since every change has the form `S\Delta`, the population vector remains in
-/// `\operatorname{range}(S)` provided the initial vector is in
-/// `\operatorname{range}(S)`, therefore avoiding population growth in the null space.
-/// # Arguments:
-/// - `changes`: Rank-local persistent populations and local determinant population changes.
-/// - `data`: Immutable stochastic propagation data.
-/// - `overlap`: Spin factorisation and persistent cross-parent overlap factors.
-/// - `run`: Rank-local run metadata.
-/// - `mpi`: MPI communicator and reusable MPI scratch storage.
-/// - `scratch`: `Reusable overlap allocation storage for grouped S\Delta application.`
-/// # Returns
-/// - `()`: Applies the overlap to the global range-population change.
-pub(in crate::noci::stochastic) fn apply_overlap_population_changes(
-    changes: (&mut [f64], &[PopulationUpdate]),
-    data: &NOCIData<'_, f64>,
-    overlap: (&SpinFactorisation, &OverlapFactors),
-    run: &QMCRunInfo,
-    mpi: (&impl CommunicatorCollectives, &mut NOCIMPIScratch),
-    scratch: &mut OverlapScratch,
-) {
-    let (populations, dlocal) = changes;
-    let (overlap_factor, overlap_factors) = overlap;
-    let (world, mpi) = mpi;
-
-    time_call!(crate::timers::stochastic::add_apply_overlap_changes, {
-        if run.nranks == 1 {
-            time_call!(
-                crate::timers::stochastic::add_apply_local_overlap_changes,
-                {
-                    apply_population_changes_local(
-                        populations,
-                        dlocal.iter().map(|up| (up.index as usize, up.dn)),
-                        data,
-                        overlap_factor,
-                        overlap_factors,
-                        &run.owned,
-                        scratch,
-                    );
-                }
-            );
-            return;
-        }
-
-        // Gather every rank's updates, so each rank applies the complete change to its owned rows.
-        if gather_updates(world, dlocal, mpi).is_empty() {
-            return;
-        }
-
-        // Apply all report updates in one pass. This avoids regrouping local and remote updates
-        // separately, which is more expensive than the small all-gather wait on these workloads.
-        time_call!(
-            crate::timers::stochastic::add_apply_remote_overlap_changes,
-            {
-                mpi.gather_recv.sort_unstable_by_key(|update| update.index);
-                coalesce(&mut mpi.gather_recv);
-
-                apply_population_changes_local(
-                    populations,
-                    mpi.gather_recv.iter().map(|up| (up.index as usize, up.dn)),
-                    data,
-                    overlap_factor,
-                    overlap_factors,
-                    &run.owned,
-                    scratch,
-                );
-            }
-        );
-    })
-}
-
 /// The SApply range-preserving propagator.
 /// `The initial population is N_0 = S c_0, rescaled to the requested population 1-norm.`
 /// Within each report block, the population vector is held fixed while `ncycles` independent
@@ -333,4 +226,111 @@ impl<C: Communicator> NOCIPropagator<C> for SApply {
             &mut self.overlap_scratch,
         ))
     }
+}
+
+/// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
+/// # Arguments:
+/// - `populations`: `Rank-local persistent populations N_w.`
+/// - `updates`: `Sparse pre-overlap changes \Omega, \Delta_\Omega.`
+/// - `data`: Immutable NOCI data.
+/// - `overlap_factor`: Precomputed determinant and spin-component mappings.
+/// - `overlap_factors`: Persistent cross-parent overlap factors.
+/// - `targets`: Global determinant indices for rank-local rows.
+/// - `scratch`: `Reusable allocation storage for one application of S\Delta.`
+/// # Returns:
+/// - `()`: `Applies N_w \leftarrow N_w + \delta N_w.`
+fn apply_population_changes_local<I>(
+    populations: &mut [f64],
+    updates: I,
+    data: &NOCIData<'_, f64>,
+    overlap_factor: &SpinFactorisation,
+    overlap_factors: &OverlapFactors,
+    targets: &[usize],
+    scratch: &mut OverlapScratch,
+) where
+    I: IntoIterator<Item = (usize, f64)>,
+{
+    overlap_factor.apply_overlap_sparse(
+        populations,
+        targets,
+        updates,
+        data,
+        overlap_factors,
+        scratch,
+    );
+}
+
+/// Apply the overlap to the global range-population change, `N \leftarrow N + S\Delta`.
+/// Each rank initially owns a subset of the accumulated changes
+/// `\Delta_\Omega`. The changes are gathered across MPI ranks and each
+/// rank updates its locally owned persistent populations according to
+/// `N_w \leftarrow N_w + \sum_\Omega S_{w\Omega}\Delta_\Omega`.
+/// Since every change has the form `S\Delta`, the population vector remains in
+/// `\operatorname{range}(S)` provided the initial vector is in
+/// `\operatorname{range}(S)`, therefore avoiding population growth in the null space.
+/// # Arguments:
+/// - `changes`: Rank-local persistent populations and local determinant population changes.
+/// - `data`: Immutable stochastic propagation data.
+/// - `overlap`: Spin factorisation and persistent cross-parent overlap factors.
+/// - `run`: Rank-local run metadata.
+/// - `mpi`: MPI communicator and reusable MPI scratch storage.
+/// - `scratch`: `Reusable overlap allocation storage for grouped S\Delta application.`
+/// # Returns
+/// - `()`: Applies the overlap to the global range-population change.
+pub(in crate::noci::stochastic) fn apply_overlap_population_changes(
+    changes: (&mut [f64], &[PopulationUpdate]),
+    data: &NOCIData<'_, f64>,
+    overlap: (&SpinFactorisation, &OverlapFactors),
+    run: &QMCRunInfo,
+    mpi: (&impl CommunicatorCollectives, &mut NOCIMPIScratch),
+    scratch: &mut OverlapScratch,
+) {
+    let (populations, dlocal) = changes;
+    let (overlap_factor, overlap_factors) = overlap;
+    let (world, mpi) = mpi;
+
+    time_call!(crate::timers::stochastic::add_apply_overlap_changes, {
+        if run.nranks == 1 {
+            time_call!(
+                crate::timers::stochastic::add_apply_local_overlap_changes,
+                {
+                    apply_population_changes_local(
+                        populations,
+                        dlocal.iter().map(|up| (up.index as usize, up.dn)),
+                        data,
+                        overlap_factor,
+                        overlap_factors,
+                        &run.owned,
+                        scratch,
+                    );
+                }
+            );
+            return;
+        }
+
+        // Gather every rank's updates, so each rank applies the complete change to its owned rows.
+        if gather_updates(world, dlocal, mpi).is_empty() {
+            return;
+        }
+
+        // Apply all report updates in one pass. This avoids regrouping local and remote updates
+        // separately, which is more expensive than the small all-gather wait on these workloads.
+        time_call!(
+            crate::timers::stochastic::add_apply_remote_overlap_changes,
+            {
+                mpi.gather_recv.sort_unstable_by_key(|update| update.index);
+                coalesce(&mut mpi.gather_recv);
+
+                apply_population_changes_local(
+                    populations,
+                    mpi.gather_recv.iter().map(|up| (up.index as usize, up.dn)),
+                    data,
+                    overlap_factor,
+                    overlap_factors,
+                    &run.owned,
+                    scratch,
+                );
+            }
+        );
+    })
 }

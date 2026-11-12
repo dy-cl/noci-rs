@@ -125,6 +125,34 @@ impl JMThreadPropagation {
         self.coupling_requests.clear();
     }
 
+    /// Resolve queues that reached the request watermark after one complete cluster attempt.
+    /// The 4096-request watermark is a throughput/memory tuning choice: it limits queued work
+    /// while retaining enough pairs for batching. The H10 timings reported in PR #35 establish
+    /// comparable throughput to the previous scheduler, rather than a cache capacity or a
+    /// universal optimum. Changing this value can change floating-point grouping and seeded
+    /// trajectories. One attempt may overshoot the watermark; no cluster is split between batches.
+    /// # Arguments:
+    /// - `self`: Worker holding the pending same-reference and coupling requests.
+    /// - `data`: NOCI data holding integral caches and Wick intermediates.
+    /// - `spaces`: Prepared reference and projection determinants.
+    /// # Returns:
+    /// - `()`: Accumulates any flushed requests and retains their queue allocations.
+    pub(super) fn resolve_if_full(
+        &mut self,
+        data: &NOCIData<'_, f64>,
+        spaces: &ReferenceSpaces,
+    ) {
+        const REQUESTLIMIT: usize = 4096;
+
+        if self.linked_requests.len() >= REQUESTLIMIT {
+            self.resolve_linked(data);
+        }
+
+        if self.coupling_requests.len() >= REQUESTLIMIT {
+            self.resolve_coupling(data, spaces);
+        }
+    }
+
     /// Evaluate the queued same-reference requests in one batch and add each term to its target.
     /// # Arguments:
     /// - `self`: Worker.
@@ -138,6 +166,8 @@ impl JMThreadPropagation {
         if self.linked_requests.is_empty() {
             return;
         }
+
+        // Materialise one pair batch in the same order as its signed target contributions.
         self.linked_pairs.clear();
         self.linked_pairs.extend(
             self.linked_requests
@@ -146,6 +176,7 @@ impl JMThreadPropagation {
         );
         self.linked_hs.clear();
         self.linked_hs.resize(self.linked_pairs.len(), (0.0, 0.0));
+
         calculate_pairs(
             data,
             &HamiltonianOverlap,
@@ -154,6 +185,7 @@ impl JMThreadPropagation {
             &mut self.linked_hs,
         );
 
+        // Scatter coefficient * H into the block energy or excitor residual.
         for (request, &(h, _)) in self.linked_requests.iter().zip(&self.linked_hs) {
             let value = request.coefficient * h;
             if value == 0.0 {
@@ -164,6 +196,7 @@ impl JMThreadPropagation {
                 Target::Excitor(key) => *self.spawns.entry(key).or_insert(0.0) += value,
             }
         }
+
         self.linked_requests.clear();
     }
 
@@ -182,9 +215,12 @@ impl JMThreadPropagation {
         if self.coupling_requests.is_empty() {
             return;
         }
+
+        // Reference projections need (H,S); excited projection rows need only S.
         let clusters = &self.coupling_clusters;
         let mut hs_pairs = Vec::new();
         let mut s_pairs = Vec::new();
+
         for request in &self.coupling_requests {
             let ket = clusters[request.cluster];
             match request.row {
@@ -192,6 +228,8 @@ impl JMThreadPropagation {
                 Some(r) => s_pairs.push(DetPair::new(spaces.rows[request.y][r], ket)),
             }
         }
+
+        // Evaluate the two operator batches without changing request or accumulation order.
         self.coupling_hs.clear();
         self.coupling_hs.resize(hs_pairs.len(), (0.0, 0.0));
         calculate_pairs(
@@ -211,6 +249,7 @@ impl JMThreadPropagation {
             &mut self.coupling_s,
         );
 
+        // Restore the original projection order from the separate (H,S) and S batches.
         let (mut ihs, mut is) = (0, 0);
         let out = &mut self.projections;
         for request in &self.coupling_requests {
@@ -236,6 +275,7 @@ impl JMThreadPropagation {
                 }
             }
         }
+
         self.coupling_clusters.clear();
         self.coupling_requests.clear();
     }

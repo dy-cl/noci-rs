@@ -89,6 +89,7 @@ pub(crate) fn write_restart(
             .with_data(&[world.size() as u64])
             .create("nranks")?;
     }
+
     world.barrier();
 
     // Each rank in turn adds its populations, values and histogram.
@@ -110,6 +111,8 @@ pub(crate) fn write_restart(
                 .with_data(&values)
                 .create("populations")?;
 
+            // Named controller arrays retain each propagator's state without encoding it
+            // in the shared population-key format.
             let named = group.create_group("values")?;
             for (name, value) in &restart.values {
                 named
@@ -136,8 +139,10 @@ pub(crate) fn write_restart(
                     .create("counts")?;
             }
         }
+
         world.barrier();
     }
+
     Ok(())
 }
 
@@ -162,6 +167,8 @@ pub(crate) fn read_restart(
     let file = File::open(path)?;
     let meta = file.group("meta")?;
     validate(&meta, identity)?;
+
+    // Shared report and RNG metadata determine ownership when the saved rank count differs.
     let state = meta.dataset("state")?.read_1d::<u64>()?;
     let (report, seed, reached) = (state[0] as usize, state[1], state[2] != 0);
     let shift = meta.dataset("shift")?.read_1d::<f64>()?[0];
@@ -185,12 +192,17 @@ pub(crate) fn read_restart(
     // Values and histogram of the matching saved rank.
     let irank = world.rank() as usize;
     let group = file.group(&format!("rank_{}", if irank < saved { irank } else { 0 }))?;
+
+    // Restore controller arrays by name, independently of the rank that owns each population.
     let named = group.group("values")?;
     let mut values = BTreeMap::new();
+
     for name in named.member_names()? {
         let value = named.dataset(&name)?.read_1d::<f64>()?.to_vec();
         values.insert(name, value);
     }
+
+    // Histograms are optional diagnostics and use the same saved-rank fallback as the values.
     let histogram = match group.group("histogram") {
         Ok(h) => {
             let range = h.dataset("range")?.read_1d::<f64>()?;
@@ -251,15 +263,18 @@ fn validate(
     if schema != SCHEMA {
         panic!("Restart schema mismatch: saved {schema}, current {SCHEMA}.");
     }
+
     let saved = meta.dataset("kind")?.read_1d::<u8>()?;
     let saved = std::str::from_utf8(saved.as_slice().unwrap()).unwrap_or("invalid");
     if saved != kind {
         panic!("Restart propagation mismatch: saved {saved}, current {kind}.");
     }
+
     let saved = meta.dataset("hash")?.read_1d::<u64>()?;
     if [saved[0], saved[1]] != hash {
         panic!("Restart determinant space mismatch: saved {saved:x?}, current {hash:x?}.");
     }
+
     Ok(())
 }
 
@@ -273,6 +288,9 @@ fn validate(
 pub(crate) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
     let mut hash = [0xcbf29ce484222325, 0x84222325cbf29ce4];
     let mut seen_parent = vec![false; space.parents.len()];
+
+    // Mix every structural word into both lanes; rotate the second lane to retain a distinct
+    // ordering of each word's high and low halves.
     let mut mix = |value: u64| {
         hash[0] ^= value;
         hash[0] = hash[0].wrapping_mul(0x00000100000001b3);
@@ -287,7 +305,8 @@ pub(crate) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
         let alpha = space.alpha(index);
         let beta = space.beta(index);
 
-        // Determinant order, occupations, phases and excitations.
+        // Determinant order, occupations, phases and excitations determine the meaning and
+        // sign of a saved population coordinate. Hash all of them before the shared frame.
         mix(i as u64);
         mix(det.parent as u64);
         for value in [alpha.occupation, beta.occupation] {
@@ -296,6 +315,7 @@ pub(crate) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
         }
         mix(alpha.data.phase.to_bits());
         mix(beta.data.phase.to_bits());
+
         for value in [
             alpha.data.excitation.holes,
             alpha.data.excitation.parts,
@@ -320,5 +340,6 @@ pub(crate) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
             }
         }
     }
+
     hash
 }

@@ -184,12 +184,15 @@ pub(in crate::noci::stochastic) fn propagate_iteration(
                 if population == 0.0 {
                     return;
                 }
+
                 if accumulate_tangent {
                     // For `d\Delta_x = -dt(H_xx-E_sS_xx)\tilde N_x`,
                     // `\partial d\Delta_x/\partial E_s = dt S_xx\tilde N_x`.
                     let dn = dt * run.diagonal_hs[source].1 * population;
                     worker.shift_tangent.add(source, dn, run.nranks > 1);
                 }
+
+                // Accumulate the diagonal term before queuing the source's off-diagonal spawns.
                 worker.diagonal_population_change(
                     source,
                     population,
@@ -279,6 +282,8 @@ pub(in crate::noci::stochastic) fn propagate_iteration_auxiliary(
                 worker
                     .shift_tangent
                     .add(source, dt * population, run.nranks > 1);
+
+                // Accumulate the diagonal term before queuing the source's off-diagonal spawns.
                 worker.diagonal_population_change(
                     source,
                     population,
@@ -627,19 +632,25 @@ pub(in crate::noci::stochastic) fn construct_qmc_run(
         Propagator::SApply | Propagator::BApply => PopulationRepresentation::Range,
         Propagator::Unshifted => PopulationRepresentation::Coefficient,
     };
+
+    // Validate the saved representation and determinant basis before accepting its base seed.
     let saved_seed = data
         .input
         .write
         .read_restart
         .as_deref()
         .map(|path| restart_seed(path, (representation.as_str(), compatibility_hash)).unwrap());
+
     let base_seed = saved_seed.unwrap_or_else(|| qmc.seed.unwrap_or_else(rand::random));
+
     if let (Some(saved_seed), Some(input_seed)) = (saved_seed, qmc.seed)
         && saved_seed != input_seed
         && irank == 0
     {
         println!("Warning: restart base seed {saved_seed} overrides input qmc.seed {input_seed}.");
     }
+
+    // Derive the rank-local stream only after the restart has selected the shared base seed.
     let rank_seed = rank_seed(base_seed, irank);
 
     // Determine the largest Wick scratch dimensions required by the stochastic basis.

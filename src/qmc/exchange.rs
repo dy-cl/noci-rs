@@ -37,6 +37,30 @@ pub(crate) struct PopulationUpdate {
     pub(crate) dn: f64,
 }
 
+/// Reusable MPI buffers for exchanging and gathering keyed population updates.
+pub(crate) struct ExchangeScratch<U> {
+    /// Number of sparse updates contributed by each rank for all-gather.
+    pub(crate) gather_counts: Vec<i32>,
+    /// Displacements for gathered sparse updates.
+    pub(crate) gather_displs: Vec<i32>,
+    /// Reusable receive buffer for gathered sparse updates.
+    pub(crate) gather_recv: Vec<U>,
+    /// Number of updates sent to each rank.
+    pub(crate) send_counts: Vec<i32>,
+    /// Displacements into the contiguous send buffer for each rank.
+    pub(crate) send_displacements: Vec<i32>,
+    /// Number of updates received from each rank.
+    pub(crate) recv_counts: Vec<i32>,
+    /// Displacements into the contiguous receive buffer for each rank.
+    pub(crate) recv_displacements: Vec<i32>,
+    /// Reusable contiguous send buffer.
+    pub(crate) send_contig: Vec<U>,
+    /// Reusable remote updates paired with their destination ranks.
+    pub(crate) send_ranked: Vec<(usize, U)>,
+    /// Reusable contiguous receive buffer.
+    pub(crate) recv_contig: Vec<U>,
+}
+
 impl KeyedUpdate for PopulationUpdate {
     type Key = u64;
 
@@ -72,30 +96,6 @@ impl FriAmplitude for PopulationUpdate {
     ) {
         self.dn = amplitude;
     }
-}
-
-/// Reusable MPI buffers for exchanging and gathering keyed population updates.
-pub(crate) struct ExchangeScratch<U> {
-    /// Number of sparse updates contributed by each rank for all-gather.
-    pub(crate) gather_counts: Vec<i32>,
-    /// Displacements for gathered sparse updates.
-    pub(crate) gather_displs: Vec<i32>,
-    /// Reusable receive buffer for gathered sparse updates.
-    pub(crate) gather_recv: Vec<U>,
-    /// Number of updates sent to each rank.
-    pub(crate) send_counts: Vec<i32>,
-    /// Displacements into the contiguous send buffer for each rank.
-    pub(crate) send_displacements: Vec<i32>,
-    /// Number of updates received from each rank.
-    pub(crate) recv_counts: Vec<i32>,
-    /// Displacements into the contiguous receive buffer for each rank.
-    pub(crate) recv_displacements: Vec<i32>,
-    /// Reusable contiguous send buffer.
-    pub(crate) send_contig: Vec<U>,
-    /// Reusable remote updates paired with their destination ranks.
-    pub(crate) send_ranked: Vec<(usize, U)>,
-    /// Reusable contiguous receive buffer.
-    pub(crate) recv_contig: Vec<U>,
 }
 
 impl<U> ExchangeScratch<U> {

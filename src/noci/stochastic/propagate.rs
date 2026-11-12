@@ -39,6 +39,14 @@ use super::state::{
 };
 use super::unshifted::Unshifted;
 
+/// One NOCIQMC run: the shared run state and the propagator advancing it.
+struct Propagation<'a, C, P> {
+    /// Shared run state.
+    run: NOCIRun<'a, C>,
+    /// Propagator advancing the populations.
+    propagator: P,
+}
+
 /// The state every NOCIQMC propagator shares during one run.
 pub(in crate::noci::stochastic) struct NOCIRun<'a, C> {
     /// Immutable stochastic propagation data.
@@ -61,6 +69,66 @@ pub(in crate::noci::stochastic) struct NOCIRun<'a, C> {
     pub(in crate::noci::stochastic) mpi: NOCIMPIScratch,
     /// Reusable chunk storage of the population sampling.
     chunks: Vec<Vec<(usize, f64)>>,
+}
+
+/// A NOCIQMC propagator: its set-up, the spawning of one cycle and the update at the end of a
+/// report. The run state it shares with the others is passed as `NOCIRun`.
+pub(in crate::noci::stochastic) trait NOCIPropagator<C: Communicator>:
+    Sized
+{
+    /// Build the propagator's generator, factor tables and workers.
+    /// # Arguments:
+    /// - `data`: Immutable stochastic propagation data.
+    /// - `run`: Rank-local topology of the run.
+    /// - `sizes`: Wick scratch dimensions of the worker threads.
+    /// - `world`: MPI communicator.
+    /// # Returns
+    /// - `Self`: Propagator ready for its first cycle.
+    fn new(
+        data: &NOCIData<'_, f64>,
+        run: &QMCRunInfo,
+        sizes: ScratchSize,
+        world: &C,
+    ) -> Self;
+
+    /// Spawn one cycle from the sampled populations and accumulate its change.
+    /// # Arguments:
+    /// - `self`: Propagator.
+    /// - `run`: Shared run state, whose sampled populations are the cycle's.
+    /// - `iteration`: Global iteration of the cycle.
+    /// # Returns
+    /// - `()`: Accumulates the cycle's spawns.
+    fn cycle(
+        &mut self,
+        run: &mut NOCIRun<'_, C>,
+        iteration: usize,
+    );
+
+    /// Exchange, compress and apply the report's accumulated change to the populations.
+    /// # Arguments:
+    /// - `self`: Propagator.
+    /// - `run`: Shared run state.
+    /// - `report`: Report ending with this update.
+    /// # Returns
+    /// - `Option<&[f64]>`: Propagated shift tangent `\partial N/\partial E_s` for a tangent
+    ///   controller, or `None` for the logarithmic one.
+    fn apply(
+        &mut self,
+        run: &mut NOCIRun<'_, C>,
+        report: usize,
+    ) -> Option<&[f64]>;
+
+    /// Print the propagator's final diagnostics, by default none.
+    /// # Arguments:
+    /// - `self`: Propagator.
+    /// - `_`: Shared run state.
+    /// # Returns
+    /// - `()`: Prints on the root rank.
+    fn finish(
+        &mut self,
+        _: &NOCIRun<'_, C>,
+    ) {
+    }
 }
 
 impl<'a, C: Communicator> NOCIRun<'a, C> {
@@ -158,6 +226,8 @@ impl<'a, C: Communicator> NOCIRun<'a, C> {
     ) {
         let qmc = self.data.input.qmc.as_ref().unwrap();
         let (factors, generator) = overlap;
+
+        // Batch the cycle's matrix elements on the workers before draining their results.
         propagate_iteration(
             (iteration, &self.state.mc.sampled),
             self.data,
@@ -172,6 +242,8 @@ impl<'a, C: Communicator> NOCIRun<'a, C> {
             workers,
             result,
         );
+
+        // Keep the report's overlap-weight estimator and population change in separate sums.
         self.derivatives.add(&result.overlap_derivatives);
         accumulate_generated_updates(&mut self.state.mc, result, self.data.input, &mut self.mpi);
     }
@@ -190,6 +262,7 @@ impl<'a, C: Communicator> NOCIRun<'a, C> {
     ) {
         let (stats, pe) =
             population_stats_projected_energy(&self.state.mc, &self.isref, &self.run, self.world);
+
         self.state.pe = pe;
         self.state.eprojcur = self.state.pe.num / self.state.pe.den;
 
@@ -223,6 +296,8 @@ impl<'a, C: Communicator> NOCIRun<'a, C> {
             scale,
         );
         self.state.prev_pop = stats;
+
+        // Reweight the proposal only after using the realised report for shift control.
         update_overlap_weight(
             &mut self.state,
             &mut self.derivatives,
@@ -232,74 +307,6 @@ impl<'a, C: Communicator> NOCIRun<'a, C> {
         );
         self.stats = stats;
     }
-}
-
-/// A NOCIQMC propagator: its set-up, the spawning of one cycle and the update at the end of a
-/// report. The run state it shares with the others is passed as `NOCIRun`.
-pub(in crate::noci::stochastic) trait NOCIPropagator<C: Communicator>:
-    Sized
-{
-    /// Build the propagator's generator, factor tables and workers.
-    /// # Arguments:
-    /// - `data`: Immutable stochastic propagation data.
-    /// - `run`: Rank-local topology of the run.
-    /// - `sizes`: Wick scratch dimensions of the worker threads.
-    /// - `world`: MPI communicator.
-    /// # Returns
-    /// - `Self`: Propagator ready for its first cycle.
-    fn new(
-        data: &NOCIData<'_, f64>,
-        run: &QMCRunInfo,
-        sizes: ScratchSize,
-        world: &C,
-    ) -> Self;
-
-    /// Spawn one cycle from the sampled populations and accumulate its change.
-    /// # Arguments:
-    /// - `self`: Propagator.
-    /// - `run`: Shared run state, whose sampled populations are the cycle's.
-    /// - `iteration`: Global iteration of the cycle.
-    /// # Returns
-    /// - `()`: Accumulates the cycle's spawns.
-    fn cycle(
-        &mut self,
-        run: &mut NOCIRun<'_, C>,
-        iteration: usize,
-    );
-
-    /// Exchange, compress and apply the report's accumulated change to the populations.
-    /// # Arguments:
-    /// - `self`: Propagator.
-    /// - `run`: Shared run state.
-    /// - `report`: Report ending with this update.
-    /// # Returns
-    /// - `Option<&[f64]>`: Propagated shift tangent `\partial N/\partial E_s` for a tangent
-    ///   controller, or `None` for the logarithmic one.
-    fn apply(
-        &mut self,
-        run: &mut NOCIRun<'_, C>,
-        report: usize,
-    ) -> Option<&[f64]>;
-
-    /// Print the propagator's final diagnostics, by default none.
-    /// # Arguments:
-    /// - `self`: Propagator.
-    /// - `_`: Shared run state.
-    /// # Returns
-    /// - `()`: Prints on the root rank.
-    fn finish(
-        &mut self,
-        _: &NOCIRun<'_, C>,
-    ) {
-    }
-}
-
-/// One NOCIQMC run: the shared run state and the propagator advancing it.
-struct Propagation<'a, C, P> {
-    /// Shared run state.
-    run: NOCIRun<'a, C>,
-    /// Propagator advancing the populations.
-    propagator: P,
 }
 
 impl<C: Communicator, P: NOCIPropagator<C>> Propagator for Propagation<'_, C, P> {

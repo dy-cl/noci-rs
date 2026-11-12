@@ -108,6 +108,13 @@ In `mod.rs` files, keep the module-header order above. Private imports used only
 
 ## Rust Structs
 
+Place structs, enums and traits near the top of the file, after imports and any macros needed to
+declare them. Keep each type's implementations together, before free functions. When several
+types describe one calculation, declare them together before their implementations so the data
+model is visible first. Keep scalar, four-lane and eight-lane evaluators adjacent and in that order
+where they implement the same operation. Put small shared helpers after the evaluators unless
+they belong to a type's implementation.
+
 Do not define generic context structs, such as `Setup`, `Context` or `State`, that bundle loosely
 related data only so one call can receive everything a routine needs. A struct groups fields that
 describe one concept and is named after it, for example `ReferenceSpaces` for the projection and
@@ -203,6 +210,11 @@ matching notation in Rustdoc and associated theory. For example:
 Long functions should form a visible sequence of named or commented logical stages. This is a
 readability preference, not a rigid line-count rule; short cohesive blocks and straightforward
 individual statements remain together.
+
+In matrix-element evaluators, separate orbital-label preparation, contraction gathering,
+determinant or cofactor evaluation, prefactors and output writes. Document scientific traits and
+their implementations with the matrix elements and governing equations they represent, using
+the same notation as the theory notes. State which phases and prefactors the caller supplies.
 
 Mathematical example from `src/scf/diis.rs`, where comments explain both the operation and its
 mathematical purpose:

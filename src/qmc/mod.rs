@@ -27,15 +27,13 @@ mod restart;
 mod rng;
 mod run;
 mod shift;
-mod workers;
 
 // Crate-visible type re-exports.
 pub(crate) use alias::AliasTable;
 pub(crate) use exchange::{ExchangeScratch, PopulationUpdate};
 pub(crate) use restart::Restart;
 pub(crate) use rng::QmcRng;
-pub(crate) use run::Propagator;
-pub(crate) use workers::Worker;
+pub(crate) use run::{Propagator, Worker};
 
 // Crate-visible function re-exports.
 pub(crate) use exchange::{
@@ -48,6 +46,5 @@ pub(crate) use ownership::{owner, owner_words};
 pub(crate) use report::{print_table_header, print_table_row};
 pub(crate) use restart::{basis_hash, read_restart, restart_seed, write_restart};
 pub(crate) use rng::{rank_seed, stream};
-pub(crate) use run::run;
+pub(crate) use run::{run, spawn_on_workers};
 pub(crate) use shift::update_shift;
-pub(crate) use workers::spawn_on_workers;

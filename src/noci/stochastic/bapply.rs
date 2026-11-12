@@ -29,106 +29,30 @@ use super::state::{
     ScratchSize,
 };
 
-/// Accumulate one cycle's `\chi_D^P` events and retain remote events for report exchange.
-/// # Arguments:
-/// - `result`: Ownership-separated worker propagation results.
-/// - `updates`: Rank-local report residual accumulator.
-/// - `scratch`: Persistent MPI exchange scratch for remote events.
-/// - `histogram`: Optional excitation-magnitude histogram.
-/// # Returns
-/// - `()`: Drains cycle-local auxiliary results into report accumulators.
-fn accumulate_generated_updates_auxiliary(
-    result: &mut AuxiliaryPropagationResult,
-    updates: &mut Vec<PopulationUpdate>,
-    scratch: &mut AuxiliaryMPIScratch,
-    histogram: &mut Option<ExcitationHist>,
-) {
-    updates.append(&mut result.local);
-    scratch.send_ranked.append(&mut result.remote);
-    if let Some(histogram) = histogram.as_mut() {
-        for sample in result.samples.drain(..) {
-            histogram.add(sample);
-        }
-    } else {
-        result.samples.clear();
-    }
-}
-
-/// Exchange pre-routed auxiliary events and combine them with local report updates.
-/// # Arguments:
-/// - `local`: Rank-owned report residual updates.
-/// - `scratch`: Reusable auxiliary MPI storage.
-/// - `world`: MPI communicator.
-/// # Returns
-/// - `()`: Places complete owner-local contributions in `scratch.recv_contig`.
-fn redistribute_population_updates_auxiliary(
-    local: &mut Vec<PopulationUpdate>,
-    scratch: &mut AuxiliaryMPIScratch,
-    world: &impl Communicator,
-) {
-    // Send every routed event, unmerged, to its owner and append the already-owned local
-    // events to the same owner-local buffer.
-    pack_updates(scratch.send_counts.len(), scratch, false);
-    exchange_updates(world, scratch);
-    scratch.recv_contig.append(local);
-    scratch.send_ranked.clear();
-}
-
-/// Report persistent BApply factor backing and lazily discovered physical spin strings.
-/// # Arguments:
-/// - `rank`: Current MPI rank; only rank zero writes storage output.
-/// - `mode`: Requested shared `SNOCIStorage` backend.
-/// - `initial`: Initial factor-table backing bytes.
-/// - `factors`: Current persistent cross-parent factor tables.
-/// # Returns
-/// - `()`: Writes actual initial, final, and peak backing and added spin string counts.
-fn print_bapply_storage(
-    rank: usize,
-    mode: crate::input::SNOCIStorage,
-    initial: usize,
-    factors: &OverlapFactors,
-) {
-    if rank != 0 {
-        return;
-    }
-    let (final_bytes, _) = factors.storage_bytes();
-    let (alpha, beta) = factors.added_components();
-    let mib = 1024.0 * 1024.0;
-    println!("BApply factor storage: {}", mode.as_str());
-    println!(
-        "BApply initial factor tables: {:.3} MiB",
-        initial as f64 / mib
-    );
-    println!(
-        "BApply final factor tables: {:.3} MiB",
-        final_bytes as f64 / mib
-    );
-    println!("BApply added alpha factor columns: {alpha}");
-    println!("BApply added beta factor columns: {beta}");
-    println!(
-        "BApply peak factor storage: {:.3} MiB",
-        final_bytes as f64 / mib
-    );
+/// Factorised B-apply overlap map, its auxiliary coordinates and workspaces for `B` and `B^\dagger`.
+struct BApplyOverlap {
+    /// Determinant and spin-string mappings of the overlap.
+    factorisation: SpinFactorisation,
+    /// Auxiliary space of every parent's connections.
+    auxiliary: AuxiliarySpace,
+    /// Cross-parent factors, grown when new auxiliary spin strings are discovered.
+    factors: OverlapFactors,
+    /// Factor-table backing bytes before propagation, used in the storage report.
+    initial_bytes: usize,
+    /// Reusable storage for a retained-space overlap application.
+    overlap_scratch: OverlapScratch,
+    /// Reusable storage for the auxiliary-to-retained map `B^\dagger`.
+    auxiliary_scratch: AuxiliaryOverlapScratch,
 }
 
 /// The BApply range propagator.
 /// `\chi \simeq -dt(\hat H-E_s)B N` is sampled in parent-orthogonal determinant spaces and the
 /// persistent real range population is updated as `N_{r+1} = N_r + B^\dagger\chi_r`.
 pub(in crate::noci::stochastic) struct BApply {
-    /// Determinant and spin-string mappings of the overlap.
-    factorisation: SpinFactorisation,
-    /// Auxiliary space of every parent's connections.
-    auxiliary: AuxiliarySpace,
+    /// Factorised map between retained and auxiliary populations and its workspaces.
+    overlap: BApplyOverlap,
     /// Parent-orthogonal proposal, uniform or PCHB.
     generator: AuxiliaryGenerator,
-    /// Overlap factor tables, grown lazily as auxiliary spin strings are discovered.
-    factors: OverlapFactors,
-    /// Factor-table storage in bytes before propagation.
-    initial_bytes: usize,
-    /// Reusable storage of one application of the overlap.
-    overlap_scratch: OverlapScratch,
-    /// Reusable storage of one application of `B^\dagger`.
-    auxiliary_scratch: AuxiliaryOverlapScratch,
     /// Auxiliary-space MPI exchange scratch.
     mpi: AuxiliaryMPIScratch,
     /// Per-thread propagation workers.
@@ -213,13 +137,15 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
             .collect();
 
         Self {
-            initial_bytes: factors.storage_bytes().0,
-            overlap_scratch: factorisation.overlap_scratch(),
-            auxiliary_scratch: factorisation.auxiliary_overlap_scratch(),
-            factorisation,
-            auxiliary,
+            overlap: BApplyOverlap {
+                initial_bytes: factors.storage_bytes().0,
+                overlap_scratch: factorisation.overlap_scratch(),
+                auxiliary_scratch: factorisation.auxiliary_overlap_scratch(),
+                factorisation,
+                auxiliary,
+                factors,
+            },
             generator,
-            factors,
             mpi: AuxiliaryMPIScratch::new(run.nranks),
             workers,
             result: AuxiliaryPropagationResult::new(),
@@ -246,7 +172,7 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
             run.data,
             &run.run,
             run.shift,
-            (&self.generator, &self.auxiliary),
+            (&self.generator, &self.overlap.auxiliary),
             &mut self.workers,
             &mut self.result,
         );
@@ -305,15 +231,15 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
         };
 
         // Apply the realised range update `N_{r+1} = N_r + B^\dagger\chi_r`.
-        self.factorisation.apply_auxiliary_overlap_sparse(
+        self.overlap.factorisation.apply_auxiliary_overlap_sparse(
             &mut run.state.mc.populations,
             &run.run.owned,
             physical_updates
                 .iter()
                 .map(|update| (AuxiliaryIndex(update.index as usize), update.dn)),
-            (run.data, &self.auxiliary),
-            &mut self.factors,
-            &mut self.auxiliary_scratch,
+            (run.data, &self.overlap.auxiliary),
+            &mut self.overlap.factors,
+            &mut self.overlap.auxiliary_scratch,
         );
 
         // Recycle the report buffers, emptied for the next report's cycles.
@@ -331,8 +257,8 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
             &mut self.workers,
             run,
             &mut fri_rng,
-            (&self.factorisation, &self.factors),
-            &mut self.overlap_scratch,
+            (&self.overlap.factorisation, &self.overlap.factors),
+            &mut self.overlap.overlap_scratch,
         ))
     }
 
@@ -350,8 +276,90 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
         print_bapply_storage(
             run.run.irank,
             qmc.bapply_factor_tables,
-            self.initial_bytes,
-            &self.factors,
+            self.overlap.initial_bytes,
+            &self.overlap.factors,
         );
     }
+}
+
+/// Accumulate one cycle's `\chi_D^P` events and retain remote events for report exchange.
+/// # Arguments:
+/// - `result`: Ownership-separated worker propagation results.
+/// - `updates`: Rank-local report residual accumulator.
+/// - `scratch`: Persistent MPI exchange scratch for remote events.
+/// - `histogram`: Optional excitation-magnitude histogram.
+/// # Returns
+/// - `()`: Drains cycle-local auxiliary results into report accumulators.
+fn accumulate_generated_updates_auxiliary(
+    result: &mut AuxiliaryPropagationResult,
+    updates: &mut Vec<PopulationUpdate>,
+    scratch: &mut AuxiliaryMPIScratch,
+    histogram: &mut Option<ExcitationHist>,
+) {
+    updates.append(&mut result.local);
+    scratch.send_ranked.append(&mut result.remote);
+    if let Some(histogram) = histogram.as_mut() {
+        for sample in result.samples.drain(..) {
+            histogram.add(sample);
+        }
+    } else {
+        result.samples.clear();
+    }
+}
+
+/// Exchange pre-routed auxiliary events and combine them with local report updates.
+/// # Arguments:
+/// - `local`: Rank-owned report residual updates.
+/// - `scratch`: Reusable auxiliary MPI storage.
+/// - `world`: MPI communicator.
+/// # Returns
+/// - `()`: Places complete owner-local contributions in `scratch.recv_contig`.
+fn redistribute_population_updates_auxiliary(
+    local: &mut Vec<PopulationUpdate>,
+    scratch: &mut AuxiliaryMPIScratch,
+    world: &impl Communicator,
+) {
+    // Send every routed event, unmerged, to its owner and append the already-owned local
+    // events to the same owner-local buffer.
+    pack_updates(scratch.send_counts.len(), scratch, false);
+    exchange_updates(world, scratch);
+    scratch.recv_contig.append(local);
+    scratch.send_ranked.clear();
+}
+
+/// Report persistent BApply factor backing and lazily discovered physical spin strings.
+/// # Arguments:
+/// - `rank`: Current MPI rank; only rank zero writes storage output.
+/// - `mode`: Requested shared `SNOCIStorage` backend.
+/// - `initial`: Initial factor-table backing bytes.
+/// - `factors`: Current persistent cross-parent factor tables.
+/// # Returns
+/// - `()`: Writes actual initial, final, and peak backing and added spin string counts.
+fn print_bapply_storage(
+    rank: usize,
+    mode: crate::input::SNOCIStorage,
+    initial: usize,
+    factors: &OverlapFactors,
+) {
+    if rank != 0 {
+        return;
+    }
+    let (final_bytes, _) = factors.storage_bytes();
+    let (alpha, beta) = factors.added_components();
+    let mib = 1024.0 * 1024.0;
+    println!("BApply factor storage: {}", mode.as_str());
+    println!(
+        "BApply initial factor tables: {:.3} MiB",
+        initial as f64 / mib
+    );
+    println!(
+        "BApply final factor tables: {:.3} MiB",
+        final_bytes as f64 / mib
+    );
+    println!("BApply added alpha factor columns: {alpha}");
+    println!("BApply added beta factor columns: {beta}");
+    println!(
+        "BApply peak factor storage: {:.3} MiB",
+        final_bytes as f64 / mib
+    );
 }
