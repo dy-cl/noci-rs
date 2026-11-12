@@ -49,6 +49,8 @@ pub struct JMDeterministicOptions {
 
 impl Default for JMNOCCMCOptions {
     /// Return default JM-NOCCMC options.
+    /// # Arguments:
+    /// - None.
     /// # Returns:
     /// - `Self`: JM-NOCCMC options with CCSD clusters and no propagation selected.
     fn default() -> Self {
@@ -65,6 +67,8 @@ impl Default for JMNOCCMCOptions {
 
 impl Default for JMDeterministicOptions {
     /// Return default deterministic JM-NOCCMC options.
+    /// # Arguments:
+    /// - None.
     /// # Returns:
     /// - `Self`: Deterministic JM-NOCCMC options with a dynamic shift and no diagnostics.
     fn default() -> Self {

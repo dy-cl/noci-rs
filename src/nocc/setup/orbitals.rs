@@ -148,7 +148,7 @@ pub(crate) fn transform_noci_basis<T: NOCIScalar>(
     // Reattach the original determinant occupations and labels to their
     // transformed parent frames.
     for index in 0..basis.len() {
-        let state = basis.state(NOCIIndex(index));
+        let state = basis.spin_string_pair(NOCIIndex(index));
         let (oa, ob) = basis.occupations(NOCIIndex(index));
         out.push(state.parent, oa, ob, basis.labels[index].clone());
     }

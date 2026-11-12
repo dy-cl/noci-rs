@@ -10,52 +10,38 @@ pub(crate) use onebody::{OneBodyFactorisation, OneBodyScratch};
 pub(crate) use overlap::{OverlapFactors, OverlapScratch};
 
 // Crate-root imports.
-use crate::ExcitationSpinCache;
-
-// Parent/sibling imports.
 use crate::NOCIScalar;
-use crate::determinant::{NOCISpace, NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
+use crate::determinant::{NOCISpace, SpinStringData};
 use crate::elements::NOCIData;
+use crate::elements::nonorthogonalwicks::SpinStringSources;
 
 /// Actual determinant entry in a parent-local spin factorisation.
 #[derive(Clone, Copy)]
 pub(crate) struct FactorEntry {
     /// Global determinant index `I`.
     pub(crate) det: usize,
-    /// Parent-local alpha component `a_I`.
+    /// Parent-local alpha spin string `a_I`.
     pub(crate) a: usize,
-    /// Parent-local beta component `b_I`.
+    /// Parent-local beta spin string `b_I`.
     pub(crate) b: usize,
 }
 
 /// Parent-local determinant space in the shared spin factorisation.
 #[derive(Default)]
 pub(super) struct ParentSpinSpace {
-    /// Reduced representative for each parent-local alpha component.
-    pub(super) areps: Vec<ReducedOneSpinNOCIDeterminantState>,
-    /// Alpha component IDs in fixed-rank Wick evaluation order.
-    pub(super) a_eval_order: Vec<usize>,
-    /// Alpha excitation caches in fixed-rank Wick evaluation order.
-    pub(super) a_eval_caches: Vec<ExcitationSpinCache>,
-    /// Alpha excitation phases in fixed-rank Wick evaluation order.
-    pub(super) a_eval_phases: Vec<f64>,
-    /// Boundaries of equal-rank, common-hole alpha evaluation groups.
-    pub(super) a_eval_groups: Vec<usize>,
-    /// Reduced representative for each parent-local beta component.
-    pub(super) breps: Vec<ReducedOneSpinNOCIDeterminantState>,
-    /// Beta component IDs in fixed-rank Wick evaluation order.
-    pub(super) b_eval_order: Vec<usize>,
-    /// Beta excitation caches in fixed-rank Wick evaluation order.
-    pub(super) b_eval_caches: Vec<ExcitationSpinCache>,
-    /// Beta excitation phases in fixed-rank Wick evaluation order.
-    pub(super) b_eval_phases: Vec<f64>,
-    /// Boundaries of equal-rank, common-hole beta evaluation groups.
-    pub(super) b_eval_groups: Vec<usize>,
+    /// Payload of each parent-local alpha spin string.
+    pub(super) areps: Vec<SpinStringData>,
+    /// Alpha representatives in packed Wick evaluation order.
+    pub(super) a_sources: SpinStringSources,
+    /// Payload of each parent-local beta spin string.
+    pub(super) breps: Vec<SpinStringData>,
+    /// Beta representatives in packed Wick evaluation order.
+    pub(super) b_sources: SpinStringSources,
     /// Actual determinants belonging to this parent as `(I,a_I,b_I)`.
     pub(super) entries: Vec<FactorEntry>,
-    /// Determinant indices grouped by parent-local alpha component.
+    /// Determinant indices grouped by parent-local alpha spin string.
     pub(super) entries_by_a: Vec<Vec<usize>>,
-    /// Determinant indices grouped by parent-local beta component.
+    /// Determinant indices grouped by parent-local beta spin string.
     pub(super) entries_by_b: Vec<Vec<usize>>,
 }
 
@@ -70,7 +56,7 @@ pub(crate) struct SpinFactorisation {
 }
 
 impl SpinFactorisation {
-    /// Prepare parent-local factor evaluation orders from authoritative component IDs.
+    /// Prepare parent-local factor evaluation orders from authoritative spin-string IDs.
     /// # Arguments:
     /// - `data`: Retained NOCI topology and matrix-element data.
     /// # Returns:
@@ -79,14 +65,14 @@ impl SpinFactorisation {
         let parents = build_parent_spin_spaces(data.space);
         let ma = data
             .space
-            .components
+            .spin_strings
             .iter()
             .map(|parent| parent.na())
             .max()
             .unwrap_or(0);
         let mb = data
             .space
-            .components
+            .spin_strings
             .iter()
             .map(|parent| parent.nb())
             .max()
@@ -164,9 +150,9 @@ pub(super) fn ordered_parent_pair(
     }
 }
 
-/// Build the numerical factor plan from canonical parent-local component identities.
+/// Build the numerical factor plan from canonical parent-local spin-string identities.
 /// The retained determinant set is sparse within each `A_P \\times B_P` product, so entries are
-/// recorded in basis order while one-spin evaluation orders come from the component caches.
+/// recorded in basis order while one-spin evaluation orders come from the spin-string payloads.
 /// # Arguments:
 /// - `space`: Authoritative retained NOCI determinant topology.
 /// # Returns:
@@ -177,8 +163,8 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
         .map(|_| ParentSpinSpace::default())
         .collect::<Vec<_>>();
 
-    // Index each retained determinant by both of its one-spin component identities.
-    for (det, state) in space.states.iter().enumerate() {
+    // Index each retained determinant by both of its spin-string identities.
+    for (det, state) in space.pairs.iter().enumerate() {
         let parent = &mut parents[state.parent];
         let aid = state.aid.0;
         let bid = state.bid.0;
@@ -200,105 +186,17 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
         parent.entries_by_b[bid].push(det);
     }
 
-    // Materialise canonical reduced representatives and contraction evaluation orders.
+    // Copy each parent's canonical spin-string data in ID order: FactorEntry.a/b index these
+    // arrays, so their order must continue to match the retained determinant topology.
     for (parent_id, parent) in parents.iter_mut().enumerate() {
-        let components = space.parent_components(parent_id);
+        let strings = space.parent_spin_strings(parent_id);
+        parent.areps = strings.alpha.iter().map(|string| string.data).collect();
+        parent.breps = strings.beta.iter().map(|string| string.data).collect();
 
-        parent.areps = components
-            .alpha
-            .iter()
-            .enumerate()
-            .map(|(component, state)| ReducedOneSpinNOCIDeterminantState {
-                parent: parent_id,
-                component: NOCISpinIndex(component),
-                state: state.reduced,
-            })
-            .collect();
-        parent.breps = components
-            .beta
-            .iter()
-            .enumerate()
-            .map(|(component, state)| ReducedOneSpinNOCIDeterminantState {
-                parent: parent_id,
-                component: NOCISpinIndex(component),
-                state: state.reduced,
-            })
-            .collect();
-
-        // Fixed-rank Wick rows are grouped by rank and common holes so the numerical evaluator
-        // can reuse contraction preparation independently of determinant-pair identities.
-        parent.a_eval_order = (0..parent.areps.len()).collect();
-        parent.a_eval_order.sort_unstable_by(|&i, &j| {
-            let ic = parent.areps[i].state.excitation_cache;
-            let jc = parent.areps[j].state.excitation_cache;
-            ic.rank
-                .cmp(&jc.rank)
-                .then_with(|| ic.holes.cmp(&jc.holes))
-                .then_with(|| ic.particles.cmp(&jc.particles))
-                .then_with(|| i.cmp(&j))
-        });
-        parent.a_eval_groups.push(0);
-        for position in 1..parent.a_eval_order.len() {
-            let previous = parent.areps[parent.a_eval_order[position - 1]]
-                .state
-                .excitation_cache;
-            let current = parent.areps[parent.a_eval_order[position]]
-                .state
-                .excitation_cache;
-            if current.rank != previous.rank || current.holes != previous.holes {
-                parent.a_eval_groups.push(position);
-            }
-        }
-        if !parent.a_eval_order.is_empty() {
-            parent.a_eval_groups.push(parent.a_eval_order.len());
-        }
-        parent.a_eval_caches = parent
-            .a_eval_order
-            .iter()
-            .map(|&id| parent.areps[id].state.excitation_cache)
-            .collect();
-        parent.a_eval_phases = parent
-            .a_eval_order
-            .iter()
-            .map(|&id| parent.areps[id].state.phase)
-            .collect();
-
-        // Mirror the rank-and-hole grouping for beta-spin contraction rows.
-        parent.b_eval_order = (0..parent.breps.len()).collect();
-        parent.b_eval_order.sort_unstable_by(|&i, &j| {
-            let ic = parent.breps[i].state.excitation_cache;
-            let jc = parent.breps[j].state.excitation_cache;
-            ic.rank
-                .cmp(&jc.rank)
-                .then_with(|| ic.holes.cmp(&jc.holes))
-                .then_with(|| ic.particles.cmp(&jc.particles))
-                .then_with(|| i.cmp(&j))
-        });
-        parent.b_eval_groups.push(0);
-        for position in 1..parent.b_eval_order.len() {
-            let previous = parent.breps[parent.b_eval_order[position - 1]]
-                .state
-                .excitation_cache;
-            let current = parent.breps[parent.b_eval_order[position]]
-                .state
-                .excitation_cache;
-            if current.rank != previous.rank || current.holes != previous.holes {
-                parent.b_eval_groups.push(position);
-            }
-        }
-        if !parent.b_eval_order.is_empty() {
-            parent.b_eval_groups.push(parent.b_eval_order.len());
-        }
-        parent.b_eval_caches = parent
-            .b_eval_order
-            .iter()
-            .map(|&id| parent.breps[id].state.excitation_cache)
-            .collect();
-        parent.b_eval_phases = parent
-            .b_eval_order
-            .iter()
-            .map(|&id| parent.breps[id].state.phase)
-            .collect();
+        // Build a separate evaluation order grouped by excitation rank and common holes.
+        // SpinStringSources keeps the original columns so factor rows scatter back to ID order.
+        parent.a_sources = SpinStringSources::new(&parent.areps);
+        parent.b_sources = SpinStringSources::new(&parent.breps);
     }
 
     parents

@@ -401,8 +401,8 @@ impl OverlapFactorStorage {
     /// representation is retained after extension.
     /// # Arguments:
     /// - `self`: Existing overlap-factor storage.
-    /// - `nta`: Number of target alpha components.
-    /// - `ntb`: Number of target beta components.
+    /// - `nta`: Number of target alpha spin strings.
+    /// - `ntb`: Number of target beta spin strings.
     /// - `nsa`: Number of occupied alpha source columns before insertion.
     /// - `nsb`: Number of occupied beta source columns before insertion.
     /// - `alpha`: New alpha columns, each with `nta` target-row values.

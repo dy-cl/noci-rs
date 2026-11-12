@@ -46,7 +46,8 @@ pub(crate) fn rdm2<T: NOCIScalar>(
     // `\sum_{xw} c_x^L c_w^R S_{xw}` before normalisation.
     for x in 0..data.space.len() {
         for w in 0..data.space.len() {
-            let pair = DetPair::new(
+            let pair = DetPair::from_space(
+                data.space,
                 crate::determinant::NOCIIndex(x),
                 crate::determinant::NOCIIndex(w),
             );
@@ -98,10 +99,7 @@ fn rdm2_pair<T: NOCIScalar>(
     pair: DetPair,
     scratch: Option<&mut WickScratchSpin<T>>,
 ) -> (T, RDM2<T>) {
-    let lstate = data.space.state(pair.ldet);
-    let gstate = data.space.state(pair.gdet);
-
-    if lstate.parent != gstate.parent && data.input.wicks.enabled {
+    if pair.bra.parent != pair.ket.parent && data.input.wicks.enabled {
         rdm2_pair_wicks(
             data,
             pair,

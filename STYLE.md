@@ -5,9 +5,20 @@
 Organise methods by family first and approach second, above three shared layers:
 
 1. `determinant/`: parent orbital frames, determinant identities and the determinant spaces.
-2. `elements/`: every matrix element and reduced density matrix between determinants. The
-   operator files dispatch each determinant pair to one engine: `orthogonal/`, `naive/`
-   (generalised Slater-Condon) or `nonorthogonalwicks/`.
+   Determinants and spin strings each have a handle (`…Index`), an identity (`…State`) and a
+   payload measured from a reference (`…Data`): `NOCIIndex`, `DeterminantState` and
+   `DeterminantData`; `NOCISpinStringIndex`, `SpinStringState` and `SpinStringData`. A connection
+   (`ConnectionState`) yields the `DeterminantData` of its child measured from its source.
+2. `elements/`: every matrix element and reduced density matrix between determinants.
+   `operator.rs` defines each operator by its evaluation in every engine, and `pairs.rs`
+   dispatches each `DetPair` to one engine: `orthogonal/`, `naive/` (generalised Slater-Condon)
+   or `nonorthogonalwicks/`. Both SIMD engines have one evaluator file per operator family in
+   their `eval/` folder: the orthogonal families implement `OrthogonalElement` and the Wick
+   families implement `SpinFactor`, each supplying only its scalar and packed fixed-rank
+   evaluators. A Wick fixed-rank formula is written once over `V: Simd<N>`: a single element
+   evaluates it with one lane (`T::Packed1`), so no family keeps a separate scalar copy. Every packed evaluator, orthogonal connections, same-spin factor rows, two-spin
+   Wick pairs and RDMs, implements `LaneBatch` in `elements/batch.rs`, which owns the width
+   dispatch, the packets, their padding and the write of the genuine lanes.
 3. `qmc/`: stochastic machinery independent of the population representation: seeded random
    streams, MPI ownership, exchange and annihilation of keyed updates, FRI compression, the
    population-control shift, stop requests, and excitation generators within one parent frame
@@ -96,6 +107,13 @@ In `mod.rs` files, keep the module-header order above. Private imports used only
 `mod.rs` implementation come after submodules and re-exports.
 
 ## Rust Structs
+
+Place structs, enums and traits near the top of the file, after imports and any macros needed to
+declare them. Keep each type's implementations together, before free functions. When several
+types describe one calculation, declare them together before their implementations so the data
+model is visible first. Keep scalar, four-lane and eight-lane evaluators adjacent and in that order
+where they implement the same operation. Put small shared helpers after the evaluators unless
+they belong to a type's implementation.
 
 Do not define generic context structs, such as `Setup`, `Context` or `State`, that bundle loosely
 related data only so one call can receive everything a routine needs. A struct groups fields that
@@ -192,6 +210,11 @@ matching notation in Rustdoc and associated theory. For example:
 Long functions should form a visible sequence of named or commented logical stages. This is a
 readability preference, not a rigid line-count rule; short cohesive blocks and straightforward
 individual statements remain together.
+
+In matrix-element evaluators, separate orbital-label preparation, contraction gathering,
+determinant or cofactor evaluation, prefactors and output writes. Document scientific traits and
+their implementations with the matrix elements and governing equations they represent, using
+the same notation as the theory notes. State which phases and prefactors the caller supplies.
 
 Mathematical example from `src/scf/diis.rs`, where comments explain both the operation and its
 mathematical purpose:

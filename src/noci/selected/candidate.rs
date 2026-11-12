@@ -31,7 +31,7 @@ impl CandidatePool {
             let generated = space.excited_from(selected_space, input, false);
             let candidates = (0..generated.len())
                 .map(|index| {
-                    let state = generated.state(NOCIIndex(index));
+                    let state = generated.spin_string_pair(NOCIIndex(index));
                     let (oa, ob) = generated.occupations(NOCIIndex(index));
                     space.push(state.parent, oa, ob, generated.labels[index].clone())
                 })
@@ -95,7 +95,7 @@ impl CandidatePool {
             let new_candidates = (0..generated.len())
                 .filter(|&index| !existing.contains(generated.labels[index].as_str()))
                 .map(|index| {
-                    let state = generated.state(NOCIIndex(index));
+                    let state = generated.spin_string_pair(NOCIIndex(index));
                     let (oa, ob) = generated.occupations(NOCIIndex(index));
                     space.push(state.parent, oa, ob, generated.labels[index].clone())
                 })

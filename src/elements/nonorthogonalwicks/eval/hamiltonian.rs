@@ -1,41 +1,153 @@
-// elements/nonorthogonalwicks/eval/preparehamiltonianoverlap.rs
-
-// Standard library imports.
-#[cfg(target_arch = "x86_64")]
-use std::any::TypeId;
-#[cfg(target_arch = "x86_64")]
-use std::arch::is_x86_feature_detected;
-
-// External crate imports.
-use num_complex::Complex64;
+// elements/nonorthogonalwicks/eval/hamiltonian.rs
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::determinant::{NOCIIndex, NOCISpace};
+use crate::determinant::DeterminantData;
 #[cfg(target_arch = "x86_64")]
+use crate::elements::LaneKernel;
+use crate::elements::{LaneBatch, group_lanes, xw_lanes};
 use crate::maths::{
-    C64x4, C64x8, F64x4, F64x8, Simd, adjugate_transpose_simd_const, det_simd_const,
-};
-use crate::maths::{
-    adjugate_transpose_const, adjugate_transpose_dynamic, det_const, det_dynamic,
+    Simd, adjugate_transpose_const, adjugate_transpose_dynamic, det_const, det_dynamic,
     second_minor_const, second_minor_dynamic,
 };
 use crate::time_call;
-use crate::{Excitation, ExcitationCache, ExcitationSpinCache, ReducedTwoSpinState};
+use crate::{Excitation, ExcitationCache};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratchSpin;
 use super::super::view::WicksPairView;
-use super::dispatch::{
-    HAMNRANKS, HAMRADIX, HAMRANKS, HAMSPACE, dispatch_hamiltonian_ranks,
-    dispatch_hamiltonian_ranks_inner, dispatch_hamiltonian_scalar_ranks,
-};
+use super::dispatch::{HAMRADIX, dispatch_hamiltonian_ranks, dispatch_hamiltonian_ranks_inner};
 use super::helpers::{DetBranches, DetIndex, Minor, ReplacementLayout};
 use super::helpers::{
     adjugate_transpose_generic, bit, column_replacement_correction, column_replacement_det,
     get_det_adjt_diff, ii_replacement, j_replacement, jslot, minor_adjt, mix_dets_same,
 };
 use super::prepare::prepare_same;
+
+/// Batch of Hamiltonian and overlap requests of one ordered reference pair, grouped by their four
+/// excitation ranks.
+/// Every lane evaluates `S = S^\alpha S^\beta` and `H = \langle D_x|\hat H|D_w\rangle` together.
+/// The same-spin two-body terms share `\det D`, the one-column replacements and second minors;
+/// the different-spin term couples `\operatorname{cof}(D_\alpha)` and
+/// `\operatorname{cof}(D_\beta)` through `\mathcal{II}_{\eta z,\xi y}`. Keeping both spins in
+/// one lane lets all Hamiltonian contributions reuse the same contraction determinants.
+struct HamiltonianLanes<'a, T: NOCIScalar> {
+    /// Wick intermediates of the ordered reference pair.
+    w: &'a WicksPairView<'a, T>,
+    /// Nuclear repulsion energy.
+    enuc: f64,
+    /// Numerical tolerance of the scalar evaluator.
+    tol: f64,
+    /// Reusable Wick workspace for scalar evaluation.
+    scratch: &'a mut WickScratchSpin<T>,
+    /// Output positions with their bra and ket determinants.
+    requests: &'a [(usize, DeterminantData, DeterminantData)],
+    /// Request of every lane.
+    order: &'a [usize],
+    /// Hamiltonian and overlap results in output order.
+    out: &'a mut [(T, T)],
+}
+
+impl<T: NOCIScalar> LaneBatch for HamiltonianLanes<'_, T> {
+    type Lane = (DeterminantData, DeterminantData);
+    type Out = (T, T);
+
+    /// Evaluate the Hamiltonian and overlap of one determinant pair through the prepared scalar
+    /// path.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `_`: Position of the lane, unused by the scalar path.
+    /// - `lane`: Bra and ket determinants relative to their references.
+    /// # Returns
+    /// - `(T, T)`: Hamiltonian and overlap matrix elements `(H, S)`.
+    fn scalar(
+        &mut self,
+        _: usize,
+        lane: &(DeterminantData, DeterminantData),
+    ) -> (T, T) {
+        let (x, wdet) = lane;
+        xw_hamiltonian_overlap_prepared(self.w, (x, wdet), self.enuc, self.scratch, self.tol)
+    }
+
+    /// Write the Hamiltonian and overlap of one lane to the output of its request.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `position`: Position of the lane in rank order.
+    /// - `value`: Hamiltonian and overlap matrix elements `(H, S)`.
+    /// # Returns
+    /// - `()`: Writes one entry of `out`.
+    fn write(
+        &mut self,
+        position: usize,
+        value: (T, T),
+    ) {
+        self.out[self.requests[self.order[position]].0] = value;
+    }
+
+    /// Select the four-lane kernel of a group of equal excitation ranks when
+    /// `m_\alpha = m_\beta = 0`.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `lane`: First determinant pair of the group.
+    /// # Returns
+    /// - `Option<LaneKernel<Self, 4>>`: Kernel of the group, or `None` for scalar evaluation.
+    #[cfg(target_arch = "x86_64")]
+    fn kernel_x4(
+        &self,
+        lane: &(DeterminantData, DeterminantData),
+    ) -> Option<LaneKernel<Self, 4>> {
+        if self.w.aa.m != 0 || self.w.bb.m != 0 {
+            return None;
+        }
+        let (x, w) = lane;
+        let ranks = (
+            usize::from(x.alpha.cache.rank),
+            usize::from(w.alpha.cache.rank),
+            usize::from(x.beta.cache.rank),
+            usize::from(w.beta.cache.rank),
+        );
+        dispatch_hamiltonian_ranks!(
+            ranks,
+            |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| Some(
+                packet_x4::<T, RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB>
+                    as LaneKernel<Self, 4>
+            ),
+            None,
+        )
+    }
+
+    /// Select the eight-lane kernel of a group of equal excitation ranks when
+    /// `m_\alpha = m_\beta = 0`.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `lane`: First determinant pair of the group.
+    /// # Returns
+    /// - `Option<LaneKernel<Self, 8>>`: Kernel of the group, or `None` for scalar evaluation.
+    #[cfg(target_arch = "x86_64")]
+    fn kernel_x8(
+        &self,
+        lane: &(DeterminantData, DeterminantData),
+    ) -> Option<LaneKernel<Self, 8>> {
+        if self.w.aa.m != 0 || self.w.bb.m != 0 {
+            return None;
+        }
+        let (x, w) = lane;
+        let ranks = (
+            usize::from(x.alpha.cache.rank),
+            usize::from(w.alpha.cache.rank),
+            usize::from(x.beta.cache.rank),
+            usize::from(w.beta.cache.rank),
+        );
+        dispatch_hamiltonian_ranks!(
+            ranks,
+            |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| Some(
+                packet_x8::<T, RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB>
+                    as LaneKernel<Self, 8>
+            ),
+            None,
+        )
+    }
+}
 
 /// Evaluate the Hamiltonian and overlap matrix elements between two determinants generated from
 /// one ordered pair of nonorthogonal references.
@@ -48,9 +160,7 @@ use super::prepare::prepare_same;
 /// `H_{2,\alpha\beta}` together so determinants, cofactors and second minors are reused.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `ex`: Bra and ket excitations used by the generic fallback.
-/// - `cache`: Cached bra and ket excitation ranks and orbital labels per spin.
-/// - `excitation_phase`: Product of the alpha- and beta-spin excitation phases.
+/// - `states`: Bra and ket determinants relative to their references.
 /// - `enuc`: Nuclear repulsion energy.
 /// - `scratch`: Reusable Wick workspace for generic-rank and nonzero-`m` evaluation.
 /// - `tol`: Numerical tolerance used by generic determinant and adjugate evaluation.
@@ -59,9 +169,7 @@ use super::prepare::prepare_same;
 #[inline(always)]
 pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    ex: (&Excitation, &Excitation),
-    cache: (&ExcitationCache, &ExcitationCache),
-    excitation_phase: f64,
+    states: (&DeterminantData, &DeterminantData),
     enuc: f64,
     scratch: &mut WickScratchSpin<T>,
     tol: f64,
@@ -76,9 +184,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
                 return (0..w.ncombinations()).fold((zero, zero), |(h, s), k| {
                     let (hk, sk) = xw_hamiltonian_overlap_prepared(
                         &w.combination(k),
-                        ex,
-                        cache,
-                        excitation_phase,
+                        states,
                         enuc,
                         scratch,
                         tol,
@@ -87,8 +193,23 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
                 });
             }
 
-            let (x_ex, w_ex) = ex;
-            let (x_cache, w_cache) = cache;
+            // The kernels read both spins' masks and caches of each determinant together.
+            let (x, wdet) = states;
+            let spins = |d: &DeterminantData| {
+                (
+                    Excitation {
+                        alpha: d.alpha.excitation,
+                        beta: d.beta.excitation,
+                    },
+                    ExcitationCache {
+                        alpha: d.alpha.cache,
+                        beta: d.beta.cache,
+                    },
+                )
+            };
+            let ((x_ex, x_cache), (w_ex, w_cache)) = (spins(x), spins(wdet));
+            let (x_ex, w_ex, x_cache, w_cache) = (&x_ex, &w_ex, &x_cache, &w_cache);
+            let excitation_phase = x.phase() * wdet.phase();
 
             // For `m_\alpha=m_\beta=0`, try fixed-rank determinant/cofactor formulas before the
             // generic evaluator. Any other zero-overlap distribution requires the general path.
@@ -133,16 +254,15 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 }
 
 /// Evaluate batched Hamiltonian and overlap matrix elements for one ordered reference pair.
-/// Every request supplied to this routine already belongs to that reference pair. Requests are
-/// streamed through generated `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})` bins when
+/// Every request supplied to this routine already belongs to that reference pair. A single
+/// request has no other requests to fill SIMD lanes and is evaluated directly. Otherwise requests
+/// are streamed through generated `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})` bins when
 /// `m_\alpha = m_\beta = 0`. The widest matching real or complex SIMD kernel is selected internally,
 /// incomplete bins are padded with one valid request, and unsupported requests use the existing
 /// prepared scalar evaluator.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `basis`: Determinant basis used only by generic fallback evaluation.
-/// - `reduced_states`: Compact two-spin metadata keyed by global determinant index.
-/// - `requests`: Tuples `(output, a, b)` containing output position and determinant indices.
+/// - `requests`: Output positions with their bra and ket determinant data.
 /// - `enuc`: Nuclear repulsion energy.
 /// - `scratch`: Reusable Wick workspace for scalar generic-rank evaluation.
 /// - `tol`: Numerical tolerance used by generic determinant and adjugate evaluation.
@@ -151,8 +271,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 /// - `()`: Writes every matrix element in `requests` into `out`.
 pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    basis: (&NOCISpace<T>, &[ReducedTwoSpinState]),
-    requests: &[(usize, usize, usize)],
+    requests: &[(usize, DeterminantData, DeterminantData)],
     enuc: f64,
     scratch: &mut WickScratchSpin<T>,
     tol: f64,
@@ -161,6 +280,11 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_prepared_batched,
         {
+            if let [(output, x, wdet)] = requests {
+                out[*output] = xw_hamiltonian_overlap_prepared(w, (x, wdet), enuc, scratch, tol);
+                return;
+            }
+
             // A reference pair with near-zero orbital pairs is the sum over its combinations of
             // alpha- and beta-spin branches; accumulate the requested outputs of each one.
             if w.ncombinations() > 1 {
@@ -172,7 +296,6 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                 for k in 0..w.ncombinations() {
                     xw_hamiltonian_overlap_prepared_batched(
                         &w.combination(k),
-                        basis,
                         requests,
                         enuc,
                         scratch,
@@ -187,284 +310,49 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                 return;
             }
 
-            #[cfg(target_arch = "x86_64")]
-            if w.aa.m == 0 && w.bb.m == 0 {
-                // Fixed-rank `m=0` requests can be packetised by the four excitation ranks and
-                // dispatched to the widest supported real or complex SIMD kernel.
-                unsafe {
-                    if TypeId::of::<T>() == TypeId::of::<f64>() {
-                        let w_f64 = &*std::ptr::from_ref(w).cast::<WicksPairView<'_, f64>>();
-                        let basis_f64 = &*std::ptr::from_ref(basis.0).cast::<NOCISpace<f64>>();
-                        let scratch_f64 =
-                            &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<f64>>();
-                        let out_f64 = std::slice::from_raw_parts_mut(
-                            out.as_mut_ptr().cast::<(f64, f64)>(),
-                            out.len(),
-                        );
-
-                        if is_x86_feature_detected!("avx512f") {
-                            xw_hamiltonian_overlap_prepared_simd(
-                                w_f64,
-                                (basis_f64, basis.1),
-                                requests,
-                                (enuc, tol),
-                                scratch_f64,
-                                out_f64,
-                                xw_hamiltonian_overlap_m0_prepared_f64x8,
-                            );
-                            return;
-                        }
-
-                        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-                            xw_hamiltonian_overlap_prepared_simd(
-                                w_f64,
-                                (basis_f64, basis.1),
-                                requests,
-                                (enuc, tol),
-                                scratch_f64,
-                                out_f64,
-                                xw_hamiltonian_overlap_m0_prepared_f64x4,
-                            );
-                            return;
-                        }
+            // Requests are grouped by their four excitation ranks so every packet shares one
+            // fixed-rank determinant, cofactor, same-spin second-minor and mixed-spin cofactor
+            // expression; ranks beyond the generated table share one scalar group.
+            let keys: Vec<usize> = requests
+                .iter()
+                .map(|(_, x, wdet)| {
+                    let (rxa, rwa) = (
+                        usize::from(x.alpha.cache.rank),
+                        usize::from(wdet.alpha.cache.rank),
+                    );
+                    let (rxb, rwb) = (
+                        usize::from(x.beta.cache.rank),
+                        usize::from(wdet.beta.cache.rank),
+                    );
+                    if rxa.max(rwa).max(rxb).max(rwb) < HAMRADIX {
+                        ((rxa * HAMRADIX + rwa) * HAMRADIX + rxb) * HAMRADIX + rwb
+                    } else {
+                        usize::MAX
                     }
+                })
+                .collect();
+            let (order, groups) = group_lanes(&keys);
+            let lanes: Vec<(DeterminantData, DeterminantData)> = order
+                .iter()
+                .map(|&request| (requests[request].1, requests[request].2))
+                .collect();
 
-                    if TypeId::of::<T>() == TypeId::of::<Complex64>() {
-                        let w_c64 = &*std::ptr::from_ref(w).cast::<WicksPairView<'_, Complex64>>();
-                        let basis_c64 =
-                            &*std::ptr::from_ref(basis.0).cast::<NOCISpace<Complex64>>();
-                        let scratch_c64 =
-                            &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<Complex64>>();
-                        let out_c64 = std::slice::from_raw_parts_mut(
-                            out.as_mut_ptr().cast::<(Complex64, Complex64)>(),
-                            out.len(),
-                        );
-
-                        if is_x86_feature_detected!("avx512f") {
-                            xw_hamiltonian_overlap_prepared_simd(
-                                w_c64,
-                                (basis_c64, basis.1),
-                                requests,
-                                (enuc, tol),
-                                scratch_c64,
-                                out_c64,
-                                xw_hamiltonian_overlap_m0_prepared_c64x8,
-                            );
-                            return;
-                        }
-
-                        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-                            xw_hamiltonian_overlap_prepared_simd(
-                                w_c64,
-                                (basis_c64, basis.1),
-                                requests,
-                                (enuc, tol),
-                                scratch_c64,
-                                out_c64,
-                                xw_hamiltonian_overlap_m0_prepared_c64x4,
-                            );
-                            return;
-                        }
-                    }
-                }
-            }
-
-            let (space, reduced_states) = basis;
-            // Scalar fallback reconstructs full excitations only for requests outside the
-            // generated fixed-rank region; `output` preserves original request order.
-            for &(output, a, b) in requests {
-                let x_det = &reduced_states[a];
-                let w_det = &reduced_states[b];
-                let (xa, xb) = space.excitations(NOCIIndex(a));
-                let (wa, wb) = space.excitations(NOCIIndex(b));
-                let x_state = Excitation {
-                    alpha: *xa,
-                    beta: *xb,
-                };
-                let w_state = Excitation {
-                    alpha: *wa,
-                    beta: *wb,
-                };
-
-                out[output] = xw_hamiltonian_overlap_prepared(
-                    w,
-                    (&x_state, &w_state),
-                    (&x_det.excitation_cache, &w_det.excitation_cache),
-                    x_det.phase * w_det.phase,
-                    enuc,
-                    scratch,
-                    tol,
-                );
-            }
+            let mut batch = HamiltonianLanes {
+                w,
+                enuc,
+                tol,
+                scratch,
+                requests,
+                order: &order,
+                out,
+            };
+            xw_lanes(&mut batch, &lanes, &groups);
         }
     )
 }
 
-/// Evaluate one real or complex SIMD Hamiltonian/overlap request group.
-/// Requests are separated by all four reference-resolved spin ranks, so every packet uses one
-/// fixed-rank determinant, cofactor, same-spin second-minor and mixed-spin cofactor expression.
-/// Incomplete packets are padded with a valid lane and unsupported ranks use the scalar evaluator.
-/// # Arguments:
-/// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `basis`: Full determinant data and compact determinant metadata.
-/// - `requests`: Output positions and determinant pairs belonging to this reference pair.
-/// - `parameters`: Nuclear repulsion energy and scalar-fallback numerical tolerance.
-/// - `scratch`: Reusable scalar fallback workspace.
-/// - `out`: Real or complex Hamiltonian and overlap outputs.
-/// - `kernel`: Fixed-width real or complex SIMD rank dispatcher.
-/// # Returns:
-/// - `()`: Writes every request into `out`.
-/// # Safety:
-/// - The caller must provide a kernel supported by the current CPU.
-#[cfg(target_arch = "x86_64")]
-#[allow(clippy::type_complexity)]
-unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
-    w: &WicksPairView<'_, T>,
-    basis: (&NOCISpace<T>, &[ReducedTwoSpinState]),
-    requests: &[(usize, usize, usize)],
-    parameters: (f64, f64),
-    scratch: &mut WickScratchSpin<T>,
-    out: &mut [(T, T)],
-    kernel: for<'a> unsafe fn(
-        &WicksPairView<'a, T>,
-        (usize, usize, usize, usize),
-        (&[ExcitationCache; N], &[ExcitationCache; N]),
-        &[f64; N],
-        f64,
-        (&mut [T; N], &mut [T; N]),
-    ),
-) {
-    let (enuc, tol) = parameters;
-    let (basis, reduced_states) = basis;
-
-    let mut rank_bins = [usize::MAX; HAMSPACE];
-
-    for (bin, &(rxa, rwa, rxb, rwb)) in HAMRANKS.iter().enumerate() {
-        let key = ((rxa * HAMRADIX + rwa) * HAMRADIX + rxb) * HAMRADIX + rwb;
-        rank_bins[key] = bin;
-    }
-
-    let mut x_bins = [[ExcitationCache::default(); N]; HAMNRANKS];
-    let mut w_bins = [[ExcitationCache::default(); N]; HAMNRANKS];
-    let mut phases = [[1.0f64; N]; HAMNRANKS];
-    let mut outputs = [[0usize; N]; HAMNRANKS];
-    let mut counts = [0usize; HAMNRANKS];
-
-    // Bin requests by `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})` so every SIMD packet
-    // shares one fixed-rank determinant/cofactor expression.
-    unsafe {
-        for &(output, a, b) in requests {
-            let x_det = &reduced_states[a];
-            let w_det = &reduced_states[b];
-            let x_cache = x_det.excitation_cache;
-            let w_cache = w_det.excitation_cache;
-            let ranks = (
-                usize::from(x_cache.alpha.rank),
-                usize::from(w_cache.alpha.rank),
-                usize::from(x_cache.beta.rank),
-                usize::from(w_cache.beta.rank),
-            );
-            let bin = if ranks.0 < HAMRADIX
-                && ranks.1 < HAMRADIX
-                && ranks.2 < HAMRADIX
-                && ranks.3 < HAMRADIX
-            {
-                let key =
-                    ((ranks.0 * HAMRADIX + ranks.1) * HAMRADIX + ranks.2) * HAMRADIX + ranks.3;
-                rank_bins[key]
-            } else {
-                usize::MAX
-            };
-
-            if bin != usize::MAX {
-                let count = counts[bin];
-                x_bins[bin][count] = x_cache;
-                w_bins[bin][count] = w_cache;
-                phases[bin][count] = x_det.phase * w_det.phase;
-                outputs[bin][count] = output;
-                counts[bin] += 1;
-
-                if counts[bin] == N {
-                    // Complete packet: evaluate all lanes with one fixed-rank kernel, then scatter
-                    // results back to their original output positions.
-                    let mut h = [T::from_real(0.0); N];
-                    let mut s = [T::from_real(0.0); N];
-                    kernel(
-                        w,
-                        HAMRANKS[bin],
-                        (&x_bins[bin], &w_bins[bin]),
-                        &phases[bin],
-                        enuc,
-                        (&mut h, &mut s),
-                    );
-
-                    for lane in 0..N {
-                        out[outputs[bin][lane]] = (h[lane], s[lane]);
-                    }
-                    counts[bin] = 0;
-                }
-            } else {
-                // Unsupported rank: preserve correctness through the scalar prepared evaluator.
-                let (xa, xb) = basis.excitations(NOCIIndex(a));
-                let (wa, wb) = basis.excitations(NOCIIndex(b));
-                let x_state = Excitation {
-                    alpha: *xa,
-                    beta: *xb,
-                };
-                let w_state = Excitation {
-                    alpha: *wa,
-                    beta: *wb,
-                };
-                let value = xw_hamiltonian_overlap_prepared(
-                    w,
-                    (&x_state, &w_state),
-                    (&x_cache, &w_cache),
-                    x_det.phase * w_det.phase,
-                    enuc,
-                    scratch,
-                    tol,
-                );
-                out[output] = value;
-            }
-        }
-
-        for bin in 0..counts.len() {
-            let count = counts[bin];
-            if count == 0 {
-                continue;
-            }
-
-            let fill_x = x_bins[bin][0];
-            let fill_w = w_bins[bin][0];
-            let fill_phase = phases[bin][0];
-            // Pad incomplete packets with a valid lane only for SIMD evaluation; write back only
-            // the genuine `count` requests.
-            for lane in count..N {
-                x_bins[bin][lane] = fill_x;
-                w_bins[bin][lane] = fill_w;
-                phases[bin][lane] = fill_phase;
-            }
-
-            let mut h = [T::from_real(0.0); N];
-            let mut s = [T::from_real(0.0); N];
-            kernel(
-                w,
-                HAMRANKS[bin],
-                (&x_bins[bin], &w_bins[bin]),
-                &phases[bin],
-                enuc,
-                (&mut h, &mut s),
-            );
-
-            for lane in 0..count {
-                out[outputs[bin][lane]] = (h[lane], s[lane]);
-            }
-        }
-    }
-}
-
-/// Dispatch an `m_\alpha = m_\beta = 0` Hamiltonian and overlap matrix element to a generated
-/// fixed-rank scalar kernel.
+/// Dispatch an `m_\alpha = m_\beta = 0` Hamiltonian and overlap matrix element to the generated
+/// fixed-rank packed kernel with one lane.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
 /// - `ranks`: Bra/ket alpha and beta ranks `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})`.
@@ -486,335 +374,41 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared,
         {
-            dispatch_hamiltonian_scalar_ranks!(
+            dispatch_hamiltonian_ranks!(
                 ranks,
                 |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| {
-                    Some(xw_hamiltonian_overlap_m0_prepared_const::<
-                        T,
-                        RXA,
-                        RWA,
-                        LA,
-                        DA,
-                        MA,
-                        MDA,
-                        RXB,
-                        RWB,
-                        LB,
-                        DB,
-                        MB,
-                        MDB,
-                    >(w, x_ex, w_ex, excitation_phase, enuc))
+                    let (mut h, mut s) = ([T::from_real(0.0)], [T::from_real(0.0)]);
+                    unsafe {
+                        xw_hamiltonian_overlap_m0_const::<
+                            T,
+                            T::Packed1,
+                            1,
+                            RXA,
+                            RWA,
+                            LA,
+                            DA,
+                            MA,
+                            MDA,
+                            RXB,
+                            RWB,
+                            LB,
+                            DB,
+                            MB,
+                            MDB,
+                        >(
+                            w,
+                            &[*x_ex],
+                            &[*w_ex],
+                            &[excitation_phase],
+                            enuc,
+                            &mut h,
+                            &mut s,
+                        )
+                    };
+                    Some((h[0], s[0]))
                 },
                 None,
             )
-        }
-    )
-}
-
-/// Construct fixed-rank Hamiltonian contraction labels from cached excitation data.
-/// # Arguments:
-/// - `x_ex`: Cached bra same-spin excitation.
-/// - `w_ex`: Cached ket same-spin excitation.
-/// - `nocc`: Number of occupied orbitals.
-/// - `nvirt`: Number of virtual orbitals.
-/// - `rows`: Output contraction-row labels.
-/// - `cols`: Output contraction-column labels.
-/// # Returns:
-/// - `()`: Writes `RX + RW` row and column labels.
-#[inline(always)]
-fn construct_hamiltonian_indices<const RX: usize, const RW: usize, const L: usize>(
-    x_ex: &ExcitationSpinCache,
-    w_ex: &ExcitationSpinCache,
-    nocc: usize,
-    nvirt: usize,
-    rows: &mut [usize; L],
-    cols: &mut [usize; L],
-) {
-    // Bra-reference pairs occupy the `V_x x O_x` block.
-    for i in 0..RX {
-        rows[i] = usize::from(x_ex.particles[i]) - nocc;
-        cols[i] = usize::from(x_ex.holes[i]);
-    }
-
-    // Ket-reference pairs append the `O_w x V_w` block.
-    for i in 0..RW {
-        rows[RX + i] = nvirt + usize::from(w_ex.holes[i]);
-        cols[RX + i] = usize::from(w_ex.particles[i]);
-    }
-}
-
-/// Evaluate the fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap for
-/// `m_\alpha = m_\beta = 0`.
-/// The contraction determinants, cofactors and required second minors are evaluated
-/// directly for this rank pair and reused by all Hamiltonian contributions.
-/// For each spin sector `\sigma`, the overlap determinant is
-/// `D^\sigma_{ij} = X^{(0)}_{r_i c_j}` for `i >= j` and
-/// `D^\sigma_{ij} = Y^{(0)}_{r_i c_j}` for `i < j`.
-/// The overlap contribution is
-/// `S = p\det\mathbf D_{\alpha,\mathrm{ov}}\det\mathbf D_{\beta,\mathrm{ov}}`, with
-/// `p` the excitation phase times the two reduced reference-overlap factors.
-/// The one-body contribution in each spin sector is the `m = 0` form
-/// `F^\sigma = F^\sigma_0\det\mathbf D_{\sigma,\mathrm{ov}}`
-/// `- \sum_z\det\mathbf D_{\sigma,\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal F}_z}`.
-/// The same-spin two-body contribution uses the three Laplace classes:
-/// `V^\sigma_0\det\mathbf D_{\sigma,\mathrm{ov}}`;
-/// `-2\sum_z\det\mathbf D_{\sigma,\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal V}_z}`,
-/// and the second-minor contraction
-/// `\sum_{z<y}\sum_{\eta<\xi}\phi_{\eta\xi}^{zy}`
-/// `\mathcal J^\sigma_{\eta z,\xi y}\det\mathbf D_{\sigma,\mathrm{ov}}[\eta,\xi|z,y]`.
-/// The mixed-spin contribution is
-/// `V^{\alpha\beta}_0\det\mathbf D_{\alpha,\mathrm{ov}}\det\mathbf D_{\beta,\mathrm{ov}}`
-/// minus the alpha and beta one-column replacements, plus the cofactor contraction
-/// `\sum_{z,y}\sum_{\eta,\xi}\operatorname{cof}[\mathbf D_{\alpha,\mathrm{ov}}]_{\eta z}`
-/// `\mathcal{II}_{\eta z,\xi y}`
-/// `\operatorname{cof}[\mathbf D_{\beta,\mathrm{ov}}]_{\xi y}`.
-/// # Arguments:
-/// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `x_ex`: Predecoded bra excitation ranks and orbital labels.
-/// - `w_ex`: Predecoded ket excitation ranks and orbital labels.
-/// - `excitation_phase`: Product of the alpha- and beta-spin excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// # Returns:
-/// - `(T, T)`: Hamiltonian and overlap matrix elements `(H, S)`.
-#[inline(never)]
-fn xw_hamiltonian_overlap_m0_prepared_const<
-    T: NOCIScalar,
-    const RXA: usize,
-    const RWA: usize,
-    const LA: usize,
-    const DA: usize,
-    const MA: usize,
-    const MDA: usize,
-    const RXB: usize,
-    const RWB: usize,
-    const LB: usize,
-    const DB: usize,
-    const MB: usize,
-    const MDB: usize,
->(
-    w: &WicksPairView<'_, T>,
-    x_ex: &ExcitationCache,
-    w_ex: &ExcitationCache,
-    excitation_phase: f64,
-    enuc: f64,
-) -> (T, T) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_const,
-        {
-            // Build alpha-spin `\mathbf D_{\alpha,\mathrm{ov}}`, its determinant/cofactors, and
-            // labels `(r_\eta,c_z) \in (V_x\cup O_w)\times(O_x\cup V_w)`.
-            let zero = T::from_real(0.0);
-            let half = T::from_real(0.5);
-            let mut rows_a = [0usize; LA];
-            let mut cols_a = [0usize; LA];
-            let mut d_a = [zero; DA];
-            let mut cof_a = [zero; DA];
-            let n_a = w.aa.n();
-            let nocc_a = w.aa.nocc;
-            let nvirt_a = w.aa.nmo - nocc_a;
-            construct_hamiltonian_indices::<RXA, RWA, LA>(
-                &x_ex.alpha,
-                &w_ex.alpha,
-                nocc_a,
-                nvirt_a,
-                &mut rows_a,
-                &mut cols_a,
-            );
-
-            let x0_a = w.aa.x_slice(0);
-            let y0_a = w.aa.y_slice(0);
-
-            // `D^\alpha_{\eta z}=X^{(0)}_{r_\eta c_z}` for `\eta\geq z`, otherwise
-            // `D^\alpha_{\eta z}=Y^{(0)}_{r_\eta c_z}`.
-            for i in 0..LA {
-                let row = rows_a[i] * n_a;
-                for j in 0..LA {
-                    d_a[i * LA + j] = if i >= j {
-                        x0_a[row + cols_a[j]]
-                    } else {
-                        y0_a[row + cols_a[j]]
-                    };
-                }
-            }
-
-            // Same-spin two-column class:
-            // `\sum_{z<y}\sum_{\eta<\xi}\phi_{\eta\xi}^{zy}`
-            // `\mathcal J^\alpha_{\eta z,\xi y}\det\mathbf D_\alpha[\eta,\xi|z,y]`.
-            let det_a = adjugate_transpose_const::<T, LA, DA>(&mut cof_a, &d_a);
-            let mut j_a = zero;
-            let jsl_a = w.aa.j_slice(0);
-            let n2_a = n_a * n_a;
-            let n3_a = n2_a * n_a;
-            for eta in 0..LA {
-                for xi in (eta + 1)..LA {
-                    for z in 0..LA {
-                        for y in (z + 1)..LA {
-                            let mut minor = [zero; MDA];
-                            second_minor_const::<T, LA>(&mut minor, &d_a, eta, xi, z, y);
-                            let second = det_const::<T, MA, MDA>(&minor);
-                            let direct_base =
-                                rows_a[eta] * n3_a + cols_a[z] * n2_a + rows_a[xi] * n_a;
-                            let exchange_base =
-                                rows_a[eta] * n3_a + cols_a[y] * n2_a + rows_a[xi] * n_a;
-                            let term = second
-                                * (jsl_a[direct_base + cols_a[y]]
-                                    - jsl_a[exchange_base + cols_a[z]]);
-                            if ((eta + xi + z + y) & 1) == 0 {
-                                j_a += term;
-                            } else {
-                                j_a -= term;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // One-column alpha contribution combines one-body and same-spin two-body intermediates:
-            // `\sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
-            // `\mathcal H^\alpha_{\eta z}`.
-            let mut replacement_a = zero;
-            let hcol0_a = w.aa.hcol0_t_slice();
-            for z in 0..LA {
-                let base = cols_a[z] * n_a;
-                for eta in 0..LA {
-                    replacement_a += cof_a[eta * LA + z] * hcol0_a[base + rows_a[eta]];
-                }
-            }
-
-            // Repeat determinant, `\mathcal J`, and one-column stages for beta spin.
-            let mut rows_b = [0usize; LB];
-            let mut cols_b = [0usize; LB];
-            let mut d_b = [zero; DB];
-            let mut cof_b = [zero; DB];
-            let n_b = w.bb.n();
-            let nocc_b = w.bb.nocc;
-            let nvirt_b = w.bb.nmo - nocc_b;
-            construct_hamiltonian_indices::<RXB, RWB, LB>(
-                &x_ex.beta,
-                &w_ex.beta,
-                nocc_b,
-                nvirt_b,
-                &mut rows_b,
-                &mut cols_b,
-            );
-
-            let x0_b = w.bb.x_slice(0);
-            let y0_b = w.bb.y_slice(0);
-
-            // `D^\beta_{\eta z}=X^{(0)}_{r_\eta c_z}` on/below diagonal and `Y^{(0)}` above it.
-            for i in 0..LB {
-                let row = rows_b[i] * n_b;
-                for j in 0..LB {
-                    d_b[i * LB + j] = if i >= j {
-                        x0_b[row + cols_b[j]]
-                    } else {
-                        y0_b[row + cols_b[j]]
-                    };
-                }
-            }
-
-            // Contract beta second minors with stored same-spin `\mathcal J^\beta` intermediates.
-            let det_b = adjugate_transpose_const::<T, LB, DB>(&mut cof_b, &d_b);
-            let mut j_b = zero;
-            let jsl_b = w.bb.j_slice(0);
-            let n2_b = n_b * n_b;
-            let n3_b = n2_b * n_b;
-            for eta in 0..LB {
-                for xi in (eta + 1)..LB {
-                    for z in 0..LB {
-                        for y in (z + 1)..LB {
-                            let mut minor = [zero; MDB];
-                            second_minor_const::<T, LB>(&mut minor, &d_b, eta, xi, z, y);
-                            let second = det_const::<T, MB, MDB>(&minor);
-                            let direct_base =
-                                rows_b[eta] * n3_b + cols_b[z] * n2_b + rows_b[xi] * n_b;
-                            let exchange_base =
-                                rows_b[eta] * n3_b + cols_b[y] * n2_b + rows_b[xi] * n_b;
-                            let term = second
-                                * (jsl_b[direct_base + cols_b[y]]
-                                    - jsl_b[exchange_base + cols_b[z]]);
-                            if ((eta + xi + z + y) & 1) == 0 {
-                                j_b += term;
-                            } else {
-                                j_b -= term;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Contract beta cofactors with precombined one-column Hamiltonian intermediates.
-            let mut replacement_b = zero;
-            let hcol0_b = w.bb.hcol0_t_slice();
-            for z in 0..LB {
-                let base = cols_b[z] * n_b;
-                for eta in 0..LB {
-                    replacement_b += cof_b[eta * LB + z] * hcol0_b[base + rows_b[eta]];
-                }
-            }
-
-            // Different-spin two-column class:
-            // `\sum_{\eta z\xi y}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
-            // `\mathcal{II}_{\eta z,\xi y}\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
-            let mut ii_term = zero;
-            let iisl = w.ab.iiab_slice(0, 0, 0, 0);
-            let n = w.ab.n();
-            let n2 = n * n;
-            let n3 = n2 * n;
-            if LA <= LB {
-                for z in 0..LA {
-                    for eta in 0..LA {
-                        let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
-                        let mut inner = zero;
-                        for y in 0..LB {
-                            for xi in 0..LB {
-                                inner +=
-                                    cof_b[xi * LB + y] * iisl[base_a + rows_b[xi] * n + cols_b[y]];
-                            }
-                        }
-                        ii_term += cof_a[eta * LA + z] * inner;
-                    }
-                }
-            } else {
-                for y in 0..LB {
-                    for xi in 0..LB {
-                        let suffix_b = rows_b[xi] * n + cols_b[y];
-                        let mut inner = zero;
-                        for z in 0..LA {
-                            for eta in 0..LA {
-                                let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
-                                inner += cof_a[eta * LA + z] * iisl[base_a + suffix_b];
-                            }
-                        }
-                        ii_term += cof_b[xi * LB + y] * inner;
-                    }
-                }
-            }
-
-            // Combine scalar, one-column, same-spin two-column, and mixed-spin two-column classes.
-            // `g_0` contains `E_\mathrm{nuc}+F^\alpha_0+F^\beta_0`
-            // `+\tfrac12(V^{\alpha\alpha}_0+V^{\beta\beta}_0)+V^{\alpha\beta}_0`.
-            let det_ab = det_a * det_b;
-            let g0 = T::from_real(enuc)
-                + w.aa.f0h[0]
-                + half * w.aa.v0[0]
-                + w.bb.f0h[0]
-                + half * w.bb.v0[0]
-                + w.ab.vab0[0][0];
-            let mut core = g0 * det_ab;
-            core -= det_b * replacement_a;
-            core -= det_a * replacement_b;
-            core += j_a * det_b;
-            core += j_b * det_a;
-            core += ii_term;
-
-            // Apply excitation phase and reduced overlaps only after forming unscaled `(H,S)`.
-            let pref = T::from_real(excitation_phase)
-                * w.aa.phase
-                * T::from_real(w.aa.tilde_s_prod)
-                * w.bb.phase
-                * T::from_real(w.bb.tilde_s_prod);
-            (pref * core, pref * det_ab)
         }
     )
 }
@@ -836,9 +430,8 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
 /// - `()`: Writes `LANES` Hamiltonian and overlap values.
 /// # Safety
 /// - Cached labels must match fixed ranks; caller must establish `V` CPU support.
-#[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
+unsafe fn xw_hamiltonian_overlap_m0_const<
     T: NOCIScalar,
     V: Simd<LANES, Scalar = T>,
     const LANES: usize,
@@ -904,7 +497,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
             d_a[i * LA + j] = V::load(&values);
         }
     }
-    let det_a = adjugate_transpose_simd_const::<V, LANES, LA, DA>(&mut cof_a, &d_a);
+    let det_a = adjugate_transpose_const::<V, LANES, LA, DA>(&mut cof_a, &d_a);
 
     let mut j_a = zero;
     let jsl_a = w.aa.j_slice(0);
@@ -919,7 +512,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
                 for y in (z + 1)..LA {
                     let mut minor = [zero; MDA];
                     second_minor_const::<V, LA>(&mut minor, &d_a, eta, xi, z, y);
-                    let second = det_simd_const::<V, LANES, MA, MDA>(&minor);
+                    let second = det_const::<V, LANES, MA, MDA>(&minor);
                     let mut direct = [T::from_real(0.0); LANES];
                     let mut exchange = [T::from_real(0.0); LANES];
                     for lane in 0..LANES {
@@ -997,7 +590,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
             d_b[i * LB + j] = V::load(&values);
         }
     }
-    let det_b = adjugate_transpose_simd_const::<V, LANES, LB, DB>(&mut cof_b, &d_b);
+    let det_b = adjugate_transpose_const::<V, LANES, LB, DB>(&mut cof_b, &d_b);
 
     let mut j_b = zero;
     let jsl_b = w.bb.j_slice(0);
@@ -1011,7 +604,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
                 for y in (z + 1)..LB {
                     let mut minor = [zero; MDB];
                     second_minor_const::<V, LB>(&mut minor, &d_b, eta, xi, z, y);
-                    let second = det_simd_const::<V, LANES, MB, MDB>(&minor);
+                    let second = det_const::<V, LANES, MB, MDB>(&minor);
                     let mut direct = [T::from_real(0.0); LANES];
                     let mut exchange = [T::from_real(0.0); LANES];
                     for lane in 0..LANES {
@@ -1133,206 +726,18 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
     V::store(V::mul(pref, det_ab), s);
 }
 
-/// Dispatch four real Hamiltonian/overlap values to one fixed-rank AVX2/FMA kernel.
+/// Evaluate one four-lane packet of fixed-rank Hamiltonian and overlap values with AVX2/FMA.
 /// # Arguments:
-/// - `w`: Real Wick intermediates.
-/// - `ranks`: Reference-resolved excitation ranks.
-/// - `ex`: Bra and ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `out`: Hamiltonian and overlap outputs.
+/// - `batch`: Batch holding the Wick intermediates and the nuclear repulsion energy.
+/// - `lanes`: Bra and ket determinants of every lane.
 /// # Returns
-/// - `()`: Writes four matrix-element pairs.
+/// - `[(T, T); 4]`: Hamiltonian and overlap of every lane.
 /// # Safety
-/// - The current CPU must support AVX2 and FMA; cached ranks must match `ranks`.
+/// - The current CPU must support AVX2/FMA; cached labels must match the fixed ranks.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4(
-    w: &WicksPairView<'_, f64>,
-    ranks: (usize, usize, usize, usize),
-    ex: (&[ExcitationCache; 4], &[ExcitationCache; 4]),
-    excitation_phase: &[f64; 4],
-    enuc: f64,
-    out: (&mut [f64; 4], &mut [f64; 4]),
-) {
-    let (x_ex, w_ex) = ex;
-    let (h, s) = out;
-    dispatch_hamiltonian_ranks!(
-        ranks,
-        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
-            xw_hamiltonian_overlap_m0_prepared_f64x4_const::<
-                RXA,
-                RWA,
-                LA,
-                DA,
-                MA,
-                MDA,
-                RXB,
-                RWB,
-                LB,
-                DB,
-                MB,
-                MDB,
-            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-        },
-        (),
-    )
-}
-
-/// Dispatch four complex Hamiltonian/overlap values to one fixed-rank AVX2/FMA kernel.
-/// # Arguments:
-/// - `w`: Complex Wick intermediates.
-/// - `ranks`: Reference-resolved excitation ranks.
-/// - `ex`: Bra and ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `out`: Hamiltonian and overlap outputs.
-/// # Returns
-/// - `()`: Writes four matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA; cached ranks must match `ranks`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4(
-    w: &WicksPairView<'_, Complex64>,
-    ranks: (usize, usize, usize, usize),
-    ex: (&[ExcitationCache; 4], &[ExcitationCache; 4]),
-    excitation_phase: &[f64; 4],
-    enuc: f64,
-    out: (&mut [Complex64; 4], &mut [Complex64; 4]),
-) {
-    let (x_ex, w_ex) = ex;
-    let (h, s) = out;
-    dispatch_hamiltonian_ranks!(
-        ranks,
-        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
-            xw_hamiltonian_overlap_m0_prepared_c64x4_const::<
-                RXA,
-                RWA,
-                LA,
-                DA,
-                MA,
-                MDA,
-                RXB,
-                RWB,
-                LB,
-                DB,
-                MB,
-                MDB,
-            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-        },
-        (),
-    )
-}
-
-/// Dispatch eight real Hamiltonian/overlap values to one fixed-rank AVX-512F kernel.
-/// # Arguments:
-/// - `w`: Real Wick intermediates.
-/// - `ranks`: Reference-resolved excitation ranks.
-/// - `ex`: Bra and ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `out`: Hamiltonian and overlap outputs.
-/// # Returns
-/// - `()`: Writes eight matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX-512F; cached ranks must match `ranks`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8(
-    w: &WicksPairView<'_, f64>,
-    ranks: (usize, usize, usize, usize),
-    ex: (&[ExcitationCache; 8], &[ExcitationCache; 8]),
-    excitation_phase: &[f64; 8],
-    enuc: f64,
-    out: (&mut [f64; 8], &mut [f64; 8]),
-) {
-    let (x_ex, w_ex) = ex;
-    let (h, s) = out;
-    dispatch_hamiltonian_ranks!(
-        ranks,
-        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
-            xw_hamiltonian_overlap_m0_prepared_f64x8_const::<
-                RXA,
-                RWA,
-                LA,
-                DA,
-                MA,
-                MDA,
-                RXB,
-                RWB,
-                LB,
-                DB,
-                MB,
-                MDB,
-            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-        },
-        (),
-    )
-}
-
-/// Dispatch eight complex Hamiltonian/overlap values to one fixed-rank AVX-512F kernel.
-/// # Arguments:
-/// - `w`: Complex Wick intermediates.
-/// - `ranks`: Reference-resolved excitation ranks.
-/// - `ex`: Bra and ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `out`: Hamiltonian and overlap outputs.
-/// # Returns
-/// - `()`: Writes eight matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX-512F; cached ranks must match `ranks`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8(
-    w: &WicksPairView<'_, Complex64>,
-    ranks: (usize, usize, usize, usize),
-    ex: (&[ExcitationCache; 8], &[ExcitationCache; 8]),
-    excitation_phase: &[f64; 8],
-    enuc: f64,
-    out: (&mut [Complex64; 8], &mut [Complex64; 8]),
-) {
-    let (x_ex, w_ex) = ex;
-    let (h, s) = out;
-    dispatch_hamiltonian_ranks!(
-        ranks,
-        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
-            xw_hamiltonian_overlap_m0_prepared_c64x8_const::<
-                RXA,
-                RWA,
-                LA,
-                DA,
-                MA,
-                MDA,
-                RXB,
-                RWB,
-                LB,
-                DB,
-                MB,
-                MDB,
-            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-        },
-        (),
-    )
-}
-
-/// Evaluate four real fixed-rank Hamiltonian/overlap values with AVX2/FMA.
-/// # Arguments:
-/// - `w`: Real Wick intermediates.
-/// - `x_ex`: Bra excitation caches.
-/// - `w_ex`: Ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian outputs.
-/// - `s`: Overlap outputs.
-/// # Returns
-/// - `()`: Writes four matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA; cached labels must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
+unsafe fn packet_x4<
+    T: NOCIScalar,
     const RXA: usize,
     const RWA: usize,
     const LA: usize,
@@ -1346,18 +751,32 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
     const MB: usize,
     const MDB: usize,
 >(
-    w: &WicksPairView<'_, f64>,
-    x_ex: &[ExcitationCache; 4],
-    w_ex: &[ExcitationCache; 4],
-    excitation_phase: &[f64; 4],
-    enuc: f64,
-    h: &mut [f64; 4],
-    s: &mut [f64; 4],
-) {
+    batch: &HamiltonianLanes<'_, T>,
+    lanes: &[(DeterminantData, DeterminantData); 4],
+) -> [(T, T); 4] {
+    // Gather the excitation caches and the phases `p_x p_w` of every lane.
+    let mut x_ex = [ExcitationCache::default(); 4];
+    let mut w_ex = [ExcitationCache::default(); 4];
+    let mut phases = [0.0; 4];
+    for (lane, (x, w)) in lanes.iter().enumerate() {
+        x_ex[lane] = ExcitationCache {
+            alpha: x.alpha.cache,
+            beta: x.beta.cache,
+        };
+        w_ex[lane] = ExcitationCache {
+            alpha: w.alpha.cache,
+            beta: w.beta.cache,
+        };
+        phases[lane] = x.phase() * w.phase();
+    }
+
+    // Evaluate `H` and `S` of every lane with one fixed-rank expression.
+    let mut h = [T::from_real(0.0); 4];
+    let mut s = [T::from_real(0.0); 4];
     unsafe {
-        xw_hamiltonian_overlap_m0_prepared_simd_const::<
-            f64,
-            F64x4,
+        xw_hamiltonian_overlap_m0_const::<
+            T,
+            T::Packed4,
             4,
             RXA,
             RWA,
@@ -1371,84 +790,29 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
             DB,
             MB,
             MDB,
-        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
+        >(batch.w, &x_ex, &w_ex, &phases, batch.enuc, &mut h, &mut s);
     }
+
+    // Pair the Hamiltonian and overlap of every lane.
+    let mut out = [(T::from_real(0.0), T::from_real(0.0)); 4];
+    for (lane, value) in out.iter_mut().enumerate() {
+        *value = (h[lane], s[lane]);
+    }
+    out
 }
 
-/// Evaluate four complex fixed-rank Hamiltonian/overlap values with AVX2/FMA.
+/// Evaluate one eight-lane packet of fixed-rank Hamiltonian and overlap values with AVX-512F.
 /// # Arguments:
-/// - `w`: Complex Wick intermediates.
-/// - `x_ex`: Bra excitation caches.
-/// - `w_ex`: Ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian outputs.
-/// - `s`: Overlap outputs.
+/// - `batch`: Batch holding the Wick intermediates and the nuclear repulsion energy.
+/// - `lanes`: Bra and ket determinants of every lane.
 /// # Returns
-/// - `()`: Writes four matrix-element pairs.
+/// - `[(T, T); 8]`: Hamiltonian and overlap of every lane.
 /// # Safety
-/// - The current CPU must support AVX2 and FMA; cached labels must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
-    const RXA: usize,
-    const RWA: usize,
-    const LA: usize,
-    const DA: usize,
-    const MA: usize,
-    const MDA: usize,
-    const RXB: usize,
-    const RWB: usize,
-    const LB: usize,
-    const DB: usize,
-    const MB: usize,
-    const MDB: usize,
->(
-    w: &WicksPairView<'_, Complex64>,
-    x_ex: &[ExcitationCache; 4],
-    w_ex: &[ExcitationCache; 4],
-    excitation_phase: &[f64; 4],
-    enuc: f64,
-    h: &mut [Complex64; 4],
-    s: &mut [Complex64; 4],
-) {
-    unsafe {
-        xw_hamiltonian_overlap_m0_prepared_simd_const::<
-            Complex64,
-            C64x4,
-            4,
-            RXA,
-            RWA,
-            LA,
-            DA,
-            MA,
-            MDA,
-            RXB,
-            RWB,
-            LB,
-            DB,
-            MB,
-            MDB,
-        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
-    }
-}
-
-/// Evaluate eight real fixed-rank Hamiltonian/overlap values with AVX-512F.
-/// # Arguments:
-/// - `w`: Real Wick intermediates.
-/// - `x_ex`: Bra excitation caches.
-/// - `w_ex`: Ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian outputs.
-/// - `s`: Overlap outputs.
-/// # Returns
-/// - `()`: Writes eight matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX-512F; cached labels must match fixed ranks.
+/// - The current CPU must support AVX-512F; cached labels must match the fixed ranks.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
+unsafe fn packet_x8<
+    T: NOCIScalar,
     const RXA: usize,
     const RWA: usize,
     const LA: usize,
@@ -1462,18 +826,32 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
     const MB: usize,
     const MDB: usize,
 >(
-    w: &WicksPairView<'_, f64>,
-    x_ex: &[ExcitationCache; 8],
-    w_ex: &[ExcitationCache; 8],
-    excitation_phase: &[f64; 8],
-    enuc: f64,
-    h: &mut [f64; 8],
-    s: &mut [f64; 8],
-) {
+    batch: &HamiltonianLanes<'_, T>,
+    lanes: &[(DeterminantData, DeterminantData); 8],
+) -> [(T, T); 8] {
+    // Gather the excitation caches and the phases `p_x p_w` of every lane.
+    let mut x_ex = [ExcitationCache::default(); 8];
+    let mut w_ex = [ExcitationCache::default(); 8];
+    let mut phases = [0.0; 8];
+    for (lane, (x, w)) in lanes.iter().enumerate() {
+        x_ex[lane] = ExcitationCache {
+            alpha: x.alpha.cache,
+            beta: x.beta.cache,
+        };
+        w_ex[lane] = ExcitationCache {
+            alpha: w.alpha.cache,
+            beta: w.beta.cache,
+        };
+        phases[lane] = x.phase() * w.phase();
+    }
+
+    // Evaluate `H` and `S` of every lane with one fixed-rank expression.
+    let mut h = [T::from_real(0.0); 8];
+    let mut s = [T::from_real(0.0); 8];
     unsafe {
-        xw_hamiltonian_overlap_m0_prepared_simd_const::<
-            f64,
-            F64x8,
+        xw_hamiltonian_overlap_m0_const::<
+            T,
+            T::Packed8,
             8,
             RXA,
             RWA,
@@ -1487,66 +865,15 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
             DB,
             MB,
             MDB,
-        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
+        >(batch.w, &x_ex, &w_ex, &phases, batch.enuc, &mut h, &mut s);
     }
-}
 
-/// Evaluate eight complex fixed-rank Hamiltonian/overlap values with AVX-512F.
-/// # Arguments:
-/// - `w`: Complex Wick intermediates.
-/// - `x_ex`: Bra excitation caches.
-/// - `w_ex`: Ket excitation caches.
-/// - `excitation_phase`: Excitation phases.
-/// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian outputs.
-/// - `s`: Overlap outputs.
-/// # Returns
-/// - `()`: Writes eight matrix-element pairs.
-/// # Safety
-/// - The current CPU must support AVX-512F; cached labels must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
-    const RXA: usize,
-    const RWA: usize,
-    const LA: usize,
-    const DA: usize,
-    const MA: usize,
-    const MDA: usize,
-    const RXB: usize,
-    const RWB: usize,
-    const LB: usize,
-    const DB: usize,
-    const MB: usize,
-    const MDB: usize,
->(
-    w: &WicksPairView<'_, Complex64>,
-    x_ex: &[ExcitationCache; 8],
-    w_ex: &[ExcitationCache; 8],
-    excitation_phase: &[f64; 8],
-    enuc: f64,
-    h: &mut [Complex64; 8],
-    s: &mut [Complex64; 8],
-) {
-    unsafe {
-        xw_hamiltonian_overlap_m0_prepared_simd_const::<
-            Complex64,
-            C64x8,
-            8,
-            RXA,
-            RWA,
-            LA,
-            DA,
-            MA,
-            MDA,
-            RXB,
-            RWB,
-            LB,
-            DB,
-            MB,
-            MDB,
-        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
+    // Pair the Hamiltonian and overlap of every lane.
+    let mut out = [(T::from_real(0.0), T::from_real(0.0)); 8];
+    for (lane, value) in out.iter_mut().enumerate() {
+        *value = (h[lane], s[lane]);
     }
+    out
 }
 
 /// Evaluate an arbitrary contraction-rank Hamiltonian and overlap for

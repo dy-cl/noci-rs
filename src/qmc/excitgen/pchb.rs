@@ -31,7 +31,7 @@ use ndarray::{Array2, Array4};
 use rand::Rng;
 
 // Crate-root imports.
-use crate::determinant::OrthogonalConnection;
+use crate::determinant::ConnectionState;
 use crate::elements::MOCache;
 
 // Parent/sibling imports.
@@ -475,7 +475,7 @@ impl PchbGenerator {
         scratch.virtuals_b.clear();
         scratch.virtuals_b.extend_from_slice(beta.virtuals);
 
-        // Map orbital labels to the occupied/virtual ranks used by `OrthogonalConnection`.
+        // Map orbital labels to the occupied/virtual ranks used by `ConnectionState`.
         scratch.rank_a.clear();
         scratch.rank_a.resize(tables.na, 0);
         for (rank, &orbital) in alpha.occupied.iter().enumerate() {
@@ -556,13 +556,13 @@ impl PchbGenerator {
     /// - `scratch`: Source distributions from `prepare`.
     /// - `rng`: Thread-local random-number generator.
     /// # Returns:
-    /// - `Option<(OrthogonalConnection, f64)>`: Source-relative connection and `P_\text{gen}`, or
+    /// - `Option<(ConnectionState, f64)>`: Source-relative connection and `P_\text{gen}`, or
     ///   `None` when the source has no weight or the chosen holes have no valid particles.
     pub(crate) fn sample<R: Rng + ?Sized>(
         &self,
         scratch: &PchbScratch,
         rng: &mut R,
-    ) -> Option<(OrthogonalConnection, f64)> {
+    ) -> Option<(ConnectionState, f64)> {
         // Select holes with probability `S_i/Z` or `W_{ij}/Z`.
         let total = *scratch.holes_cdf.last()?;
         let u = rng.r#gen::<f64>() * total;
@@ -582,7 +582,7 @@ impl PchbGenerator {
                 let row = &single_a[i as usize * tables.na..(i as usize + 1) * tables.na];
                 let (a, q) = sample_particle(&scratch.virtuals_a, |a| row[a as usize], rng)?;
                 Some((
-                    OrthogonalConnection::AlphaSingle {
+                    ConnectionState::AlphaSingle {
                         occupied: ra[i as usize],
                         virtual_: ra[a as usize],
                     },
@@ -593,7 +593,7 @@ impl PchbGenerator {
                 let row = &single_b[i as usize * tables.nb..(i as usize + 1) * tables.nb];
                 let (a, q) = sample_particle(&scratch.virtuals_b, |a| row[a as usize], rng)?;
                 Some((
-                    OrthogonalConnection::BetaSingle {
+                    ConnectionState::BetaSingle {
                         occupied: rb[i as usize],
                         virtual_: rb[a as usize],
                     },
@@ -611,7 +611,7 @@ impl PchbGenerator {
                     rng,
                 )?;
                 Some((
-                    OrthogonalConnection::AlphaDouble {
+                    ConnectionState::AlphaDouble {
                         occupied: [ra[i as usize], ra[j as usize]],
                         virtual_: [ra[a as usize], ra[b as usize]],
                     },
@@ -629,7 +629,7 @@ impl PchbGenerator {
                     rng,
                 )?;
                 Some((
-                    OrthogonalConnection::BetaDouble {
+                    ConnectionState::BetaDouble {
                         occupied: [rb[i as usize], rb[j as usize]],
                         virtual_: [rb[a as usize], rb[b as usize]],
                     },
@@ -647,7 +647,7 @@ impl PchbGenerator {
                     rng,
                 )?;
                 Some((
-                    OrthogonalConnection::AlphaBetaDouble {
+                    ConnectionState::AlphaBetaDouble {
                         occupied_a: ra[i as usize],
                         virtual_a: ra[a as usize],
                         occupied_b: rb[j as usize],

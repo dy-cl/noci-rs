@@ -1,7 +1,9 @@
-// maths/simd.rs
-//! Packed real and complex arithmetic for numerical and Wick kernels.
+// maths/simd/avx.rs
+//! Four-lane AVX2 and eight-lane AVX-512 packed real and complex types, and the detection of the
+//! widest width the CPU supports.
 
 // Standard library imports.
+use std::arch::is_x86_feature_detected;
 use std::arch::x86_64::{
     __m256d, __m512d, _mm256_add_pd, _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_fnmadd_pd,
     _mm256_i64gather_pd, _mm256_loadu_pd, _mm256_mul_pd, _mm256_set_epi64x, _mm256_set_pd,
@@ -14,197 +16,52 @@ use std::arch::x86_64::{
 // External crate imports.
 use num_complex::Complex64;
 
-/// Packed arithmetic used by SIMD numerical and Wick kernels.
-/// `N` is the number of independent scalar lanes represented by one packed value.
+// Parent/sibling imports.
+use super::Simd;
+
+/// Packet width of the packed kernels the current CPU supports.
+#[derive(Clone, Copy)]
+pub(crate) enum Lanes {
+    /// Four lanes with AVX2 and FMA.
+    Four,
+    /// Eight lanes with AVX-512F.
+    Eight,
+}
+
+/// Return the widest packet width supported by the current CPU, preferring eight AVX-512F lanes
+/// over four AVX2/FMA lanes.
 /// # Arguments:
 /// - None.
 /// # Returns
-/// - Implementations provide packed construction, arithmetic, loading, and storage operations.
-pub(crate) trait Simd<const N: usize>: Copy {
-    /// Scalar value stored independently in each SIMD lane.
-    type Scalar: Copy;
-
-    /// Packed real type with the same number of lanes.
-    type Real: Simd<N, Scalar = f64>;
-
-    /// Construct packed additive zero.
-    /// # Arguments:
-    /// - None.
-    /// # Returns
-    /// - `Self`: Packed zero.
-    fn zero() -> Self;
-
-    /// Construct packed multiplicative one.
-    /// # Arguments:
-    /// - None.
-    /// # Returns
-    /// - `Self`: Packed one.
-    fn one() -> Self;
-
-    /// Broadcast one scalar value into every lane.
-    /// # Arguments:
-    /// - `value`: Scalar value to broadcast.
-    /// # Returns
-    /// - `Self`: Packed broadcast value.
-    fn splat(value: Self::Scalar) -> Self;
-
-    /// Load one value for each lane.
-    /// # Arguments:
-    /// - `values`: Scalar values in lane order.
-    /// # Returns
-    /// - `Self`: Packed SIMD value.
-    fn load(values: &[Self::Scalar; N]) -> Self;
-
-    /// Gather one scalar value for each lane from independent indices.
-    /// # Arguments:
-    /// - `values`: Contiguous scalar input values.
-    /// - `indices`: Scalar indices in lane order.
-    /// # Returns
-    /// - `Self`: Packed gathered values.
-    /// # Safety
-    /// - Every index must be in bounds for `values`.
-    unsafe fn gather(
-        values: &[Self::Scalar],
-        indices: &[usize; N],
-    ) -> Self;
-
-    /// Store every SIMD lane.
-    /// # Arguments:
-    /// - `self`: Packed value to store.
-    /// - `values`: Scalar output lanes.
-    /// # Returns
-    /// - `()`: Writes every lane into `values`.
-    fn store(
-        self,
-        values: &mut [Self::Scalar; N],
-    );
-
-    /// Add two packed values.
-    /// # Arguments:
-    /// - `lhs`: Left packed operand.
-    /// - `rhs`: Right packed operand.
-    /// # Returns
-    /// - `Self`: `lhs + rhs`.
-    fn add(
-        lhs: Self,
-        rhs: Self,
-    ) -> Self;
-
-    /// Subtract two packed values.
-    /// # Arguments:
-    /// - `lhs`: Left packed operand.
-    /// - `rhs`: Right packed operand.
-    /// # Returns
-    /// - `Self`: `lhs - rhs`.
-    fn sub(
-        lhs: Self,
-        rhs: Self,
-    ) -> Self;
-
-    /// Multiply two packed values.
-    /// # Arguments:
-    /// - `lhs`: Left packed operand.
-    /// - `rhs`: Right packed operand.
-    /// # Returns
-    /// - `Self`: `lhs * rhs`.
-    fn mul(
-        lhs: Self,
-        rhs: Self,
-    ) -> Self;
-
-    /// Accumulate one packed product.
-    /// # Arguments:
-    /// - `acc`: Packed accumulator.
-    /// - `lhs`: Left product operand.
-    /// - `rhs`: Right product operand.
-    /// # Returns
-    /// - `Self`: `acc + lhs * rhs`.
-    fn madd(
-        acc: Self,
-        lhs: Self,
-        rhs: Self,
-    ) -> Self;
-
-    /// Subtract one packed product from an accumulator.
-    /// # Arguments:
-    /// - `acc`: Packed accumulator.
-    /// - `lhs`: Left product operand.
-    /// - `rhs`: Right product operand.
-    /// # Returns
-    /// - `Self`: `acc - lhs * rhs`.
-    fn msub(
-        acc: Self,
-        lhs: Self,
-        rhs: Self,
-    ) -> Self;
-
-    /// Multiply every lane by one real scalar.
-    /// # Arguments:
-    /// - `value`: Packed value to scale.
-    /// - `factor`: Real scale factor.
-    /// # Returns
-    /// - `Self`: `factor * value`.
-    fn scale_real(
-        value: Self,
-        factor: f64,
-    ) -> Self;
-
-    /// Multiply each lane by its corresponding real factor.
-    /// # Arguments:
-    /// - `value`: Packed real or complex values.
-    /// - `factors`: Independent real scale factors in lane order.
-    /// # Returns
-    /// - `Self`: Lane-wise products `factors[lane] * value[lane]`.
-    fn multiply_real_lanes(
-        value: Self,
-        factors: &[f64; N],
-    ) -> Self;
-
-    /// Accumulate one packed value scaled by a real scalar.
-    /// # Arguments:
-    /// - `acc`: Packed accumulator.
-    /// - `factor`: Real scale factor.
-    /// - `rhs`: Packed operand.
-    /// # Returns
-    /// - `Self`: `acc + factor * rhs`.
-    fn madd_real(
-        acc: Self,
-        factor: f64,
-        rhs: Self,
-    ) -> Self;
-
-    /// Accumulate one packed value times packed real lanes.
-    /// # Arguments:
-    /// - `acc`: Packed accumulator.
-    /// - `lhs`: Packed operand.
-    /// - `rhs`: Packed real factor of every lane.
-    /// # Returns
-    /// - `Self`: Lane-wise `acc + lhs * rhs`.
-    fn madd_real_lanes(
-        acc: Self,
-        lhs: Self,
-        rhs: Self::Real,
-    ) -> Self;
+/// - `Option<Lanes>`: Widest supported packet width, or `None` without AVX2 and FMA.
+pub(crate) fn lanes() -> Option<Lanes> {
+    if is_x86_feature_detected!("avx512f") {
+        Some(Lanes::Eight)
+    } else if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        Some(Lanes::Four)
+    } else {
+        None
+    }
 }
 
 /// Four packed `f64` values in one AVX2 register.
 #[derive(Clone, Copy)]
-pub(crate) struct F64x4(__m256d);
+pub struct F64x4(__m256d);
 
 /// Four packed complex values in split real/imaginary AVX2 registers.
 #[derive(Clone, Copy)]
-pub(crate) struct C64x4 {
+pub struct C64x4 {
     re: __m256d,
     im: __m256d,
 }
 
 /// Eight packed `f64` values in one AVX-512 register.
 #[derive(Clone, Copy)]
-pub(crate) struct F64x8(__m512d);
+pub struct F64x8(__m512d);
 
 /// Eight packed complex values in split real/imaginary AVX-512 registers.
 #[derive(Clone, Copy)]
-pub(crate) struct C64x8 {
+pub struct C64x8 {
     re: __m512d,
     im: __m512d,
 }

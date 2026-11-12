@@ -456,22 +456,10 @@ pub fn print_report(
         5,
     );
     print_relative_counter(
-        "Overlap matrix elements (m = 0, const)",
-        res.timings.nonorthogonalwicks.xw_overlap_m0_const,
-        res.timings.nonorthogonalwicks.xw_overlap_m0,
-        8,
-    );
-    print_relative_counter(
         "Overlap matrix elements (m = l)",
         res.timings.nonorthogonalwicks.xw_overlap_ml,
         res.timings.nonorthogonalwicks.xw_overlap,
         5,
-    );
-    print_relative_counter(
-        "Overlap matrix elements (m = l, const)",
-        res.timings.nonorthogonalwicks.xw_overlap_ml_const,
-        res.timings.nonorthogonalwicks.xw_overlap_ml,
-        8,
     );
     print_relative_counter(
         "Overlap matrix elements (generic)",
@@ -505,56 +493,6 @@ pub fn print_report(
             .nonorthogonalwicks
             .xw_hamiltonian_overlap_prepared,
         5,
-    );
-    print_relative_counter(
-        "Fused Hamiltonian-overlap scalar const m = 0",
-        res.timings
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_m0_prepared_const,
-        res.timings
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_m0_prepared,
-        8,
-    );
-    print_relative_counter(
-        "Fused Hamiltonian-overlap AVX2 const m = 0",
-        res.timings
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_m0_prepared_f64x4_const,
-        res.timings
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_prepared_batched,
-        8,
-    );
-    print_relative_counter(
-        "Fused Hamiltonian-overlap AVX2 complex const m = 0",
-        res.timings
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_m0_prepared_c64x4_const,
-        res.timings
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_prepared_batched,
-        8,
-    );
-    print_relative_counter(
-        "Fused Hamiltonian-overlap AVX-512 const m = 0",
-        res.timings
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_m0_prepared_f64x8_const,
-        res.timings
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_prepared_batched,
-        8,
-    );
-    print_relative_counter(
-        "Fused Hamiltonian-overlap AVX-512 complex const m = 0",
-        res.timings
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_m0_prepared_c64x8_const,
-        res.timings
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_prepared_batched,
-        8,
     );
     print_relative_counter(
         "Fused Hamiltonian-overlap generic m = 0",

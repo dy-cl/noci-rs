@@ -6,6 +6,7 @@ use ndarray_linalg::{Eigh, Norm, UPLO};
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::NOCIIndex;
 use crate::noci::deterministic::{ProjPropagator, Projectors};
 
 /// Print the largest gaps between adjacent positive overlap eigenvalues.
@@ -377,7 +378,7 @@ pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
                 "  {:>4} {:>6} {:>7}  {:<68} {:>24} {:>27}",
                 rank + 1,
                 mu,
-                basis.states[mu].parent,
+                basis.parent(NOCIIndex(mu)),
                 format_determinant_label(label.as_str(), 68),
                 format_signed_scalar(a_mu_i),
                 format_signed_scalar(vi * a_mu_i)

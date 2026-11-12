@@ -115,11 +115,8 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.get_det_adjt_diff);
         $f!($tot.nonorthogonalwicks.construct_determinant_indices);
         $f!($tot.nonorthogonalwicks.xw_overlap);
-        $f!($tot.nonorthogonalwicks.xw_overlap);
         $f!($tot.nonorthogonalwicks.xw_overlap_m0);
-        $f!($tot.nonorthogonalwicks.xw_overlap_m0_const);
         $f!($tot.nonorthogonalwicks.xw_overlap_ml);
-        $f!($tot.nonorthogonalwicks.xw_overlap_ml_const);
         $f!($tot.nonorthogonalwicks.xw_overlap_gen);
         $f!($tot.nonorthogonalwicks.xw_hamiltonian_overlap_prepared);
         $f!($tot
@@ -128,33 +125,17 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.xw_hamiltonian_overlap_m0_prepared);
         $f!($tot
             .nonorthogonalwicks
-            .xw_hamiltonian_overlap_m0_prepared_const);
-        $f!($tot
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_m0_prepared_f64x4_const);
-        $f!($tot
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_m0_prepared_c64x4_const);
-        $f!($tot
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_m0_prepared_f64x8_const);
-        $f!($tot
-            .nonorthogonalwicks
-            .xw_hamiltonian_overlap_m0_prepared_c64x8_const);
-        $f!($tot
-            .nonorthogonalwicks
             .xw_hamiltonian_overlap_m0_gen_prepared);
         $f!($tot.nonorthogonalwicks.xw_hamiltonian_overlap_gen_prepared);
         $f!($tot.nonorthogonalwicks.xw_rdmk_same_m0_prepared);
-        $f!($tot.nonorthogonalwicks.xw_rdmk_same_m0_prepared_const);
         $f!($tot.nonorthogonalwicks.xw_rdmk_same_m0_gen_prepared);
         $f!($tot.nonorthogonalwicks.xw_rdmk_same_gen_prepared);
         $f!($tot.nonorthogonalwicks.prepare_same_m0_const);
-        $f!($tot.nonorthogonalwicks.xw_f_overlap);
-        $f!($tot.nonorthogonalwicks.xw_f_overlap_gen);
-        $f!($tot.nonorthogonalwicks.xw_f_overlap_m0);
-        $f!($tot.nonorthogonalwicks.xw_f_overlap_m0_gen);
-        $f!($tot.nonorthogonalwicks.xw_f_overlap_m0_const);
+        $f!($tot.nonorthogonalwicks.xw_onebody);
+        $f!($tot.nonorthogonalwicks.xw_onebody_gen);
+        $f!($tot.nonorthogonalwicks.xw_onebody_m0);
+        $f!($tot.nonorthogonalwicks.xw_onebody_m0_gen);
+        $f!($tot.nonorthogonalwicks.xw_onebody_m0_const);
     };
 }
 
@@ -406,7 +387,8 @@ pub fn reset_all() {
 }
 
 /// Time a block of code and record the elapsed nanoseconds using the supplied callback.
-/// This macro is only active when the `timings` feature is enabled.
+/// This macro is only active when the `timings` feature is enabled; without it the callback is
+/// still named, so every counter path is checked in both builds.
 /// # Arguments:
 /// - `$path`: Function taking a `u64` nanosecond count and updating the chosen counter.
 /// - `$body`: Block of code to execute and time.
@@ -445,6 +427,7 @@ macro_rules! time_call {
 
         #[cfg(not(feature = "timings"))]
         {
+            let _: fn(u64) = $add;
             $body
         }
     }};

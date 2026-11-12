@@ -4,7 +4,7 @@
 //! A source determinant is described by its parent frame and the occupied and virtual orbital
 //! labels of each spin, so the generators serve any method whose determinants carry those lists,
 //! whether or not the determinant belongs to a precomputed space. Connections are returned in the
-//! occupied- and virtual-rank form of `OrthogonalConnection` with their exact generation
+//! occupied- and virtual-rank form of `ConnectionState` with their exact generation
 //! probability.
 
 mod pchb;

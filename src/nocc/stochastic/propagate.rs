@@ -7,14 +7,15 @@ use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::determinant::ExcitedDeterminant;
+use crate::determinant::DeterminantState;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
-use crate::elements::{NOCIData, calculate_hs_excited};
+use crate::elements::{DetPair, HamiltonianOverlap, NOCIData, calculate_pairs};
+use crate::hash::FastMap;
 use crate::input::JMNOCCMCOptions;
 use crate::mpiutils::all_reduce_array1;
 use crate::nocc::Effective;
 use crate::qmc::{
-    AliasTable, ExchangeScratch, FastMap, QmcRng, coalesce, compress_sparse, exchange_to_owners,
+    AliasTable, ExchangeScratch, QmcRng, coalesce, compress_sparse, exchange_to_owners,
     gather_updates, owner_words, print_table_header, print_table_row, rank_seed, stop_requested,
     stream, update_shift,
 };
@@ -23,7 +24,7 @@ use crate::qmc::{
 use super::cluster::{collapse, coupling_combinations, select_cluster, select_coupling_cluster};
 use super::coupling::{left_action, project_cluster};
 use super::linked::linked_attempt;
-use super::population::{Block, Excitor, ExcitorKey, ExcitorUpdate, ReferenceSpaces, rank};
+use super::population::{Block, Excitor, ExcitorState, ExcitorUpdate, ReferenceSpaces, rank};
 use super::state::JMTaskPropagation;
 
 /// Smallest number of cluster attempts in one parallel task.
@@ -61,7 +62,7 @@ enum Task {
 /// # Returns:
 /// - `usize`: Owning rank.
 fn owner(
-    key: &ExcitorKey,
+    key: &ExcitorState,
     assignment: u64,
     nranks: usize,
 ) -> usize {
@@ -93,7 +94,7 @@ fn owner(
 /// - `Vec<Block>`: Block populations of this rank.
 fn blocks(
     spaces: &ReferenceSpaces,
-    populations: &FastMap<ExcitorKey, f64>,
+    populations: &FastMap<ExcitorState, f64>,
     nref: &[f64],
     ranks: f64,
 ) -> Vec<Block> {
@@ -108,7 +109,7 @@ fn blocks(
 
     for key in keys {
         let (reference, _, excitors) = &mut out[key.0];
-        let det = ExcitedDeterminant {
+        let det = DeterminantState {
             parent: reference.parent,
             alpha: key.1,
             beta: key.2,
@@ -210,7 +211,7 @@ fn run_task(
                 project_cluster(
                     &spaces.rows,
                     x,
-                    (det.state(data.space.parents()), weight * sign),
+                    (det, weight * sign),
                     &mut rng,
                     (&mut out.coupling_clusters, &mut out.coupling_requests),
                 );
@@ -229,13 +230,13 @@ fn run_task(
 /// - `initial`: Initial population.
 /// - `ownership`: Salt of the first assignment, this rank and the number of ranks.
 /// # Returns:
-/// - `(Vec<f64>, FastMap<ExcitorKey, f64>)`: Trial coefficients and this rank's populations.
+/// - `(Vec<f64>, FastMap<ExcitorState, f64>)`: Trial coefficients and this rank's populations.
 fn initial_populations(
     spaces: &ReferenceSpaces,
     c0: &[f64],
     initial: f64,
     ownership: (u64, usize, usize),
-) -> (Vec<f64>, FastMap<ExcitorKey, f64>) {
+) -> (Vec<f64>, FastMap<ExcitorState, f64>) {
     let (assignment, irank, nranks) = ownership;
     let m = spaces.references.len();
 
@@ -282,10 +283,21 @@ fn uncorrelated_effective(
     let pairs = spaces
         .references
         .iter()
-        .flat_map(|bra| spaces.references.iter().map(|ket| (*bra, *ket)))
+        .flat_map(|&bra| {
+            spaces
+                .references
+                .iter()
+                .map(move |&ket| DetPair::new(bra, ket))
+        })
         .collect::<Vec<_>>();
     let mut hs = vec![(0.0, 0.0); pairs.len()];
-    calculate_hs_excited(data, &pairs, &mut scratch, &mut hs);
+    calculate_pairs(
+        data,
+        &HamiltonianOverlap,
+        &pairs,
+        Some(&mut scratch),
+        &mut hs,
+    );
 
     // At zero amplitudes `|\Phi_x\rangle = |{}^x\Psi\rangle`, so these are `S^e` and `H^e`.
     let mut effective = Effective::new(m);
@@ -379,7 +391,7 @@ fn run_tasks(
 fn sum_tasks(
     workers: &[JMTaskPropagation],
     m: usize,
-    merged: &mut FastMap<ExcitorKey, f64>,
+    merged: &mut FastMap<ExcitorState, f64>,
 ) -> Vec<f64> {
     // Spawns of every task, summed per excitor.
     merged.clear();
@@ -428,8 +440,8 @@ fn spawn_coupling<C: Communicator>(
     current: &[Block],
     spaces: &ReferenceSpaces,
     comm: (&C, &mut ExchangeScratch<ExcitorUpdate>),
-    coupled: &mut FastMap<ExcitorKey, f64>,
-    merged: &mut FastMap<ExcitorKey, f64>,
+    coupled: &mut FastMap<ExcitorState, f64>,
+    merged: &mut FastMap<ExcitorState, f64>,
 ) {
     let (world, exchange) = comm;
     let irank = world.rank() as usize;
@@ -493,7 +505,7 @@ fn spawn_coupling<C: Communicator>(
 /// # Returns:
 /// - `()`: Updates `populations` in place.
 fn exchange_populations<C: Communicator>(
-    populations: &mut FastMap<ExcitorKey, f64>,
+    populations: &mut FastMap<ExcitorState, f64>,
     updates: Vec<ExcitorUpdate>,
     next: u64,
     comm: (&C, &mut ExchangeScratch<ExcitorUpdate>),
@@ -545,8 +557,8 @@ fn exchange_populations<C: Communicator>(
 /// # Returns:
 /// - `()`: Updates `populations` in place.
 fn round_populations(
-    populations: &mut FastMap<ExcitorKey, f64>,
-    is_reference: &impl Fn(&ExcitorKey) -> bool,
+    populations: &mut FastMap<ExcitorState, f64>,
+    is_reference: &impl Fn(&ExcitorState) -> bool,
     cutoff: f64,
     mut rng: QmcRng,
 ) {
@@ -575,8 +587,8 @@ fn round_populations(
 /// # Returns:
 /// - `(f64, f64, i64)`: Total population, reference population and occupied excitors.
 fn population_stats(
-    populations: &FastMap<ExcitorKey, f64>,
-    is_reference: &impl Fn(&ExcitorKey) -> bool,
+    populations: &FastMap<ExcitorState, f64>,
+    is_reference: &impl Fn(&ExcitorState) -> bool,
     world: &impl Communicator,
 ) -> (f64, f64, i64) {
     // This rank's contributions.
@@ -657,7 +669,7 @@ pub(crate) fn jm_qmc_step(
 
     // Fixed spaces of every block, and the test for a block's reference among the excitor keys.
     let spaces = ReferenceSpaces::new(data, options);
-    let is_reference = |key: &ExcitorKey| {
+    let is_reference = |key: &ExcitorState| {
         let reference = &spaces.references[key.0];
         (key.1, key.2) == (reference.alpha, reference.beta)
     };
@@ -682,8 +694,8 @@ pub(crate) fn jm_qmc_step(
     let mut previous = all_reduce_array1(world, Array1::from_vec(vec![local_norm]))[0];
     let mut exchange = ExchangeScratch::new(nranks);
     let mut workers = Vec::<JMTaskPropagation>::new();
-    let mut merged = FastMap::<ExcitorKey, f64>::default();
-    let mut coupled = FastMap::<ExcitorKey, f64>::default();
+    let mut merged = FastMap::<ExcitorState, f64>::default();
+    let mut coupled = FastMap::<ExcitorState, f64>::default();
     let mut running = Effective::new(m);
     let mut eproj = f64::NAN;
 

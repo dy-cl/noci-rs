@@ -1,35 +1,134 @@
 // elements/nonorthogonalwicks/eval/rdm.rs
 
-// Standard library imports.
-#[cfg(target_arch = "x86_64")]
-use std::any::TypeId;
-#[cfg(target_arch = "x86_64")]
-use std::arch::is_x86_feature_detected;
-
 // External crate imports.
 use ndarray::Array2;
-#[cfg(target_arch = "x86_64")]
-use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::ExcitationSpin;
 use crate::NOCIScalar;
 use crate::config::MAXEXCIT;
 #[cfg(target_arch = "x86_64")]
-use crate::maths::{C64x4, C64x8, F64x4, F64x8, Simd, det_simd_const};
-use crate::maths::{det_const, det_dynamic, mix_columns_dynamic};
+use crate::elements::LaneKernel;
+use crate::elements::{LaneBatch, xw_lanes};
+use crate::maths::{Simd, det_const, det_dynamic, mix_columns_dynamic};
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-use super::dispatch::{
-    dispatch_overlap_ranks, dispatch_overlap_scalar_ranks, dispatch_pair_ranks, dispatch_rdm_ranks,
-    dispatch_rdm_scalar_ranks,
-};
+use super::dispatch::{dispatch_pair_ranks, dispatch_rdm_ranks, dispatch_spin_ranks};
 use super::helpers::{extend_rdm_d, for_each_m_combination};
 use super::overlap::xw_overlap_prepared;
 use super::prepare::construct_determinant_indices;
+
+/// Extended `X^{(0)}` and `Y^{(0)}` contractions in the external RDM basis, the optional `m_i = 1`
+/// contractions and the row dimension.
+type RdmFundamental<'a, T> = (&'a [T], &'a [T], Option<(&'a [T], &'a [T])>, usize);
+
+/// Batch of same-spin rank-`K` RDM requests of one determinant pair.
+struct RdmLanes<'a, T: NOCIScalar, const K: usize> {
+    /// Same-spin reference-pair Wick intermediates.
+    w: &'a SameSpinView<'a, T>,
+    /// Bra and ket excitations.
+    ex: (&'a ExcitationSpin, &'a ExcitationSpin),
+    /// Extended `X^{(0)}`, `Y^{(0)}`, optional `m_i = 1` branches, and matrix rank.
+    fundamental: RdmFundamental<'a, T>,
+    /// Reusable determinant storage for scalar evaluation.
+    scratch: &'a mut WickScratch<T>,
+    /// Numerical threshold applied to individual determinant contributions.
+    tol: f64,
+    /// Same-spin RDM elements in request order.
+    out: &'a mut [T],
+}
+
+impl<T: NOCIScalar, const K: usize> LaneBatch for RdmLanes<'_, T, K> {
+    // LaneBatch requires the index request and scalar result types for its shared packet loop.
+    type Lane = ([usize; K], [usize; K]);
+    type Out = T;
+
+    /// Evaluate one RDM request through the scalar prepared path.
+    /// # Arguments:
+    /// - `self`: Batch of one determinant pair.
+    /// - `_`: Position of the request, unused by the scalar path.
+    /// - `request`: Creation and annihilation index arrays.
+    /// # Returns
+    /// - `T`: Unnormalised same-spin rank-`K` transition-density element.
+    fn scalar(
+        &mut self,
+        _: usize,
+        request: &([usize; K], [usize; K]),
+    ) -> T {
+        xw_rdmk_same_prepared_scalar_value(
+            self.w,
+            self.ex,
+            self.fundamental,
+            request,
+            self.scratch,
+            self.tol,
+        )
+    }
+
+    /// Write the RDM element of one request.
+    /// # Arguments:
+    /// - `self`: Batch of one determinant pair.
+    /// - `position`: Position of the request.
+    /// - `value`: Transition-density element of the request.
+    /// # Returns
+    /// - `()`: Writes one entry of `out`.
+    fn write(
+        &mut self,
+        position: usize,
+        value: T,
+    ) {
+        self.out[position] = value;
+    }
+
+    /// Select the four-lane kernel of the batch, which dispatches the fixed ranks of the pair.
+    /// # Arguments:
+    /// - `self`: Batch of one determinant pair.
+    /// - `_`: First request, unused since every request shares the ranks of the pair.
+    /// # Returns
+    /// - `Option<LaneKernel<Self, 4>>`: Kernel of the batch, or `None` for scalar evaluation.
+    #[cfg(target_arch = "x86_64")]
+    fn kernel_x4(
+        &self,
+        _: &([usize; K], [usize; K]),
+    ) -> Option<LaneKernel<Self, 4>> {
+        self.packed()
+            .then_some(packet_x4::<T, K> as LaneKernel<Self, 4>)
+    }
+
+    /// Select the eight-lane kernel of the batch, which dispatches the fixed ranks of the pair.
+    /// # Arguments:
+    /// - `self`: Batch of one determinant pair.
+    /// - `_`: First request, unused since every request shares the ranks of the pair.
+    /// # Returns
+    /// - `Option<LaneKernel<Self, 8>>`: Kernel of the batch, or `None` for scalar evaluation.
+    #[cfg(target_arch = "x86_64")]
+    fn kernel_x8(
+        &self,
+        _: &([usize; K], [usize; K]),
+    ) -> Option<LaneKernel<Self, 8>> {
+        self.packed()
+            .then_some(packet_x8::<T, K> as LaneKernel<Self, 8>)
+    }
+}
+
+impl<T: NOCIScalar, const K: usize> RdmLanes<'_, T, K> {
+    /// Return whether the generated packets cover the batch: `m = 0`, external rank `K <= 4` and
+    /// excitation ranks up to `MAXEXCIT`.
+    /// # Arguments:
+    /// - `self`: Batch of RDM requests.
+    /// # Returns
+    /// - `bool`: Whether the batch is evaluated in packets.
+    #[cfg(target_arch = "x86_64")]
+    fn packed(&self) -> bool {
+        self.w.m == 0
+            && K <= 4
+            && self.ex.0.holes.count_ones() as usize <= MAXEXCIT
+            && self.ex.1.holes.count_ones() as usize <= MAXEXCIT
+    }
+}
 
 /// Evaluate a batch of unnormalised same-spin rank-`K` transition-density elements.
 /// Every request evaluates
@@ -110,53 +209,7 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
     let x0p = extend_rdm_d(w, &x0, &x0rdm, l_c, g_c).into_raw_vec();
     let y0p = extend_rdm_d(w, &y0, &y0rdm, l_c, g_c).into_raw_vec();
 
-    #[cfg(target_arch = "x86_64")]
-    if w.m == 0 && TypeId::of::<T>() == TypeId::of::<f64>() {
-        unsafe {
-            // SAFETY: The `TypeId` check proves every generic value has its `f64` instantiation
-            // for the duration of the SIMD helper call.
-            let w_f64 = &*std::ptr::from_ref(w).cast::<SameSpinView<'_, f64>>();
-            let x0_f64 = std::slice::from_raw_parts(x0p.as_ptr().cast::<f64>(), x0p.len());
-            let y0_f64 = std::slice::from_raw_parts(y0p.as_ptr().cast::<f64>(), y0p.len());
-            let out_f64 = std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<f64>(), out.len());
-            if try_xw_rdmk_same_prepared_f64_simd(
-                w_f64,
-                ex,
-                (x0_f64, y0_f64, ext_n),
-                requests,
-                tol,
-                out_f64,
-            ) {
-                return;
-            }
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    if w.m == 0 && TypeId::of::<T>() == TypeId::of::<Complex64>() {
-        unsafe {
-            // SAFETY: The `TypeId` check proves every generic value has its `Complex64`
-            // instantiation for the duration of the SIMD helper call.
-            let w_c64 = &*std::ptr::from_ref(w).cast::<SameSpinView<'_, Complex64>>();
-            let x0_c64 = std::slice::from_raw_parts(x0p.as_ptr().cast::<Complex64>(), x0p.len());
-            let y0_c64 = std::slice::from_raw_parts(y0p.as_ptr().cast::<Complex64>(), y0p.len());
-            let out_c64 =
-                std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<Complex64>(), out.len());
-            if try_xw_rdmk_same_prepared_c64_simd(
-                w_c64,
-                ex,
-                (x0_c64, y0_c64, ext_n),
-                requests,
-                tol,
-                out_c64,
-            ) {
-                return;
-            }
-        }
-    }
-
-    // If no fixed-width kernel accepts the batch, construct the optional `m_i = 1` contractions
-    // and evaluate every request through the scalar or const-generic determinant path.
+    // Nonzero `m` also needs the `m_i = 1` contractions in the external RDM basis.
     let one = if w.m == 0 {
         None
     } else {
@@ -176,180 +229,17 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
             .map(|(x1p, y1p)| (x1p.as_slice(), y1p.as_slice())),
         ext_n,
     );
-    xw_rdmk_same_prepared_scalar_batch(w, ex, fundamental, requests, scratch, tol, out);
-}
 
-/// Packed RDM packet dispatcher behind one target-feature entry point.
-#[cfg(target_arch = "x86_64")]
-type RdmSimdPacket<T, const K: usize, const N: usize> = unsafe fn(
-    &SameSpinView<'_, T>,
-    (&ExcitationSpin, &ExcitationSpin),
-    (&[T], &[T], usize),
-    &[([usize; K], [usize; K]); N],
-    f64,
-    &mut [T; N],
-);
-
-/// Try to evaluate a real same-spin rank-`K` RDM batch with fixed-rank SIMD kernels.
-/// # Arguments:
-/// - `w`: Real same-spin Wick intermediates with `m = 0`.
-/// - `ex`: Bra and ket excitations.
-/// - `fundamental`: Extended contractions and row dimension.
-/// - `requests`: External RDM indices.
-/// - `tol`: Numerical threshold.
-/// - `out`: Real RDM outputs.
-/// # Returns
-/// - `bool`: Whether an available SIMD path evaluated the complete batch.
-/// # Safety
-/// - `w` must contain no zero-overlap orbital pairs.
-#[cfg(target_arch = "x86_64")]
-unsafe fn try_xw_rdmk_same_prepared_f64_simd<const K: usize>(
-    w: &SameSpinView<'_, f64>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[f64], &[f64], usize),
-    requests: &[([usize; K], [usize; K])],
-    tol: f64,
-    out: &mut [f64],
-) -> bool {
-    // Generated packets cover external rank `K <= 4` and cached excitation ranks up to
-    // `MAXEXCIT`; preserve scalar evaluation outside that region.
-    let rx = ex.0.holes.count_ones() as usize;
-    let rw = ex.1.holes.count_ones() as usize;
-    if K > 4 || rx > MAXEXCIT || rw > MAXEXCIT {
-        return false;
-    }
-
-    // Prefer the widest supported packet for the augmented `D_{RDM}` determinant.
-    if is_x86_feature_detected!("avx512f") {
-        unsafe {
-            xw_rdmk_same_prepared_simd_batch::<f64, K, 8>(
-                w,
-                ex,
-                fundamental,
-                requests,
-                tol,
-                out,
-                xw_rdmk_same_m0_prepared_f64x8,
-            );
-        }
-        return true;
-    }
-    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-        unsafe {
-            xw_rdmk_same_prepared_simd_batch::<f64, K, 4>(
-                w,
-                ex,
-                fundamental,
-                requests,
-                tol,
-                out,
-                xw_rdmk_same_m0_prepared_f64x4,
-            );
-        }
-        return true;
-    }
-    false
-}
-
-/// Try to evaluate a complex same-spin rank-`K` RDM batch with fixed-rank SIMD kernels.
-/// # Arguments:
-/// - `w`: Complex same-spin Wick intermediates with `m = 0`.
-/// - `ex`: Bra and ket excitations.
-/// - `fundamental`: Extended contractions and row dimension.
-/// - `requests`: External RDM indices.
-/// - `tol`: Numerical threshold.
-/// - `out`: Complex RDM outputs.
-/// # Returns
-/// - `bool`: Whether an available SIMD path evaluated the complete batch.
-/// # Safety
-/// - `w` must contain no zero-overlap orbital pairs.
-#[cfg(target_arch = "x86_64")]
-unsafe fn try_xw_rdmk_same_prepared_c64_simd<const K: usize>(
-    w: &SameSpinView<'_, Complex64>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[Complex64], &[Complex64], usize),
-    requests: &[([usize; K], [usize; K])],
-    tol: f64,
-    out: &mut [Complex64],
-) -> bool {
-    // Complex packets use the same generated rank region as the real evaluator.
-    let rx = ex.0.holes.count_ones() as usize;
-    let rw = ex.1.holes.count_ones() as usize;
-    if K > 4 || rx > MAXEXCIT || rw > MAXEXCIT {
-        return false;
-    }
-
-    // Prefer the widest supported complex packet for the augmented `D_{RDM}` determinant.
-    if is_x86_feature_detected!("avx512f") {
-        unsafe {
-            xw_rdmk_same_prepared_simd_batch::<Complex64, K, 8>(
-                w,
-                ex,
-                fundamental,
-                requests,
-                tol,
-                out,
-                xw_rdmk_same_m0_prepared_c64x8,
-            );
-        }
-        return true;
-    }
-    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-        unsafe {
-            xw_rdmk_same_prepared_simd_batch::<Complex64, K, 4>(
-                w,
-                ex,
-                fundamental,
-                requests,
-                tol,
-                out,
-                xw_rdmk_same_m0_prepared_c64x4,
-            );
-        }
-        return true;
-    }
-    false
-}
-
-/// Evaluate a same-spin RDM batch with fixed-width packed packets.
-/// # Arguments:
-/// - `w`: Same-spin Wick intermediates.
-/// - `ex`: Bra and ket excitations.
-/// - `fundamental`: Extended contractions and row dimension.
-/// - `requests`: External RDM indices.
-/// - `tol`: Numerical threshold.
-/// - `out`: RDM outputs.
-/// - `kernel`: Packed packet dispatcher.
-/// # Returns
-/// - `()`: Writes every RDM request.
-/// # Safety
-/// - `kernel` must support the current CPU and use `N` lanes.
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-unsafe fn xw_rdmk_same_prepared_simd_batch<T: NOCIScalar, const K: usize, const N: usize>(
-    w: &SameSpinView<'_, T>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], usize),
-    requests: &[([usize; K], [usize; K])],
-    tol: f64,
-    out: &mut [T],
-    kernel: RdmSimdPacket<T, K, N>,
-) {
-    // Process complete `N`-lane packets. Final packet repeats one valid request in unused lanes,
-    // but writes only genuine requests back to `out`.
-    let count = requests.len().min(out.len());
-    let mut start = 0usize;
-    while start < count {
-        let lanes = (count - start).min(N);
-        let mut packet = [requests[start]; N];
-        packet[1..lanes].copy_from_slice(&requests[start + 1..start + lanes]);
-        let mut values = [T::from_real(0.0); N];
-        unsafe {
-            kernel(w, ex, fundamental, &packet, tol, &mut values);
-        }
-        out[start..start + lanes].copy_from_slice(&values[..lanes]);
-        start += lanes;
-    }
+    // Every request shares the excitations of the pair, so the batch is one group.
+    let mut batch = RdmLanes {
+        w,
+        ex,
+        fundamental,
+        scratch,
+        tol,
+        out,
+    };
+    xw_lanes(&mut batch, requests, &[0, requests.len()]);
 }
 
 /// Evaluate packed fixed-rank same-spin RDM determinants.
@@ -368,9 +258,8 @@ unsafe fn xw_rdmk_same_prepared_simd_batch<T: NOCIScalar, const K: usize, const 
 /// - `()`: Writes `LANES` transition-density values.
 /// # Safety
 /// - Indices must be valid and caller must establish `V` CPU support.
-#[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn xw_rdmk_same_m0_prepared_simd_const<
+unsafe fn xw_rdmk_same_m0_const<
     T: NOCIScalar,
     V: Simd<LANES, Scalar = T>,
     const LANES: usize,
@@ -448,7 +337,7 @@ unsafe fn xw_rdmk_same_m0_prepared_simd_const<
     }
 
     // Multiply each determinant by `{}^{xw}\tilde S`, then apply tolerance lane by lane.
-    let value = det_simd_const::<V, LANES, D, DD>(&determinant);
+    let value = det_const::<V, LANES, D, DD>(&determinant);
     let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
     let mut lanes = [T::from_real(0.0); LANES];
     V::store(V::mul(pref, value), &mut lanes);
@@ -461,185 +350,104 @@ unsafe fn xw_rdmk_same_m0_prepared_simd_const<
     }
 }
 
-/// Dispatch four real RDM values to a fixed-rank AVX2/FMA kernel.
+/// Dispatch four RDM values to a fixed-rank AVX2/FMA kernel.
 /// # Arguments:
-/// - `w`: Real same-spin Wick intermediates.
-/// - `ex`: Bra and ket excitations.
-/// - `fundamental`: Extended contractions.
-/// - `requests`: External RDM indices.
-/// - `tol`: Numerical threshold.
-/// - `out`: Real RDM outputs.
+/// - `batch`: Batch holding the Wick intermediates, excitations and extended contractions.
+/// - `requests`: External RDM indices of every lane.
 /// # Returns
-/// - `()`: Writes four values.
+/// - `[T; 4]`: RDM value of every lane.
 /// # Safety
-/// - The current CPU must support AVX2 and FMA.
+/// - The current CPU must support AVX2/FMA.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn xw_rdmk_same_m0_prepared_f64x4<const K: usize>(
-    w: &SameSpinView<'_, f64>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[f64], &[f64], usize),
+unsafe fn packet_x4<T: NOCIScalar, const K: usize>(
+    batch: &RdmLanes<'_, T, K>,
     requests: &[([usize; K], [usize; K]); 4],
-    tol: f64,
-    out: &mut [f64; 4],
-) {
+) -> [T; 4] {
+    // Packets evaluate `m = 0`, which needs only the `m_i = 0` contractions.
+    let (w, ex, tol) = (batch.w, batch.ex, batch.tol);
+    let (x0p, y0p, _, ext_n) = batch.fundamental;
+    let fundamental = (x0p, y0p, ext_n);
+
+    // Dispatch the fixed external and excitation ranks of the pair.
+    let mut out = [T::from_real(0.0); 4];
     let rx = ex.0.holes.count_ones() as usize;
     let rw = ex.1.holes.count_ones() as usize;
     dispatch_rdm_ranks!(
         K,
         (rx, rw),
         |K, RX, RW, L, D, DD| unsafe {
-            xw_rdmk_same_m0_prepared_f64x4_const::<K, RX, RW, L, D, DD>(
+            xw_rdmk_same_m0_prepared_x4_const::<T, K, RX, RW, L, D, DD>(
                 w,
                 ex,
                 fundamental,
                 &*std::ptr::from_ref(requests).cast::<[([usize; K], [usize; K]); 4]>(),
                 tol,
-                out,
+                &mut out,
             )
         },
         (),
-    )
+    );
+    out
 }
 
-/// Dispatch eight real RDM values to a fixed-rank AVX-512F kernel.
+/// Dispatch eight RDM values to a fixed-rank AVX-512F kernel.
 /// # Arguments:
-/// - `w`: Real same-spin Wick intermediates.
-/// - `ex`: Bra and ket excitations.
-/// - `fundamental`: Extended contractions.
-/// - `requests`: External RDM indices.
-/// - `tol`: Numerical threshold.
-/// - `out`: Real RDM outputs.
+/// - `batch`: Batch holding the Wick intermediates, excitations and extended contractions.
+/// - `requests`: External RDM indices of every lane.
 /// # Returns
-/// - `()`: Writes eight values.
+/// - `[T; 8]`: RDM value of every lane.
 /// # Safety
 /// - The current CPU must support AVX-512F.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_rdmk_same_m0_prepared_f64x8<const K: usize>(
-    w: &SameSpinView<'_, f64>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[f64], &[f64], usize),
+unsafe fn packet_x8<T: NOCIScalar, const K: usize>(
+    batch: &RdmLanes<'_, T, K>,
     requests: &[([usize; K], [usize; K]); 8],
-    tol: f64,
-    out: &mut [f64; 8],
-) {
+) -> [T; 8] {
+    // Packets evaluate `m = 0`, which needs only the `m_i = 0` contractions.
+    let (w, ex, tol) = (batch.w, batch.ex, batch.tol);
+    let (x0p, y0p, _, ext_n) = batch.fundamental;
+    let fundamental = (x0p, y0p, ext_n);
+
+    // Dispatch the fixed external and excitation ranks of the pair.
+    let mut out = [T::from_real(0.0); 8];
     let rx = ex.0.holes.count_ones() as usize;
     let rw = ex.1.holes.count_ones() as usize;
     dispatch_rdm_ranks!(
         K,
         (rx, rw),
         |K, RX, RW, L, D, DD| unsafe {
-            xw_rdmk_same_m0_prepared_f64x8_const::<K, RX, RW, L, D, DD>(
+            xw_rdmk_same_m0_prepared_x8_const::<T, K, RX, RW, L, D, DD>(
                 w,
                 ex,
                 fundamental,
                 &*std::ptr::from_ref(requests).cast::<[([usize; K], [usize; K]); 8]>(),
                 tol,
-                out,
+                &mut out,
             )
         },
         (),
-    )
+    );
+    out
 }
 
-/// Dispatch four complex RDM values to a fixed-rank AVX2/FMA kernel.
+/// Evaluate four fixed-rank RDM values with AVX2/FMA.
 /// # Arguments:
-/// - `w`: Complex same-spin Wick intermediates.
+/// - `w`: Same-spin Wick intermediates.
 /// - `ex`: Bra and ket excitations.
 /// - `fundamental`: Extended contractions.
 /// - `requests`: External RDM indices.
 /// - `tol`: Numerical threshold.
-/// - `out`: Complex RDM outputs.
+/// - `out`: RDM outputs.
 /// # Returns
 /// - `()`: Writes four values.
 /// # Safety
-/// - The current CPU must support AVX2 and FMA.
+/// - The current CPU must support AVX2/FMA; indices must match fixed ranks.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn xw_rdmk_same_m0_prepared_c64x4<const K: usize>(
-    w: &SameSpinView<'_, Complex64>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[Complex64], &[Complex64], usize),
-    requests: &[([usize; K], [usize; K]); 4],
-    tol: f64,
-    out: &mut [Complex64; 4],
-) {
-    let rx = ex.0.holes.count_ones() as usize;
-    let rw = ex.1.holes.count_ones() as usize;
-    dispatch_rdm_ranks!(
-        K,
-        (rx, rw),
-        |K, RX, RW, L, D, DD| unsafe {
-            xw_rdmk_same_m0_prepared_c64x4_const::<K, RX, RW, L, D, DD>(
-                w,
-                ex,
-                fundamental,
-                &*std::ptr::from_ref(requests).cast::<[([usize; K], [usize; K]); 4]>(),
-                tol,
-                out,
-            )
-        },
-        (),
-    )
-}
-
-/// Dispatch eight complex RDM values to a fixed-rank AVX-512F kernel.
-/// # Arguments:
-/// - `w`: Complex same-spin Wick intermediates.
-/// - `ex`: Bra and ket excitations.
-/// - `fundamental`: Extended contractions.
-/// - `requests`: External RDM indices.
-/// - `tol`: Numerical threshold.
-/// - `out`: Complex RDM outputs.
-/// # Returns
-/// - `()`: Writes eight values.
-/// # Safety
-/// - The current CPU must support AVX-512F.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_rdmk_same_m0_prepared_c64x8<const K: usize>(
-    w: &SameSpinView<'_, Complex64>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[Complex64], &[Complex64], usize),
-    requests: &[([usize; K], [usize; K]); 8],
-    tol: f64,
-    out: &mut [Complex64; 8],
-) {
-    let rx = ex.0.holes.count_ones() as usize;
-    let rw = ex.1.holes.count_ones() as usize;
-    dispatch_rdm_ranks!(
-        K,
-        (rx, rw),
-        |K, RX, RW, L, D, DD| unsafe {
-            xw_rdmk_same_m0_prepared_c64x8_const::<K, RX, RW, L, D, DD>(
-                w,
-                ex,
-                fundamental,
-                &*std::ptr::from_ref(requests).cast::<[([usize; K], [usize; K]); 8]>(),
-                tol,
-                out,
-            )
-        },
-        (),
-    )
-}
-
-/// Evaluate four real fixed-rank RDM values with AVX2/FMA.
-/// # Arguments:
-/// - `w`: Real same-spin Wick intermediates.
-/// - `ex`: Bra and ket excitations.
-/// - `fundamental`: Extended contractions.
-/// - `requests`: External RDM indices.
-/// - `tol`: Numerical threshold.
-/// - `out`: Real RDM outputs.
-/// # Returns
-/// - `()`: Writes four values.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA; indices must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_rdmk_same_m0_prepared_f64x4_const<
+unsafe fn xw_rdmk_same_m0_prepared_x4_const<
+    T: NOCIScalar,
     const K: usize,
     const RX: usize,
     const RW: usize,
@@ -647,175 +455,64 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x4_const<
     const D: usize,
     const DD: usize,
 >(
-    w: &SameSpinView<'_, f64>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[f64], &[f64], usize),
-    requests: &[([usize; K], [usize; K]); 4],
-    tol: f64,
-    out: &mut [f64; 4],
-) {
-    unsafe {
-        xw_rdmk_same_m0_prepared_simd_const::<f64, F64x4, 4, K, RX, RW, L, D, DD>(
-            w,
-            ex,
-            fundamental,
-            requests,
-            tol,
-            out,
-        );
-    }
-}
-
-/// Evaluate eight real fixed-rank RDM values with AVX-512F.
-/// # Arguments:
-/// - `w`: Real same-spin Wick intermediates.
-/// - `ex`: Bra and ket excitations.
-/// - `fundamental`: Extended contractions.
-/// - `requests`: External RDM indices.
-/// - `tol`: Numerical threshold.
-/// - `out`: Real RDM outputs.
-/// # Returns
-/// - `()`: Writes eight values.
-/// # Safety
-/// - The current CPU must support AVX-512F; indices must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_rdmk_same_m0_prepared_f64x8_const<
-    const K: usize,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const DD: usize,
->(
-    w: &SameSpinView<'_, f64>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[f64], &[f64], usize),
-    requests: &[([usize; K], [usize; K]); 8],
-    tol: f64,
-    out: &mut [f64; 8],
-) {
-    unsafe {
-        xw_rdmk_same_m0_prepared_simd_const::<f64, F64x8, 8, K, RX, RW, L, D, DD>(
-            w,
-            ex,
-            fundamental,
-            requests,
-            tol,
-            out,
-        );
-    }
-}
-
-/// Evaluate four complex fixed-rank RDM values with AVX2/FMA.
-/// # Arguments:
-/// - `w`: Complex same-spin Wick intermediates.
-/// - `ex`: Bra and ket excitations.
-/// - `fundamental`: Extended contractions.
-/// - `requests`: External RDM indices.
-/// - `tol`: Numerical threshold.
-/// - `out`: Complex RDM outputs.
-/// # Returns
-/// - `()`: Writes four values.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA; indices must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_rdmk_same_m0_prepared_c64x4_const<
-    const K: usize,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const DD: usize,
->(
-    w: &SameSpinView<'_, Complex64>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[Complex64], &[Complex64], usize),
-    requests: &[([usize; K], [usize; K]); 4],
-    tol: f64,
-    out: &mut [Complex64; 4],
-) {
-    unsafe {
-        xw_rdmk_same_m0_prepared_simd_const::<Complex64, C64x4, 4, K, RX, RW, L, D, DD>(
-            w,
-            ex,
-            fundamental,
-            requests,
-            tol,
-            out,
-        );
-    }
-}
-
-/// Evaluate eight complex fixed-rank RDM values with AVX-512F.
-/// # Arguments:
-/// - `w`: Complex same-spin Wick intermediates.
-/// - `ex`: Bra and ket excitations.
-/// - `fundamental`: Extended contractions.
-/// - `requests`: External RDM indices.
-/// - `tol`: Numerical threshold.
-/// - `out`: Complex RDM outputs.
-/// # Returns
-/// - `()`: Writes eight values.
-/// # Safety
-/// - The current CPU must support AVX-512F; indices must match fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_rdmk_same_m0_prepared_c64x8_const<
-    const K: usize,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const DD: usize,
->(
-    w: &SameSpinView<'_, Complex64>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[Complex64], &[Complex64], usize),
-    requests: &[([usize; K], [usize; K]); 8],
-    tol: f64,
-    out: &mut [Complex64; 8],
-) {
-    unsafe {
-        xw_rdmk_same_m0_prepared_simd_const::<Complex64, C64x8, 8, K, RX, RW, L, D, DD>(
-            w,
-            ex,
-            fundamental,
-            requests,
-            tol,
-            out,
-        );
-    }
-}
-
-/// Evaluate a same-spin rank-`K` RDM request batch through the scalar prepared path.
-/// Each request is the constrained determinant sum
-/// `{}^{xw}\tilde S\sum_{\sum_i m_i = m}\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `ex`: Excitations defining the bra and ket determinants respectively.
-/// - `fundamental`: Extended `X^{(0)}`, `Y^{(0)}`, optional `m_i = 1` branches, and matrix rank.
-/// - `requests`: Creation and annihilation index arrays in output order.
-/// - `scratch`: Reusable determinant storage.
-/// - `tol`: Numerical threshold applied to individual determinant contributions.
-/// - `out`: Same-spin RDM elements in request order.
-/// # Returns
-/// - `()`: Writes the evaluated requests into `out`.
-#[allow(clippy::type_complexity)]
-fn xw_rdmk_same_prepared_scalar_batch<T: NOCIScalar, const K: usize>(
     w: &SameSpinView<'_, T>,
     ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], Option<(&[T], &[T])>, usize),
-    requests: &[([usize; K], [usize; K])],
-    scratch: &mut WickScratch<T>,
+    fundamental: (&[T], &[T], usize),
+    requests: &[([usize; K], [usize; K]); 4],
     tol: f64,
-    out: &mut [T],
+    out: &mut [T; 4],
 ) {
-    // Scalar requests share transformed fundamental contractions but build distinct external-index
-    // rows and columns in `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-    for (request, value) in requests.iter().zip(out.iter_mut()) {
-        *value = xw_rdmk_same_prepared_scalar_value(w, ex, fundamental, request, scratch, tol);
+    unsafe {
+        xw_rdmk_same_m0_const::<T, T::Packed4, 4, K, RX, RW, L, D, DD>(
+            w,
+            ex,
+            fundamental,
+            requests,
+            tol,
+            out,
+        );
+    }
+}
+
+/// Evaluate eight fixed-rank RDM values with AVX-512F.
+/// # Arguments:
+/// - `w`: Same-spin Wick intermediates.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: RDM outputs.
+/// # Returns
+/// - `()`: Writes eight values.
+/// # Safety
+/// - The current CPU must support AVX-512F; indices must match fixed ranks.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn xw_rdmk_same_m0_prepared_x8_const<
+    T: NOCIScalar,
+    const K: usize,
+    const RX: usize,
+    const RW: usize,
+    const L: usize,
+    const D: usize,
+    const DD: usize,
+>(
+    w: &SameSpinView<'_, T>,
+    ex: (&ExcitationSpin, &ExcitationSpin),
+    fundamental: (&[T], &[T], usize),
+    requests: &[([usize; K], [usize; K]); 8],
+    tol: f64,
+    out: &mut [T; 8],
+) {
+    unsafe {
+        xw_rdmk_same_m0_const::<T, T::Packed8, 8, K, RX, RW, L, D, DD>(
+            w,
+            ex,
+            fundamental,
+            requests,
+            tol,
+            out,
+        );
     }
 }
 
@@ -831,12 +528,11 @@ fn xw_rdmk_same_prepared_scalar_batch<T: NOCIScalar, const K: usize>(
 /// - `tol`: Numerical threshold applied to individual determinant contributions.
 /// # Returns
 /// - `T`: Unnormalised same-spin rank-`K` transition-density element.
-#[allow(clippy::type_complexity)]
 #[inline(always)]
 fn xw_rdmk_same_prepared_scalar_value<T: NOCIScalar, const K: usize>(
     w: &SameSpinView<'_, T>,
     ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], Option<(&[T], &[T])>, usize),
+    fundamental: RdmFundamental<'_, T>,
     request: &([usize; K], [usize; K]),
     scratch: &mut WickScratch<T>,
     tol: f64,
@@ -875,12 +571,11 @@ fn xw_rdmk_same_prepared_scalar_value<T: NOCIScalar, const K: usize>(
 /// - `tol`: Numerical threshold applied to the determinant contribution.
 /// # Returns
 /// - `T`: Unnormalised same-spin rank-`K` transition-density element for `m = 0`.
-#[allow(clippy::type_complexity)]
 #[inline(always)]
 fn xw_rdmk_same_m0_prepared<T: NOCIScalar, const K: usize>(
     w: &SameSpinView<'_, T>,
     ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], Option<(&[T], &[T])>, usize),
+    fundamental: RdmFundamental<'_, T>,
     request: &([usize; K], [usize; K]),
     scratch: &mut WickScratch<T>,
     tol: f64,
@@ -892,20 +587,30 @@ fn xw_rdmk_same_m0_prepared<T: NOCIScalar, const K: usize>(
             // arbitrary ranks preserve the same augmented determinant in runtime storage.
             let rx = ex.0.holes.count_ones() as usize;
             let rw = ex.1.holes.count_ones() as usize;
-            dispatch_rdm_scalar_ranks!(
+            dispatch_rdm_ranks!(
                 K,
                 (rx, rw),
-                |K, RX, RW, L, D, DD| xw_rdmk_same_m0_prepared_const::<T, K, RX, RW, L, D, DD>(
-                    w,
-                    ex,
-                    (fundamental.0, fundamental.1, fundamental.3),
-                    // SAFETY: `dispatch_rdm_scalar_ranks!` selects this arm only when the caller's const
+                |K, RX, RW, L, D, DD| {
+                    // SAFETY: `dispatch_rdm_ranks!` selects this arm only when the caller's const
                     // `K` equals the arm-local literal `K`, so the two array-reference layouts are
                     // identical.
-                    unsafe { &*std::ptr::from_ref(request).cast::<([usize; K], [usize; K])>() },
-                    scratch,
-                    tol,
-                ),
+                    let request =
+                        unsafe { &*std::ptr::from_ref(request).cast::<([usize; K], [usize; K])>() };
+
+                    // Generated ranks evaluate the packed kernel with one lane.
+                    let mut value = [T::from_real(0.0)];
+                    unsafe {
+                        xw_rdmk_same_m0_const::<T, T::Packed1, 1, K, RX, RW, L, D, DD>(
+                            w,
+                            ex,
+                            (fundamental.0, fundamental.1, fundamental.3),
+                            std::array::from_ref(request),
+                            tol,
+                            &mut value,
+                        )
+                    };
+                    value[0]
+                },
                 xw_rdmk_same_m0_gen_prepared(
                     w,
                     ex,
@@ -915,102 +620,6 @@ fn xw_rdmk_same_m0_prepared<T: NOCIScalar, const K: usize>(
                     tol,
                 ),
             )
-        }
-    )
-}
-
-/// Evaluate one fixed-rank same-spin rank-`K` RDM determinant for `m = 0`.
-/// The augmented matrix has dimension `D = K + L`, with `X^{(0)}` on and below the diagonal and in
-/// the external `K x K` block, and `Y^{(0)}` elsewhere above it, so the external operators form
-/// the creators-first string `a^\dagger_{p_1}\cdots a^\dagger_{p_K} a_{q_K}\cdots a_{q_1}`. Its
-/// first `K` labels are external RDM indices; its remaining labels use the
-/// contraction-space ordering `V_x \cup O_w` by `O_x \cup V_w` for ranks `(RX,RW)`.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `ex`: Excitations defining the bra and ket determinants respectively.
-/// - `fundamental`: Extended `X^{(0)}`, `Y^{(0)}`, and their row dimension.
-/// - `request`: Const-sized creation and annihilation index arrays.
-/// - `scratch`: Reusable determinant storage.
-/// - `tol`: Numerical threshold applied to the determinant contribution.
-/// # Returns
-/// - `T`: `{}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-#[inline(always)]
-fn xw_rdmk_same_m0_prepared_const<
-    T: NOCIScalar,
-    const K: usize,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const DD: usize,
->(
-    w: &SameSpinView<'_, T>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], usize),
-    request: &([usize; K], [usize; K]),
-    scratch: &mut WickScratch<T>,
-    tol: f64,
-) -> T {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared_const,
-        {
-            // Place external RDM labels first, followed by bra and ket excitation labels. This is
-            // the operator ordering defining `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-            scratch.ensure_same(D);
-            let rows = scratch.rows.as_mut_slice();
-            let cols = scratch.cols.as_mut_slice();
-            for i in 0..K {
-                rows[i] = w.nmo + request.0[i];
-                cols[i] = w.nmo + request.1[i];
-            }
-
-            let (x_ex, w_ex) = ex;
-            let nocc = w.nocc;
-            let nvirt = w.nmo - nocc;
-            let mut x_holes = x_ex.holes;
-            let mut x_parts = x_ex.parts;
-            for i in 0..RX {
-                cols[K + i] = x_holes.trailing_zeros() as usize;
-                rows[K + i] = x_parts.trailing_zeros() as usize - nocc;
-                x_holes &= x_holes - 1;
-                x_parts &= x_parts - 1;
-            }
-            let mut w_holes = w_ex.holes;
-            let mut w_parts = w_ex.parts;
-            for i in 0..RW {
-                rows[K + RX + i] = nvirt + w_holes.trailing_zeros() as usize;
-                cols[K + RX + i] = w_parts.trailing_zeros() as usize;
-                w_holes &= w_holes - 1;
-                w_parts &= w_parts - 1;
-            }
-
-            let (x0, y0, ext_n) = fundamental;
-            let d = &mut scratch.det0.as_mut_slice()[..DD];
-
-            // Build augmented `m_i = 0` determinant `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-            // Entries use `X^{(0)}` where the row creator stands left of the column annihilator in the
-            // operator string, and `Y^{(0)}` otherwise. The external string is creators first,
-            // `a^\dagger_{p_1}\cdots a^\dagger_{p_K} a_{q_K}\cdots a_{q_1}`, so its whole `K x K` block uses
-            // `X^{(0)}`; the remaining entries take `X^{(0)}` on and below the diagonal.
-            for i in 0..D {
-                let row = rows[i] * ext_n;
-                for j in 0..D {
-                    d[i * D + j] = if i >= j || j < K {
-                        x0[row + cols[j]]
-                    } else {
-                        y0[row + cols[j]]
-                    };
-                }
-            }
-
-            // Apply reduced reference overlap and numerical threshold to determinant contribution.
-            let zero = <T as From<f64>>::from(0.0);
-            let value = det_const::<T, D, DD>(d);
-            if value.abs() > tol {
-                w.phase * <T as From<f64>>::from(w.tilde_s_prod) * value
-            } else {
-                zero
-            }
         }
     )
 }
@@ -1094,12 +703,11 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
 /// - `tol`: Numerical threshold applied to individual determinant contributions.
 /// # Returns
 /// - `T`: Constrained determinant sum multiplied by the reduced reference overlap.
-#[allow(clippy::type_complexity)]
 #[inline(always)]
 fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
     w: &SameSpinView<'_, T>,
     ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], Option<(&[T], &[T])>, usize),
+    fundamental: RdmFundamental<'_, T>,
     request: &([usize; K], [usize; K]),
     scratch: &mut WickScratch<T>,
     tol: f64,

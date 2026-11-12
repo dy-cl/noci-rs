@@ -1,48 +1,17 @@
 // determinant/auxiliary.rs
+//! The auxiliary B-apply space: the Cartesian product of the alpha and beta spin strings of every
+//! parent, with the retained spin strings as prefixes, addressed by `AuxiliaryIndex`.
 
 // Crate-root imports.
 use crate::StateScalar;
-use crate::determinant::{
-    DeterminantState, ParentComponents, SpinDeterminantIndex, SpinDeterminantState,
-};
 use crate::determinant::{NOCIIndex, NOCISpace};
+use crate::determinant::{ParentSpinStrings, SpinStringIndex, SpinStringPair, SpinStringState};
 
 // Parent/sibling imports.
-use super::connection::OrthogonalConnection;
+use super::connection::ConnectionState;
+use super::state::determinant_index;
 
-macro_rules! determinant_index {
-    ($name:ident, $trait_name:ident) => {
-        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-        pub(crate) struct $name(
-            /// Parent-local spin-component position.
-            pub(crate) usize,
-        );
-
-        impl $trait_name for $name {
-            /// Construct a compact index from its position.
-            /// # Arguments:
-            /// - `index`: Parent-local position.
-            /// # Returns:
-            /// - `Self`: Typed component index.
-            #[inline(always)]
-            fn from_usize(index: usize) -> Self {
-                Self(index)
-            }
-
-            /// Return the position encoded by this index.
-            /// # Arguments:
-            /// - `self`: Typed component index.
-            /// # Returns:
-            /// - `usize`: Parent-local position.
-            #[inline(always)]
-            fn as_usize(self) -> usize {
-                self.0
-            }
-        }
-    };
-}
-
-determinant_index!(AuxiliarySpinIndex, SpinDeterminantIndex);
+determinant_index!(AuxiliarySpinStringIndex, SpinStringIndex);
 
 /// Global index in the implicit auxiliary Cartesian product.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -51,90 +20,48 @@ pub(crate) struct AuxiliaryIndex(
     pub(crate) usize,
 );
 
-/// Parent and spin-component identity of one physical auxiliary determinant.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct AuxiliaryDeterminantState {
-    /// Orbital-frame parent shared with the retained NOCI space.
-    pub(crate) parent: usize,
-    /// Physical alpha component ID within that parent.
-    pub(crate) aid: AuxiliarySpinIndex,
-    /// Physical beta component ID within that parent.
-    pub(crate) bid: AuxiliarySpinIndex,
-}
-
-impl DeterminantState for AuxiliaryDeterminantState {
-    type SpinIndex = AuxiliarySpinIndex;
-
-    /// Return the auxiliary determinant's parent orbital frame.
-    /// # Arguments:
-    /// - `self`: Auxiliary determinant identity.
-    /// # Returns:
-    /// - `usize`: Parent frame index.
-    fn parent(&self) -> usize {
-        self.parent
-    }
-
-    /// Return the auxiliary alpha component ID.
-    /// # Arguments:
-    /// - `self`: Auxiliary determinant identity.
-    /// # Returns:
-    /// - `AuxiliarySpinIndex`: Alpha component ID.
-    fn aid(&self) -> Self::SpinIndex {
-        self.aid
-    }
-
-    /// Return the auxiliary beta component ID.
-    /// # Arguments:
-    /// - `self`: Auxiliary determinant identity.
-    /// # Returns:
-    /// - `AuxiliarySpinIndex`: Beta component ID.
-    fn bid(&self) -> Self::SpinIndex {
-        self.bid
-    }
-}
-
-/// Physical BApply closure with NOCI components as exact alpha/beta prefixes.
-/// The two-spin Cartesian product is represented only by component lists and offsets.
+/// Physical BApply closure with NOCI spin strings as exact alpha/beta prefixes.
+/// The two-spin Cartesian product is represented only by spin-string lists and offsets.
 pub(crate) struct AuxiliarySpace {
-    /// Parent-local physical components; each retained NOCI list is an exact prefix.
-    components: Vec<ParentComponents<AuxiliarySpinIndex>>,
+    /// Parent-local physical spin strings; each retained NOCI list is an exact prefix.
+    spin_strings: Vec<ParentSpinStrings<AuxiliarySpinStringIndex>>,
     /// Start of each parent's flattened implicit product, with a final end offset.
     offsets: Vec<usize>,
 }
 
 impl AuxiliarySpace {
-    /// Build the H-connected component closure with retained NOCI components as exact prefixes.
+    /// Build the H-connected spin-string closure with retained NOCI spin strings as exact prefixes.
     /// # Arguments:
     /// - `noci`: Authoritative retained determinant space.
     /// # Returns:
     /// - `Self`: Implicit auxiliary product and deterministic offsets.
     pub(crate) fn new<T: StateScalar>(noci: &NOCISpace<T>) -> Self {
-        let mut components = Vec::with_capacity(noci.parents.len());
+        let mut strings = Vec::with_capacity(noci.parents.len());
         let mut offsets = Vec::with_capacity(noci.parents.len() + 1);
         offsets.push(0);
 
-        for (parent, retained) in noci.components.iter().enumerate() {
+        for (parent, retained) in noci.spin_strings.iter().enumerate() {
             let reference = &noci.parents[parent];
-            let mut auxiliary = ParentComponents::new();
+            let mut auxiliary = ParentSpinStrings::new();
 
-            for component in &retained.alpha {
-                auxiliary.intern_alpha(component.clone());
+            for string in &retained.alpha {
+                auxiliary.intern_alpha(string.clone());
             }
 
-            for component in &retained.beta {
-                auxiliary.intern_beta(component.clone());
+            for string in &retained.beta {
+                auxiliary.intern_beta(string.clone());
             }
 
             // Each one-spin H connection changes one or two electrons. Pairing the independent
             // alpha and beta single closures also covers every opposite-spin double child.
             let mut extra_alpha = Vec::new();
             let mut extra_beta = Vec::new();
-            for component in &retained.alpha {
-                reachable_spin_occupations(component, &mut extra_alpha);
+            for string in &retained.alpha {
+                reachable_spin_occupations(string, &mut extra_alpha);
             }
 
-            for component in &retained.beta {
-                reachable_spin_occupations(component, &mut extra_beta);
+            for string in &retained.beta {
+                reachable_spin_occupations(string, &mut extra_beta);
             }
 
             extra_alpha.sort_unstable();
@@ -144,7 +71,7 @@ impl AuxiliarySpace {
             extra_beta.dedup();
 
             for occupation in extra_alpha {
-                auxiliary.intern_alpha(SpinDeterminantState::new(
+                auxiliary.intern_alpha(SpinStringState::new(
                     reference.oa,
                     occupation,
                     reference.ca.ncols(),
@@ -152,7 +79,7 @@ impl AuxiliarySpace {
             }
 
             for occupation in extra_beta {
-                auxiliary.intern_beta(SpinDeterminantState::new(
+                auxiliary.intern_beta(SpinStringState::new(
                     reference.ob,
                     occupation,
                     reference.cb.ncols(),
@@ -161,11 +88,11 @@ impl AuxiliarySpace {
 
             let next = offsets[parent] + auxiliary.na() * auxiliary.nb();
             offsets.push(next);
-            components.push(auxiliary);
+            strings.push(auxiliary);
         }
 
         Self {
-            components,
+            spin_strings: strings,
             offsets,
         }
     }
@@ -173,14 +100,14 @@ impl AuxiliarySpace {
     /// Flatten a structured auxiliary determinant within its parent's implicit product.
     /// # Arguments:
     /// - `self`: Auxiliary determinant space.
-    /// - `state`: Parent and physical auxiliary component IDs.
+    /// - `state`: Parent and physical auxiliary spin-string IDs.
     /// # Returns:
     /// - `AuxiliaryIndex`: Deterministic flattened determinant index.
     pub(crate) fn index(
         &self,
-        state: AuxiliaryDeterminantState,
+        state: SpinStringPair<AuxiliarySpinStringIndex>,
     ) -> AuxiliaryIndex {
-        let nb = self.components[state.parent].nb();
+        let nb = self.spin_strings[state.parent].nb();
         AuxiliaryIndex(self.offsets[state.parent] + state.aid.0 * nb + state.bid.0)
     }
 
@@ -189,23 +116,23 @@ impl AuxiliarySpace {
     /// - `self`: Auxiliary determinant space.
     /// - `index`: Deterministic flattened determinant index.
     /// # Returns:
-    /// - `AuxiliaryDeterminantState`: Parent and component IDs.
-    pub(crate) fn state(
+    /// - `SpinStringPair<AuxiliarySpinStringIndex>`: Parent and spin-string positions.
+    pub(crate) fn spin_string_pair(
         &self,
         index: AuxiliaryIndex,
-    ) -> AuxiliaryDeterminantState {
+    ) -> SpinStringPair<AuxiliarySpinStringIndex> {
         let parent = self.offsets.partition_point(|&offset| offset <= index.0) - 1;
         let local = index.0 - self.offsets[parent];
-        let nb = self.components[parent].nb();
+        let nb = self.spin_strings[parent].nb();
 
-        AuxiliaryDeterminantState {
+        SpinStringPair {
             parent,
-            aid: AuxiliarySpinIndex(local / nb),
-            bid: AuxiliarySpinIndex(local % nb),
+            aid: AuxiliarySpinStringIndex(local / nb),
+            bid: AuxiliarySpinStringIndex(local % nb),
         }
     }
 
-    /// Embed a retained determinant using the exact component-prefix invariant.
+    /// Embed a retained determinant using the exact spin string-prefix invariant.
     /// # Arguments:
     /// - `self`: Auxiliary determinant space.
     /// - `noci`: Retained determinant space with matching parent frames.
@@ -217,11 +144,11 @@ impl AuxiliarySpace {
         noci: &NOCISpace<T>,
         index: NOCIIndex,
     ) -> AuxiliaryIndex {
-        let state = noci.state(index);
-        self.index(AuxiliaryDeterminantState {
-            parent: state.parent(),
-            aid: AuxiliarySpinIndex(state.aid().0),
-            bid: AuxiliarySpinIndex(state.bid().0),
+        let state = noci.spin_string_pair(index);
+        self.index(SpinStringPair {
+            parent: state.parent,
+            aid: AuxiliarySpinStringIndex(state.aid.0),
+            bid: AuxiliarySpinStringIndex(state.bid.0),
         })
     }
 
@@ -237,43 +164,43 @@ impl AuxiliarySpace {
         &self,
         noci: &NOCISpace<T>,
         source: NOCIIndex,
-        connection: OrthogonalConnection,
+        connection: ConnectionState,
     ) -> AuxiliaryIndex {
-        let state = noci.state(source);
-        let retained = noci.parent_components(state.parent());
+        let state = noci.spin_string_pair(source);
+        let retained = noci.parent_spin_strings(state.parent);
         let (oa, ob) =
-            connection.child_occupations(retained.alpha(state.aid()), retained.beta(state.bid()));
+            connection.child_occupations(retained.alpha(state.aid), retained.beta(state.bid));
 
-        let components = &self.components[state.parent()];
-        self.index(AuxiliaryDeterminantState {
-            parent: state.parent(),
-            aid: components.aids[&oa],
-            bid: components.bids[&ob],
+        let strings = &self.spin_strings[state.parent];
+        self.index(SpinStringPair {
+            parent: state.parent,
+            aid: strings.aids[&oa],
+            bid: strings.bids[&ob],
         })
     }
 
-    /// Return one parent's auxiliary spin components.
+    /// Return one parent's auxiliary spin strings.
     /// # Arguments:
     /// - `self`: Auxiliary determinant space.
     /// - `parent`: Parent orbital-frame index.
     /// # Returns:
-    /// - `&ParentComponents<AuxiliarySpinIndex>`: Auxiliary spin components.
-    pub(crate) fn parent_components(
+    /// - `&ParentSpinStrings<AuxiliarySpinStringIndex>`: Auxiliary spin strings.
+    pub(crate) fn parent_spin_strings(
         &self,
         parent: usize,
-    ) -> &ParentComponents<AuxiliarySpinIndex> {
-        &self.components[parent]
+    ) -> &ParentSpinStrings<AuxiliarySpinStringIndex> {
+        &self.spin_strings[parent]
     }
 }
 
 /// Enumerate all physical one-spin occupations connected by a single or same-spin double.
 /// # Arguments:
-/// - `state`: Source component with rank-to-orbital lookup tables.
+/// - `state`: Source spin string with rank-to-orbital lookup tables.
 /// - `out`: Accumulator for occupations subsequently sorted and deduplicated.
 /// # Returns
 /// - `()`: Appends reachable occupations to `out`.
 fn reachable_spin_occupations(
-    state: &SpinDeterminantState,
+    state: &SpinStringState,
     out: &mut Vec<u128>,
 ) {
     for &hole in &state.occupied {

@@ -14,7 +14,7 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::determinant::AuxiliarySpace;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
-use crate::elements::{DetPair, NOCIData, calculate_hs_pair, calculate_s_pair};
+use crate::elements::{DetPair, HamiltonianOverlap, NOCIData, Overlap, calculate_pairs};
 use crate::input::{Input, Propagator};
 use crate::maths::general_evp;
 use crate::mpiutils::broadcast;
@@ -901,8 +901,12 @@ pub(in crate::noci::stochastic) fn find_s(
 ) -> f64 {
     // Get the sorted pair of indices
     let (a, b) = if i <= j { (i, j) } else { (j, i) };
-    let ldet = data.space.state(crate::determinant::NOCIIndex(a));
-    let gdet = data.space.state(crate::determinant::NOCIIndex(b));
+    let ldet = data
+        .space
+        .spin_string_pair(crate::determinant::NOCIIndex(a));
+    let gdet = data
+        .space
+        .spin_string_pair(crate::determinant::NOCIIndex(b));
 
     // If the determinants share the same parent take an orthogonal early exit.
     if ldet.parent == gdet.parent
@@ -919,12 +923,19 @@ pub(in crate::noci::stochastic) fn find_s(
     }
 
     // Otherwise calculate normally.
-    let pair = DetPair::new(
+    let pair = DetPair::from_space(
+        data.space,
         crate::determinant::NOCIIndex(a),
         crate::determinant::NOCIIndex(b),
     );
     let mut s = 0.0;
-    calculate_s_pair(data, &[pair], Some(scratch), std::slice::from_mut(&mut s));
+    calculate_pairs(
+        data,
+        &Overlap,
+        &[pair],
+        Some(scratch),
+        std::slice::from_mut(&mut s),
+    );
     s
 }
 
@@ -946,12 +957,19 @@ pub(in crate::noci::stochastic) fn find_hs(
     let (a, b) = if i <= j { (i, j) } else { (j, i) };
 
     // Calculate the matrix element.
-    let pair = DetPair::new(
+    let pair = DetPair::from_space(
+        data.space,
         crate::determinant::NOCIIndex(a),
         crate::determinant::NOCIIndex(b),
     );
     let mut hs = (0.0, 0.0);
-    calculate_hs_pair(data, &[pair], Some(scratch), std::slice::from_mut(&mut hs));
+    calculate_pairs(
+        data,
+        &HamiltonianOverlap,
+        &[pair],
+        Some(scratch),
+        std::slice::from_mut(&mut hs),
+    );
     hs
 }
 
@@ -971,7 +989,7 @@ pub(in crate::noci::stochastic) fn find_hs_batched(
     scratch: &mut WickScratchSpin<f64>,
     out: &mut [(f64, f64)],
 ) {
-    calculate_hs_pair(data, pairs, Some(scratch), out);
+    calculate_pairs(data, &HamiltonianOverlap, pairs, Some(scratch), out);
 }
 
 /// Determine the maximum scratch sizes required for computation of matrix elements using extended
@@ -985,17 +1003,17 @@ pub(in crate::noci::stochastic) fn max_scratch_sizes(
     space: &crate::determinant::NOCISpace<f64>
 ) -> (usize, usize, usize) {
     let maxexa = space
-        .components
+        .spin_strings
         .iter()
         .flat_map(|parent| &parent.alpha)
-        .map(|st| st.excitation.holes.count_ones() as usize)
+        .map(|st| st.data.excitation.holes.count_ones() as usize)
         .max()
         .unwrap_or(0);
     let maxexb = space
-        .components
+        .spin_strings
         .iter()
         .flat_map(|parent| &parent.beta)
-        .map(|st| st.excitation.holes.count_ones() as usize)
+        .map(|st| st.data.excitation.holes.count_ones() as usize)
         .max()
         .unwrap_or(0);
     let maxsame = 2 * maxexa.max(maxexb);

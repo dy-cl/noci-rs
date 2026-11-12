@@ -4,9 +4,9 @@
 use ndarray::{Array2, Array4};
 
 // Crate-root imports.
-use crate::determinant::{NOCIIndex, NOCISpace};
+use crate::determinant::{DeterminantState, NOCIIndex, NOCISpace};
 use crate::input::Input;
-use crate::{AoData, NOCIScalar};
+use crate::{AoData, NOCIScalar, StateScalar};
 
 // Parent/sibling imports.
 use super::nonorthogonalwicks::WicksView;
@@ -99,27 +99,42 @@ impl<'a, T: NOCIScalar> FockData<'a, T> {
     }
 }
 
-/// Stores the pair of determinants whose matrix element is being evaluated.
-#[derive(Clone, Copy)]
+/// The two determinants of one matrix element.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct DetPair {
-    /// Left determinant in the matrix element.
-    pub(crate) ldet: NOCIIndex,
-    /// Right determinant in the matrix element.
-    pub(crate) gdet: NOCIIndex,
+    /// Bra determinant.
+    pub(crate) bra: DeterminantState,
+    /// Ket determinant.
+    pub(crate) ket: DeterminantState,
 }
 
 impl DetPair {
-    /// Construct the pair of determinants whose matrix element is to be evaluated.
+    /// Construct the pair of determinants of one matrix element.
     /// # Arguments:
-    /// - `ldet`: Left determinant in the matrix element.
-    /// - `gdet`: Right determinant in the matrix element.
+    /// - `bra`: Bra determinant.
+    /// - `ket`: Ket determinant.
     /// # Returns:
-    /// - `DetPair<'a, T>`: Pair of determinants to be passed to matrix-element routines.
+    /// - `DetPair`: Pair of determinants passed to the matrix-element routines.
     pub(crate) fn new(
-        ldet: NOCIIndex,
-        gdet: NOCIIndex,
+        bra: DeterminantState,
+        ket: DeterminantState,
     ) -> Self {
-        Self { ldet, gdet }
+        Self { bra, ket }
+    }
+
+    /// Construct the pair of two determinants of a space from their handles.
+    /// # Arguments:
+    /// - `space`: Determinant space holding both determinants.
+    /// - `bra`: Handle of the bra determinant.
+    /// - `ket`: Handle of the ket determinant.
+    /// # Returns:
+    /// - `DetPair`: Pair of the two determinants' identities.
+    pub(crate) fn from_space<T: StateScalar>(
+        space: &NOCISpace<T>,
+        bra: NOCIIndex,
+        ket: NOCIIndex,
+    ) -> Self {
+        Self::new(space.determinant(bra), space.determinant(ket))
     }
 }
 

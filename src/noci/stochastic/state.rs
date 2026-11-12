@@ -5,7 +5,7 @@ use mpi::traits::*;
 use rand::{Rng, SeedableRng};
 
 // Crate-root imports.
-use crate::determinant::{AuxiliaryIndex, AuxiliarySpace, NOCIIndex, OrthogonalConnection};
+use crate::determinant::{AuxiliaryIndex, AuxiliarySpace, ConnectionState, NOCIIndex};
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::elements::{
     DetPair, NOCIData, OrthogonalHamiltonianScratch, calculate_h_pairs_orthogonal_batched,
@@ -435,7 +435,7 @@ struct NOCIBatchedSpawnRequest {
 /// Batched orthogonal spawn request with a relative connection and known proposal probability.
 struct AuxiliaryBatchedSpawnRequest {
     /// Source-relative orthogonal connection.
-    connection: OrthogonalConnection,
+    connection: ConnectionState,
     /// Retained source determinant index.
     source: NOCIIndex,
     /// Per-attempt sampled source population.
@@ -577,7 +577,7 @@ pub(in crate::noci::stochastic) struct AuxiliaryThreadPropagation {
     /// Raw off-diagonal auxiliary events awaiting one worker-batch pivotal compression.
     raw_spawn_updates: Vec<AuxiliaryPopulationUpdate>,
     /// Compact source and relative connections aligned with requests.
-    spawn_pairs: Vec<(NOCIIndex, OrthogonalConnection)>,
+    spawn_pairs: Vec<(NOCIIndex, ConnectionState)>,
     /// Parent-orthogonal Hamiltonian results aligned with spawn requests.
     spawn_h: Vec<f64>,
     /// Reusable numerical parent-and-sector grouping storage for orthogonal H batches.
@@ -711,7 +711,7 @@ impl NOCIThreadPropagation {
                 (request.parent, request.child)
             };
             self.spawn_pairs
-                .push(DetPair::new(NOCIIndex(a), NOCIIndex(b)));
+                .push(DetPair::from_space(data.space, NOCIIndex(a), NOCIIndex(b)));
         }
 
         self.spawn_hs.clear();

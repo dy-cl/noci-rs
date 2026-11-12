@@ -10,12 +10,10 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::AoData;
 use crate::NOCIScalar;
-use crate::determinant::{NOCIIndex, NOCISpace};
-use crate::elements::compare_f_pair_wicks_naive;
-use crate::elements::compare_hs_pair_wicks_naive;
+use crate::determinant::{DeterminantState, NOCIIndex, NOCISpace};
 use crate::elements::nonorthogonalwicks::{WickScratchSpin, WicksView};
-use crate::elements::{DetPair, FockData, MOCache, NOCIData};
-use crate::elements::{calculate_f_pair, calculate_hs_pair_dense, calculate_s_pair};
+use crate::elements::{DetPair, Fock, FockData, HamiltonianOverlap, MOCache, NOCIData, Overlap};
+use crate::elements::{calculate_pairs, calculate_pairs_dense, compare_pairs_wicks_naive};
 use crate::input::Input;
 use crate::maths::general_evp;
 use crate::time_call;
@@ -27,9 +25,9 @@ use crate::write::write_hs_matrices;
 /// Hamiltonian, overlap, or Fock matrix elements. Each matrix row is passed as one batch so
 /// the matrix-element dispatchers can packetise its pairs for SIMD evaluation.
 /// # Arguments:
+/// - `data`: Shared data holding the determinant space and input options.
 /// - `left`: First set of determinants.
 /// - `right`: Second set of determinants.
-/// - `input`: User specified input options.
 /// - `symmetric`: Whether only the upper triangle should be evaluated.
 /// - `zero`: Initial value for each row output buffer.
 /// - `o`: closure for batched determinant-pair evaluation.
@@ -40,9 +38,9 @@ use crate::write::write_hs_matrices;
 /// - `O`: Matrix-element callback over determinant pairs, Wick scratch, and row outputs.
 /// - `U`: Required to be `Send` and `Copy`.
 fn calculate_matrix_elements<T, U, O>(
+    data: &NOCIData<'_, T>,
     left: &[NOCIIndex],
     right: &[NOCIIndex],
-    input: &Input,
     symmetric: bool,
     zero: U,
     o: O,
@@ -57,8 +55,12 @@ where
 
     let t0 = Instant::now();
 
+    // Requests name determinants by identity, so convert the handles once.
+    let left: Vec<DeterminantState> = left.iter().map(|&i| data.space.determinant(i)).collect();
+    let right: Vec<DeterminantState> = right.iter().map(|&i| data.space.determinant(i)).collect();
+
     // Evaluate each row's upper-triangle and diagonal, or full, columns as one batch.
-    let use_wicks_scratch = input.wicks.enabled;
+    let use_wicks_scratch = data.input.wicks.enabled;
     let rows: Vec<Vec<(usize, usize, U)>> = (0..nl)
         .into_par_iter()
         .map_init(
@@ -125,7 +127,7 @@ where
 
 /// Dense counterpart of `calculate_matrix_elements` for Hamiltonian and overlap matrices. The
 /// ket determinants are sorted into runs sharing a parent once, and each row is evaluated with
-/// `calculate_hs_pair_dense` directly into its row of H and S.
+/// `calculate_pairs_dense` directly into its row of H and S.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `left`: First set of determinants.
@@ -146,11 +148,15 @@ fn calculate_matrix_elements_dense<T: NOCIScalar>(
 
     let t0 = Instant::now();
 
+    // Requests name determinants by identity, so convert the handles once.
+    let left: Vec<DeterminantState> = left.iter().map(|&i| data.space.determinant(i)).collect();
+    let right: Vec<DeterminantState> = right.iter().map(|&i| data.space.determinant(i)).collect();
+
     // Sort the columns into runs of ket determinants sharing a parent.
     let mut runs: Vec<(usize, Vec<usize>)> = Vec::new();
     let mut run_of = vec![usize::MAX; data.space.parents.len()];
     for (j, &gdet) in right.iter().enumerate() {
-        let gp = data.space.state(gdet).parent;
+        let gp = gdet.parent;
         if run_of[gp] == usize::MAX {
             run_of[gp] = runs.len();
             runs.push((gp, Vec::new()));
@@ -177,7 +183,15 @@ fn calculate_matrix_elements_dense<T: NOCIScalar>(
             },
             |(scratch, row), (i, (mut hrow, mut srow))| {
                 let first = if symmetric { i } else { 0 };
-                calculate_hs_pair_dense(data, left[i], right, &runs, first, scratch.as_mut(), row);
+                calculate_pairs_dense(
+                    data,
+                    &HamiltonianOverlap,
+                    left[i],
+                    (&right, &runs),
+                    first,
+                    scratch.as_mut(),
+                    row,
+                );
                 for j in first..nr {
                     hrow[j] = row[j].0;
                     srow[j] = row[j].1;
@@ -234,21 +248,22 @@ pub(crate) fn build_noci_fock<T: NOCIScalar>(
     time_call!(crate::timers::noci::add_build_full_fock, {
         let nl = left.len();
         let nr = right.len();
+        let op = Fock { fock, shift: 0.0 };
 
         // In comparison mode, build with Wick's theorem while accumulating
         // discrepancies against the generalised Slater-Condon elements.
         if data.input.wicks.enabled && data.input.wicks.compare {
             let zero = (T::from_real(0.0), (0.0, 0.0));
             let (vals, dt) = calculate_matrix_elements(
+                data,
                 left,
                 right,
-                data.input,
                 symmetric,
                 zero,
                 |pairs, scratch, out| {
                     let scratch = scratch.unwrap();
                     for (&pair, value) in pairs.iter().zip(out) {
-                        *value = compare_f_pair_wicks_naive(data, fock, pair, scratch);
+                        *value = compare_pairs_wicks_naive(data, &op, pair, scratch);
                     }
                 },
             );
@@ -272,14 +287,10 @@ pub(crate) fn build_noci_fock<T: NOCIScalar>(
         // Otherwise evaluate each determinant pair once and scatter its
         // result into the requested symmetric or rectangular matrix.
         let zero = T::from_real(0.0);
-        let (vals, dt) = calculate_matrix_elements(
-            left,
-            right,
-            data.input,
-            symmetric,
-            zero,
-            |pairs, scratch, out| calculate_f_pair(data, fock, pairs, scratch, out),
-        );
+        let (vals, dt) =
+            calculate_matrix_elements(data, left, right, symmetric, zero, |pairs, scratch, out| {
+                calculate_pairs(data, &op, pairs, scratch, out)
+            });
 
         let f = scatter_matrix_elements(vals, nl, nr, symmetric);
         (f, dt)
@@ -306,14 +317,10 @@ pub(crate) fn build_noci_s<T: NOCIScalar>(
         let nr = right.len();
 
         let zero = T::from_real(0.0);
-        let (vals, dt) = calculate_matrix_elements(
-            left,
-            right,
-            data.input,
-            symmetric,
-            zero,
-            |pairs, scratch, out| calculate_s_pair(data, pairs, scratch, out),
-        );
+        let (vals, dt) =
+            calculate_matrix_elements(data, left, right, symmetric, zero, |pairs, scratch, out| {
+                calculate_pairs(data, &Overlap, pairs, scratch, out)
+            });
 
         let s = scatter_matrix_elements(vals, nl, nr, symmetric);
         (s, dt)
@@ -344,15 +351,16 @@ pub fn build_noci_hs<T: NOCIScalar>(
         if data.input.wicks.enabled && data.input.wicks.compare {
             let zero = ((T::from_real(0.0), T::from_real(0.0)), (0.0, 0.0));
             let (vals, dt) = calculate_matrix_elements(
+                data,
                 left,
                 right,
-                data.input,
                 symmetric,
                 zero,
                 |pairs, scratch, out| {
                     let scratch = scratch.unwrap();
                     for (&pair, value) in pairs.iter().zip(out) {
-                        *value = compare_hs_pair_wicks_naive(data, pair, scratch);
+                        *value =
+                            compare_pairs_wicks_naive(data, &HamiltonianOverlap, pair, scratch);
                     }
                 },
             );
