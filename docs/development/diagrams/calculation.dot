@@ -1,0 +1,29 @@
+// Regenerate with: dot -Tsvg docs/development/diagrams/calculation.dot -o docs/development/diagrams/calculation.svg
+digraph calculation {
+  graph [bgcolor="white", fontname="DejaVu Sans", fontsize=16, pad=0.25,
+         nodesep=0.35, ranksep=0.5, splines=polyline];
+  node [shape=box, style="rounded,filled", fillcolor="#f5f8f4", color="#8a9b87",
+        fontname="DejaVu Sans", fontsize=14, fontcolor="#18251a", margin="0.17,0.12"];
+  edge [color="#59705a", arrowsize=0.7, fontname="DejaVu Sans", fontsize=12];
+
+  graph [rankdir=TB];
+  input [label="main.rs → driver/\nLoad Lua input once", fillcolor="#e0edda", color="#428036"];
+  ao [label="integrals/\nMolecular AO data"];
+  scf [label="scf/\nReal / holomorphic solutions"];
+  refs [label="basis/ + determinant/\nSelect parent references\nBuild NOCISpace"];
+  caches [label="elements/\nMO caches + optional Wick intermediates"];
+  noci [label="noci/\nReference matrices and NOCI solution", fillcolor="#e0edda", color="#428036"];
+  post [label="driver/post.rs\nRun the requested methods"];
+  prop [label="NOCI propagation\nDeterministic / NOCIQMC"];
+  selected [label="Selected NOCI\nand NOCI-PT2"];
+  cc [label="NOCC\nJM / GNOCC*"];
+  output [label="Reports and requested files\nCarry supported guesses to next geometry", fillcolor="#e0edda", color="#428036"];
+  input -> ao -> scf -> refs -> caches -> noci -> post;
+  post -> prop;
+  post -> selected;
+  post -> cc;
+  {rank=same; prop; selected; cc;}
+  prop -> output;
+  selected -> output;
+  cc -> output;
+}

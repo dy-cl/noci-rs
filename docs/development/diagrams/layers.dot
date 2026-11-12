@@ -1,0 +1,35 @@
+// Regenerate with: dot -Tsvg docs/development/diagrams/layers.dot -o docs/development/diagrams/layers.svg
+digraph layers {
+  graph [bgcolor="white", fontname="DejaVu Sans", fontsize=16, pad=0.25,
+         nodesep=0.35, ranksep=0.5, splines=polyline];
+  node [shape=box, style="rounded,filled", fillcolor="#f5f8f4", color="#8a9b87",
+        fontname="DejaVu Sans", fontsize=14, fontcolor="#18251a", margin="0.17,0.12"];
+  edge [color="#59705a", arrowsize=0.7, fontname="DejaVu Sans", fontsize=12];
+
+  graph [rankdir=TB, compound=true];
+  subgraph cluster_noci {
+    label="NOCI family"; color="#a2b69c"; style="rounded"; margin=16;
+    nm [label="noci/ approaches\ndeterministic · stochastic\nselected · optimised"];
+    ns [label="noci/ shared layer\nMatrices · reference solution\nSpin-factorised operators", fillcolor="#e0edda", color="#428036"];
+    nm -> ns;
+  }
+  subgraph cluster_nocc {
+    label="NOCC family"; color="#a2b69c"; style="rounded"; margin=16;
+    cm [label="nocc/ approaches\ndeterministic · stochastic"];
+    cs [label="nocc/ shared layer\nJM equations\nGNOCC spaces, cumulants, terms*", fillcolor="#e0edda", color="#428036"];
+    cm -> cs;
+  }
+  el [label="elements/\nPair operators · dispatch\nMatrix elements · RDMs", fillcolor="#e0edda", color="#428036"];
+  qmc [label="qmc/\nReport loop · workers · RNG\nMPI updates · FRI · restarts", fillcolor="#e0edda", color="#428036"];
+  det [label="determinant/\nParent frames · identities\nRetained and auxiliary spaces"];
+  support [label="Numerical foundations\nmaths/ · integrals/ · scf/ · basis/"];
+  {rank=same; el; qmc;}
+  ns -> el;
+  cs -> el;
+  nm -> qmc [label="stochastic"];
+  cm -> qmc [label="stochastic"];
+  el -> det;
+  qmc -> det;
+  det -> support;
+  el -> support;
+}

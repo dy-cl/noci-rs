@@ -1,0 +1,29 @@
+// Regenerate with: dot -Tsvg docs/development/diagrams/stochastic.dot -o docs/development/diagrams/stochastic.svg
+digraph stochastic {
+  graph [bgcolor="white", fontname="DejaVu Sans", fontsize=16, pad=0.25,
+         nodesep=0.35, ranksep=0.5, splines=polyline];
+  node [shape=box, style="rounded,filled", fillcolor="#f5f8f4", color="#8a9b87",
+        fontname="DejaVu Sans", fontsize=14, fontcolor="#18251a", margin="0.17,0.12"];
+  edge [color="#59705a", arrowsize=0.7, fontname="DejaVu Sans", fontsize=12];
+
+  graph [rankdir=TB];
+  noci [label="noci/stochastic/\nNOCIQMC propagators"];
+  jm [label="nocc/stochastic/\nJM-NOCCMC propagator"];
+  api [label="qmc/run.rs\nShared report loop via Propagator", fillcolor="#e0edda", color="#428036"];
+  noci -> api [label="implements"];
+  jm -> api [label="implements"];
+  cycles [label="cycle × ncycles\nSample with frozen populations"];
+  step [label="step\nApply changes + update observables / shift"];
+  report [label="Shared stop / restart / report control"];
+  finish [label="finish", fillcolor="#e0edda", color="#428036"];
+  workers [label="Persistent Rayon workers\nRNG streams · queues · scratch"];
+  elements [label="elements/\nBatched matrix-element evaluation"];
+  api -> cycles -> step -> report;
+  report -> cycles [label="next report", constraint=false];
+  report -> finish [label="stop / schedule complete"];
+  cycles -> workers [style=dashed, label="sampling work"];
+  workers -> elements;
+  {rank=same; noci; jm;}
+  {rank=same; cycles; workers;}
+  {rank=same; step; elements;}
+}

@@ -1,0 +1,29 @@
+// Regenerate with: dot -Tsvg docs/development/diagrams/dispatch.dot -o docs/development/diagrams/dispatch.svg
+digraph dispatch {
+  graph [bgcolor="white", fontname="DejaVu Sans", fontsize=16, pad=0.25,
+         nodesep=0.35, ranksep=0.5, splines=polyline];
+  node [shape=box, style="rounded,filled", fillcolor="#f5f8f4", color="#8a9b87",
+        fontname="DejaVu Sans", fontsize=14, fontcolor="#18251a", margin="0.17,0.12"];
+  edge [color="#59705a", arrowsize=0.7, fontname="DejaVu Sans", fontsize=12];
+
+  graph [rankdir=TB];
+  request [label="DetPair + PairOperator\nelements/pairs.rs", fillcolor="#e0edda", color="#428036"];
+  same [shape=diamond, label="Same parent?", fillcolor="#fff7de", color="#b79b47"];
+  rank [shape=diamond, label="Beyond operator\nconnecting rank?", fillcolor="#fff7de", color="#b79b47"];
+  ortho [shape=diamond, label="Required cache\northonormal?", fillcolor="#fff7de", color="#b79b47"];
+  wick [shape=diamond, label="Wick enabled +\nintermediates ready?", fillcolor="#fff7de", color="#b79b47"];
+  zero [label="Zero"];
+  orthogonal [label="orthogonal/\nSlater–Condon"];
+  wicks [label="nonorthogonalwicks/\nExtended Wick"];
+  naive [label="naive/\nGeneralised Slater–Condon"];
+  request -> same;
+  same -> rank [label="yes"];
+  same -> wick [label="no"];
+  rank -> zero [label="yes"];
+  rank -> ortho [label="no"];
+  ortho -> orthogonal [label="yes"];
+  ortho -> wick [label="no"];
+  wick -> wicks [label="yes"];
+  wick -> naive [label="no"];
+  {rank=same; wicks; naive;}
+}
