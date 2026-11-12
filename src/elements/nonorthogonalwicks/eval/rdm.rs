@@ -183,12 +183,16 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
         }
         return;
     }
+
+    // A rank-`K` density annihilates `K` electrons, so `\Gamma^{(K)}=0` for `K>N_\sigma`.
     if K > w.nocc {
         for value in out.iter_mut().take(requests.len()) {
             *value = <T as From<f64>>::from(0.0);
         }
         return;
     }
+
+    // With no external operators, `\Gamma^{(0)}=S` and no basis transform is needed.
     if K == 0 {
         let overlap = xw_overlap_prepared(w, ex.0, ex.1, scratch);
         for value in out.iter_mut().take(requests.len()) {
@@ -197,8 +201,10 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
         return;
     }
 
-    // Build the `m_i = 0` fundamental contractions once for the whole batch. The external RDM
-    // basis adds `n_{\mathrm{RDM}}` rows and columns to the compact `n_{\mathrm{mo}}` determinant.
+    // Extend each fundamental contraction once for the whole batch:
+    // `D_{\text{ext}} = [[D,C_{\text{row}}^\dagger D_{\text{RDM}}],`
+    // `[D_{\text{RDM}}C_{\text{col}},D_{\text{RDM}}]]`, for both `X^{(0)}` and `Y^{(0)}`.
+    // This matrix supplies compact excitation labels and external RDM labels together.
     let (l_c, g_c) = coeff;
     let nrdm = l_c.nrows();
     let ext_n = w.nmo + nrdm;
@@ -277,11 +283,13 @@ unsafe fn xw_rdmk_same_m0_const<
     tol: f64,
     out: &mut [T; LANES],
 ) {
-    // External creation/annihilation labels occupy first `K` rows and columns and vary by lane.
-    // Excitation labels occupy remaining `L = R_x + R_w` positions and are shared by all lanes.
+    // The augmented determinant has rank `D=K+R_x+R_w`. Its first `K` label pairs are
+    // `(r_i,c_i)=(p_i,q_i)` in the external basis, offset by `n_{\text{mo}}` in the slabs.
+    // Excitation labels occupy the remaining positions and are shared by every lane.
     let (x0, y0, ext_n) = fundamental;
     let mut rows = [[0usize; D]; LANES];
     let mut cols = [[0usize; D]; LANES];
+
     for lane in 0..LANES {
         for i in 0..K {
             rows[lane][i] = w.nmo + requests[lane].0[i];
@@ -289,13 +297,16 @@ unsafe fn xw_rdmk_same_m0_const<
         }
     }
 
+    // Append bra `(a,i)` pairs in the compact `V_x \times O_x` orbital spaces.
     let nocc = w.nocc;
     let nvirt = w.nmo - nocc;
     let mut x_holes = ex.0.holes;
     let mut x_parts = ex.0.parts;
+
     for i in 0..RX {
         let col = x_holes.trailing_zeros() as usize;
         let row = x_parts.trailing_zeros() as usize - nocc;
+
         for lane in 0..LANES {
             cols[lane][K + i] = col;
             rows[lane][K + i] = row;
@@ -303,11 +314,14 @@ unsafe fn xw_rdmk_same_m0_const<
         x_holes &= x_holes - 1;
         x_parts &= x_parts - 1;
     }
+
+    // Append ket `(j,b)` pairs in `O_w \times V_w`, after all bra excitation labels.
     let mut w_holes = ex.1.holes;
     let mut w_parts = ex.1.parts;
     for i in 0..(L - RX) {
         let row = nvirt + w_holes.trailing_zeros() as usize;
         let col = w_parts.trailing_zeros() as usize;
+
         for lane in 0..LANES {
             rows[lane][K + RX + i] = row;
             cols[lane][K + RX + i] = col;
@@ -320,14 +334,16 @@ unsafe fn xw_rdmk_same_m0_const<
     let mut determinant = [zero; DD];
 
     // Build packed augmented determinant `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-    // Entries use `X^{(0)}` where the row creator stands left of the column annihilator in the
+    // Entries use `X^{(0)}` where the column creator stands left of the row annihilator in the
     // operator string, and `Y^{(0)}` otherwise. The external string is creators first,
     // `a^\dagger_{p_1}\cdots a^\dagger_{p_K} a_{q_K}\cdots a_{q_1}`, so its whole `K x K` block uses
     // `X^{(0)}`; the remaining entries take `X^{(0)}` on and below the diagonal.
+    // Thus `D_{ij}=X^{(0)}_{r_i c_j}` if `i\geq j` or `j<K`, and `Y^{(0)}_{r_i c_j}` otherwise.
     for i in 0..D {
         for j in 0..D {
             let matrix = if i >= j || j < K { x0 } else { y0 };
             let mut values = [T::from_real(0.0); LANES];
+
             for lane in 0..LANES {
                 let index = rows[lane][i] * ext_n + cols[lane][j];
                 values[lane] = unsafe { *matrix.get_unchecked(index) };
@@ -336,11 +352,14 @@ unsafe fn xw_rdmk_same_m0_const<
         }
     }
 
-    // Multiply each determinant by `{}^{xw}\tilde S`, then apply tolerance lane by lane.
+    // `\Gamma^{\mathbf p}_{\mathbf q}={}^{xw}\tilde S\det\mathbf D_{\text{RDM}}^{\mathbf p\mathbf q}`.
+    // The orbital-pairing phase is included here; the caller supplies excitation phases.
     let value = det_const::<V, LANES, D, DD>(&determinant);
     let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
     let mut lanes = [T::from_real(0.0); LANES];
     V::store(V::mul(pref, value), &mut lanes);
+
+    // The packed path retains the scaled element only when `|\Gamma^{\mathbf p}_{\mathbf q}|>tol`.
     for lane in 0..LANES {
         out[lane] = if lanes[lane].abs() > tol {
             lanes[lane]
@@ -649,7 +668,8 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_gen_prepared,
         {
-            // Runtime-rank path uses same external-first label ordering as fixed-rank evaluator.
+            // `D=K+R_x+R_w`: put external `(p,q)` labels first, followed by the compact
+            // bra `(a,i)` and ket `(j,b)` excitation labels.
             let l = ex.0.holes.count_ones() as usize + ex.1.holes.count_ones() as usize;
             let d_rank = K + l;
             scratch.ensure_same(d_rank);
@@ -665,7 +685,8 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
             let d = scratch.det0.as_mut_slice();
 
             // Construct `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)` at runtime, with
-            // the creators-first external block entirely in `X^{(0)}`.
+            // the creators-first external block entirely in `X^{(0)}`:
+            // `D_{ij}=X^{(0)}_{r_i c_j}` for `i\geq j` or `j<K`, and `Y^{(0)}_{r_i c_j}` otherwise.
             for (i, &r) in rows.iter().enumerate().take(d_rank) {
                 let row = r * ext_n;
                 for j in 0..d_rank {
@@ -677,7 +698,8 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
                 }
             }
 
-            // Multiply accepted determinant by `{}^{xw}\tilde S`.
+            // The runtime path thresholds the unscaled determinant, `|\det\mathbf D|>tol`,
+            // then restores `\Gamma^{\mathbf p}_{\mathbf q}={}^{xw}\tilde S\det\mathbf D`.
             let zero = <T as From<f64>>::from(0.0);
             if let Some(value) = det_dynamic(d, d_rank)
                 && value.abs() > tol
@@ -715,7 +737,8 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_gen_prepared,
         {
-            // Build external-first labels for augmented rank `D = K + L`.
+            // Build external-first labels for augmented rank `D = K + L`:
+            // `(p,q)` external pairs, then `(a,i)` bra pairs and `(j,b)` ket pairs.
             let l = ex.0.holes.count_ones() as usize + ex.1.holes.count_ones() as usize;
             let d_rank = K + l;
             scratch.ensure_same(d_rank);
@@ -733,6 +756,7 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
             // Prepare all-`m_i=0` and all-`m_i=1` endpoint determinants. Each allowed distribution
             // later selects whole columns from these endpoints. The creators-first external
             // block lies entirely in `X`.
+            // `D^{(m)}_{ij}=X^{(m)}_{r_i c_j}` for `i\geq j` or `j<K`, and `Y^{(m)}_{r_i c_j}` otherwise.
             for (i, &r) in rows.iter().enumerate().take(d_rank) {
                 let row = r * ext_n;
                 for j in 0..d_rank {
@@ -760,12 +784,17 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
                     d_rank,
                     bits,
                 );
+
+                // Retain each term with `|\det\mathbf D(\{m_i\})|>tol` before summing.
                 if let Some(value) = det_dynamic(scratch.det_mix.as_slice(), d_rank)
                     && value.abs() > tol
                 {
                     acc += value;
                 }
             });
+
+            // `\Gamma^{\mathbf p}_{\mathbf q}={}^{xw}\tilde S`
+            // `\sum_{\sum_i m_i=m}\det\mathbf D_{\text{RDM}}^{\mathbf p\mathbf q}(\{m_i\})`.
             w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
         }
     )

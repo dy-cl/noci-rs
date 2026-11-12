@@ -7,6 +7,7 @@ macro_rules! dispatch_pair_ranks {
         @rank ($rx_value:literal, $rw_value:literal),
         |$rx:ident, $rw:ident, $l:ident, $d:ident| $kernel:expr
     ) => {{
+        // `L=R_x+R_w` contractions require `L^2` row-major entries.
         const $rx: usize = $rx_value;
         const $rw: usize = $rw_value;
         const $l: usize = $rx + $rw;
@@ -68,12 +69,16 @@ macro_rules! dispatch_hamiltonian_ranks_inner {
             $rxb:ident, $rwb:ident, $lb:ident, $db:ident, $mb:ident, $mdb:ident
         | $kernel:expr
     ) => {{
+        // Alpha determinant rank `L_\alpha=R_{x,\alpha}+R_{w,\alpha}`; deleting two
+        // rows and columns leaves second-minor rank `L_\alpha-2` when `L_\alpha\geq2`.
         const $rxa: usize = $rxa_value;
         const $rwa: usize = $rwa_value;
         const $la: usize = $rxa + $rwa;
         const $da: usize = $la * $la;
         const $ma: usize = $la.saturating_sub(2);
         const $mda: usize = $ma * $ma;
+
+        // Beta determinant and second-minor dimensions obey the same spin-resolved formulas.
         const $rxb: usize = $rxb_value;
         const $rwb: usize = $rwb_value;
         const $lb: usize = $rxb + $rwb;
@@ -129,6 +134,7 @@ macro_rules! dispatch_rdm_ranks {
     ) => {{
         match $ranks {
             (0, 0) => {
+                // With no excitation pairs, only the `K` external RDM pairs remain: `D=K`.
                 const $k: usize = $k_value;
                 const $rx: usize = 0;
                 const $rw: usize = 0;
@@ -140,6 +146,7 @@ macro_rules! dispatch_rdm_ranks {
             ranks => dispatch_spin_ranks!(
                 ranks,
                 |$rx, $rw, $l| {
+                    // The augmented RDM determinant has rank `D=K+R_x+R_w` and `D^2` entries.
                     const $k: usize = $k_value;
                     const $d: usize = $k + $l;
                     const $dd: usize = $d * $d;

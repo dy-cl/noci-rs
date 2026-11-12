@@ -72,6 +72,9 @@ impl SpinFactor<1> for OverlapFactor {
         let x0 = w.x_slice(0);
         let y0 = w.y_slice(0);
         let mut d = [V::zero(); D];
+
+        // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, and
+        // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}` for `\eta < z`.
         for eta in 0..L {
             for z in 0..L {
                 let matrix = if eta >= z { x0 } else { y0 };
@@ -83,6 +86,8 @@ impl SpinFactor<1> for OverlapFactor {
         // sign.
         let determinant = det_const::<V, LANES, L, D>(&d);
         let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
+
+        // Restore the reduced overlap in each lane; the row writer supplies `p_x p_w`.
         let mut overlap = [T::from_real(0.0); LANES];
         V::store(V::mul(determinant, pref), &mut overlap);
         [overlap]
@@ -204,7 +209,7 @@ pub(crate) fn xw_overlap_m0_direct<T: NOCIScalar>(
     let l = rx + rw;
     let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
 
-    // With no excitation pairs, the determinant is the empty determinant with value one.
+    // For `L = 0`, `\det\mathbf D_{\text{ov}} = 1` and `S = {}^{xw}\tilde S`.
     if l == 0 {
         return pref;
     }
@@ -250,7 +255,8 @@ fn xw_overlap_m0_direct_gen<T: NOCIScalar>(
     let mut d = vec![zero; l * l];
     construct_determinant_indices(x_ex, w_ex, w, &mut rows, &mut cols);
 
-    // Fill `D_{ij}` from `X^{(0)}` on/below the diagonal and `Y^{(0)}` above it.
+    // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, and
+    // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}` otherwise, with rows `(a,j)` and columns `(i,b)`.
     for i in 0..l {
         let row = rows[i] * n;
         for j in 0..l {
@@ -283,6 +289,8 @@ fn xw_overlap_m0<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_m0, {
+        // `S = {}^{xw}\tilde S\det\mathbf D_{\text{ov}}(0,\ldots,0)`.
+        // The reduced overlap's orbital-pairing phase is stored separately in `w.phase`.
         w.phase
             * <T as From<f64>>::from(w.tilde_s_prod)
             * det_dynamic(scratch.det0.as_slice(), l).unwrap_or(<T as From<f64>>::from(0.0))
@@ -306,6 +314,8 @@ fn xw_overlap_ml<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_ml, {
+        // `\sum_z m_z=L` forces every `m_z=1`, leaving the single endpoint determinant:
+        // `S = {}^{xw}\tilde S\det\mathbf D_{\text{ov}}(1,\ldots,1)`.
         w.phase
             * <T as From<f64>>::from(w.tilde_s_prod)
             * det_dynamic(scratch.det1.as_slice(), l).unwrap_or(<T as From<f64>>::from(0.0))
@@ -338,6 +348,8 @@ fn xw_overlap_gen<T: NOCIScalar>(
         // `det1`.
         mix_dets_same(w, l, 0, scratch, |_, scratch| {
             let d = scratch.det_mix.as_slice();
+
+            // `\text{acc} = \sum_{\sum_z m_z=m}\det\mathbf D_{\text{ov}}(\{m_z\})`.
             acc += det_dynamic(d, l).unwrap_or(<T as From<f64>>::from(0.0));
         });
 

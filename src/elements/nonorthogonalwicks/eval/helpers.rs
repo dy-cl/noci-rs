@@ -276,8 +276,9 @@ pub(super) fn column_replacement_correction<T: NOCIScalar>(
     col: usize,
     mut new_at: impl FnMut(usize) -> T,
 ) -> T {
-    // Contract the difference between the new and original columns with the cofactors of column c;
-    // unroll the small determinant ranks used by generated evaluators.
+    // `\Delta_c = \sum_r(N_r-D_{rc})C_{rc}` with
+    // `C_{rc} = (-1)^{r+c}\det\mathbf D[r|c]`.
+    // Unroll the small ranks without forming `\mathbf D[c\rightarrow\mathbf N]`.
     match (n, col) {
         (0, _) => return <T as From<f64>>::from(0.0),
         (1, 0) => return (new_at(0) - old[0]) * cof[0],
@@ -357,8 +358,9 @@ pub(super) fn column_replacement_det<T: NOCIScalar>(
     col: usize,
     mut new_at: impl FnMut(usize) -> T,
 ) -> T {
-    // Apply the Laplace expansion along column `c`, with explicit small-rank forms for generated
-    // evaluator hot paths.
+    // Laplace expansion: `\det\mathbf D[c\rightarrow\mathbf N] = \sum_r N_r C_{rc}`.
+    // Cofactors of column `c` do not depend on the entries being replaced, even when
+    // `\det\mathbf D=0`. Use explicit small-rank forms for generated evaluator hot paths.
     match (n, col) {
         (0, _) => return <T as From<f64>>::from(0.0),
         (1, 0) => return new_at(0) * cof[0],
@@ -426,14 +428,15 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
     mut f: impl FnMut(u64, &mut WickScratch<T>),
 ) {
     let mut prev_cbits: Option<u64> = None;
+
     // Enumerate the assignments satisfying `\sum_{i = 1}^{L+p}m_i = m`, then remove the
     // p operator-specific assignments to obtain the L determinant-column assignments.
     for_each_m_combination(l + pbits, w.m, |bits| {
         let cbits = bits >> pbits;
         match prev_cbits {
             None => {
-                // Construct the first mixed determinant by selecting every column from the
-                // corresponding all-`m_i = 0` or all-`m_i = 1` endpoint.
+                // `D_{\eta z}(\{m_z\}) = D^{(m_z)}_{\eta z}`: select whole columns from
+                // the two endpoints, leaving the leading operator assignments out of the matrix.
                 mix_columns_dynamic(
                     scratch.det_mix.as_mut_slice(),
                     scratch.det0.as_slice(),
@@ -451,6 +454,7 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
                     if bit(cbits, col) == 0 {
                         let src = scratch.det0.as_slice();
                         let dst = scratch.det_mix.as_mut_slice();
+
                         // Restore column `col` from \mathbf D_{\mathrm{ov}}(0,\ldots,0).
                         for r in 0..l {
                             let i = idx(l, r, col);
@@ -459,6 +463,7 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
                     } else {
                         let src = scratch.det1.as_slice();
                         let dst = scratch.det_mix.as_mut_slice();
+
                         // Replace column `col` by the corresponding column of
                         // `\mathbf D_{\mathrm{ov}}(1,\ldots,1)`.
                         for r in 0..l {
@@ -470,6 +475,8 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
                 }
             }
         }
+
+        // The callback sees both the complete operator assignment and its mixed determinant.
         prev_cbits = Some(cbits);
         f(bits, scratch);
     });
@@ -516,6 +523,7 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
                 la,
                 inda,
             );
+
             // Evaluate `\det\mathbf D_{\alpha,\mathrm{ov}}` and its cofactor matrix.
             if let Some(det_a) = adjugate_transpose_generic(
                 scratch.adjt_deta.as_mut_slice(),
@@ -534,6 +542,7 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
                         lb,
                         indb,
                     );
+
                     // Evaluate `\det\mathbf D_{\beta,\mathrm{ov}}` and its cofactor matrix before
                     // passing the factorised spin-sector quantities to the different-spin evaluator.
                     if let Some(det_b) = adjugate_transpose_generic(
@@ -573,9 +582,12 @@ pub(super) fn minor_adjt<T: NOCIScalar>(
     tol: f64,
     mut f: impl FnMut(usize, &[T], &[T], T),
 ) {
+    // First Laplace minor `\mathbf M = \mathbf D[\eta|z]`, of rank `L-1`.
     let lm1 = minor.l.saturating_sub(1);
     minor_dynamic(minorb.as_mut_slice(), full, minor.l, minor.row, minor.col);
 
+    // `\operatorname{cof}[\mathbf M]_{\xi' y'} = (-1)^{\xi'+y'}\det\mathbf M[\xi'|y']`
+    // supplies the second Laplace expansion; the caller supplies `(-1)^{\eta+z}`.
     if let Some(det_minor) =
         adjugate_transpose_generic(adjtb.as_mut_slice(), minorb.as_slice(), lm1, tol)
     {
@@ -622,6 +634,8 @@ pub(super) fn for_each_m_combination(
     let mut x = (1u64 << m) - 1;
     while x < limit {
         f(x);
+
+        // Gosper's successor keeps `\operatorname{popcount}(x)=m` while increasing the mask.
         let c = x & x.wrapping_neg();
         let r = x + c;
         x = (((r ^ x) >> 2) / c) | r;
@@ -645,6 +659,8 @@ pub(super) fn adjugate_transpose_generic<T: NOCIScalar>(
     n: usize,
     tol: f64,
 ) -> Option<T> {
+    // `C = \det(\mathbf D)(\mathbf D^{-1})^T` on the nonsingular path. The shared
+    // SVD fallback also evaluates `C` when the inverse does not exist; no adjoint is used.
     let mut invs = vec![0.0; n];
     let mut lu = vec![T::from_real(0.0); n * n];
     adjugate_transpose_dynamic(adjt, &mut invs, &mut lu, full, n, tol)

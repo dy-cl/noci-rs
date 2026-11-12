@@ -78,13 +78,14 @@ impl SpinFactor<2> for OneBodyFactor {
         time_call!(
             crate::timers::nonorthogonalwicks::add_xw_onebody_m0_const,
             {
-                // Build packed `\mathbf D_{\mathrm{ov}}(0,\ldots,0)` with `X^{(0)}` on and below the
-                // diagonal and `Y^{(0)}` above it.
+                // Gather `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, and
+                // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}` otherwise. Each lane has its own labels.
                 let x0 = w.x_slice(0);
                 let y0 = w.y_slice(0);
                 let fsl = w.ff_t_slice(0, 0);
                 let mut d = [V::zero(); D];
                 let mut cof = [V::zero(); D];
+
                 for eta in 0..L {
                     for z in 0..L {
                         let matrix = if eta >= z { x0 } else { y0 };
@@ -99,6 +100,9 @@ impl SpinFactor<2> for OneBodyFactor {
                 let determinant = adjugate_transpose_const::<V, LANES, L, D>(&mut cof, &d);
                 let mut replacement = V::zero();
 
+                // `R_F = \sum_{\eta z}C_{\eta z}\mathcal F_{\eta z}^{(0,0)}` with
+                // `C_{\eta z} = (-1)^{\eta+z}\det\mathbf D[\eta|z]`.
+                // The intermediate slab stores `\mathcal F` transposed.
                 for eta in 0..L {
                     for z in 0..L {
                         let entry = unsafe { packet.load::<T, V, RX, XFIX>(fsl, eta, z, true) };
@@ -108,6 +112,8 @@ impl SpinFactor<2> for OneBodyFactor {
 
                 // Restore `{}^{xw}\tilde S` to both matrix elements. Its orbital-pairing phase
                 // is stored in `w.phase`; the row writer later supplies the excitation phases.
+                // `F = {}^{xw}\tilde S(F_0^{(0)}\det\mathbf D-R_F)` and
+                // `S = {}^{xw}\tilde S\det\mathbf D`; both omit the excitation phases.
                 let fock = V::sub(V::mul(determinant, V::splat(w.f0f[0])), replacement);
                 let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
 
@@ -190,6 +196,8 @@ fn xw_onebody_m0_prepared<T: NOCIScalar>(
         let rx = x_ex.holes.count_ones() as usize;
         let rw = w_ex.holes.count_ones() as usize;
 
+        // For `L = 0`, `\det\mathbf D = 1` and the replacement sum is empty:
+        // `(S,F) = {}^{xw}\tilde S(1,F_0^{(0)})`.
         if rx == 0 && rw == 0 {
             let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
             (pref, pref * w.f0f[0])
@@ -249,6 +257,7 @@ fn xw_onebody_m0_gen_prepared<T: NOCIScalar>(
             scratch.cols.as_mut_slice(),
         );
 
+        // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` below/on the diagonal, `Y^{(0)}` above.
         let x0 = w.x(0);
         let y0 = w.y(0);
         build_d_dynamic(
@@ -275,6 +284,7 @@ fn xw_onebody_m0_gen_prepared<T: NOCIScalar>(
             l,
             tol,
         ) {
+            // Scalar class: `F_0^{(0)}\det\mathbf D`, before column replacements.
             let mut contrib = det_det * w.f0f[0];
             let fsl = w.ff_t_slice(0, 0);
 
@@ -292,8 +302,10 @@ fn xw_onebody_m0_gen_prepared<T: NOCIScalar>(
                 contrib -= det_det + corr;
             }
 
+            // Restore the common reduced overlap after summing all Laplace classes.
             (pref * det_det, pref * contrib)
         } else {
+            // If cofactor evaluation fails, retain `S = {}^{xw}\tilde S\det\mathbf D` alone.
             let overlap = pref * det_dynamic(det0, l).unwrap_or(zero);
             (overlap, zero)
         }
@@ -341,6 +353,7 @@ fn xw_onebody_gen_prepared<T: NOCIScalar>(
         );
 
         // Build endpoint determinants so mixed zero-overlap assignments can copy columns cheaply.
+        // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` below/on the diagonal, `Y^{(0)}` above.
         let x0 = w.x(0);
         let y0 = w.y(0);
         build_d_dynamic(
@@ -363,7 +376,8 @@ fn xw_onebody_gen_prepared<T: NOCIScalar>(
             scratch.cols.as_slice(),
         );
 
-        // Accumulate overlap and one-body matrix elements over all valid `m_i` distributions.
+        // Constrained one-body sum: `m_1+\sum_z m_z=m`, with every assignment in `{0,1}`.
+        // Column `z` is copied from the endpoint with assignment `m_z`.
         let zero = <T as From<f64>>::from(0.0);
         let n = w.n();
         let mut overlap_acc = zero;
@@ -373,25 +387,28 @@ fn xw_onebody_gen_prepared<T: NOCIScalar>(
             // Bit 0 is the operator assignment `m_1`; bits 1..L select the columns of D.
             let mi = bit(bits, 0);
 
-            // Use the adjugate to evaluate every one-column Laplace replacement together.
+            // Compute `d = \det\mathbf D(\{m_z\})` and its cofactors once per distribution.
+            // `\det\mathbf D^{z\rightarrow\mathcal F_z} = \sum_\eta C_{\eta z}\mathcal F_{\eta z}`.
             if let Some(det_det) = adjugate_transpose_generic(
                 scratch.adjt_det.as_mut_slice(),
                 scratch.det_mix.as_slice(),
                 l,
                 tol,
             ) {
+                // With `m_1 = 0`, this is also a term of `\sum_{\sum_z m_z=m}\det\mathbf D`.
                 if mi == 0 {
                     // Only these terms also satisfy the overlap sum over L columns.
                     overlap_acc += det_det;
                 }
 
+                // Scalar class: `F_0^{(m_1)}d`.
                 let mut contrib = det_det * w.f0f[mi];
                 let f0 = w.ff_t_slice(mi, 0);
                 let f1 = w.ff_t_slice(mi, 1);
 
-                // Subtract `\sum_z\det D^{z\rightarrow\boldsymbol{\mathcal F}_z}`.
-                // `ff_t_slice(mi,mj)` stores `\mathcal F_{\eta z}` transposed, so each
-                // creation-column index selects one contiguous replacement column.
+                // Subtract `\sum_z\det\mathbf D^{z\rightarrow\boldsymbol{\mathcal F}_z}`.
+                // `ff_t_slice(mi,mj)` selects the stored operator/column assignments; the
+                // correction helper returns `\Delta_z = \det\mathbf D^{z\rightarrow\mathcal F_z}-d`.
                 for b in 0..l {
                     let mj = bit(bits, b + 1);
                     let cb = scratch.cols[b];
@@ -415,8 +432,9 @@ fn xw_onebody_gen_prepared<T: NOCIScalar>(
             }
         });
 
-        // Restore `{}^{xw}\tilde S`, including its orbital-pairing phase, to both results.
-        // Excitation phases are applied by the calling row or determinant-pair evaluator.
+        // `S = {}^{xw}\tilde S\sum_{\sum_z m_z=m}d` and
+        // `F = {}^{xw}\tilde S\sum_{m_1+\sum_z m_z=m}[F_0^{(m_1)}d-\sum_z\det\mathbf D^{z\rightarrow\mathcal F_z}]`.
+        // `w.phase` is the orbital-pairing phase; the caller supplies `p_x p_w`.
         let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
         (pref * overlap_acc, pref * fock_acc)
     })

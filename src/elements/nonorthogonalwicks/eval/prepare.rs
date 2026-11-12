@@ -85,6 +85,7 @@ fn prepare_same_m0<T: NOCIScalar>(
                 let l = rx + rw;
                 scratch.ensure_same(l);
 
+                // Prepare `(r,c)=(a,i)` for bra pairs, then `(r,c)=(j,b)` for ket pairs.
                 construct_determinant_indices(
                     l_ex,
                     g_ex,
@@ -96,6 +97,8 @@ fn prepare_same_m0<T: NOCIScalar>(
                 let x0 = w.x(0);
                 let y0 = w.y(0);
 
+                // `D_{\eta z}^{(0)} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`,
+                // and `D_{\eta z}^{(0)} = Y^{(0)}_{r_\eta c_z}` otherwise.
                 build_d_dynamic(
                     scratch.det0.as_mut_slice(),
                     l,
@@ -192,7 +195,8 @@ pub fn prepare_same_gen<T: NOCIScalar>(
         let x0 = w.x(0);
         let y0 = w.y(0);
 
-        // Build the all-zero endpoint used whenever a determinant column has `m_i = 0`.
+        // All-zero endpoint: `D_{\eta z}^{(0)} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`,
+        // and `D_{\eta z}^{(0)} = Y^{(0)}_{r_\eta c_z}` otherwise.
         build_d_dynamic(
             scratch.det0.as_mut_slice(),
             l,
@@ -205,7 +209,8 @@ pub fn prepare_same_gen<T: NOCIScalar>(
         let x1 = w.x(1);
         let y1 = w.y(1);
 
-        // Build the all-one endpoint used whenever a determinant column has `m_i = 1`.
+        // All-one endpoint uses the same triangular rule with `X^{(1)}` and `Y^{(1)}`.
+        // Later, `D_{\eta z}(\{m_z\}) = D_{\eta z}^{(m_z)}` selects one whole endpoint column.
         build_d_dynamic(
             scratch.det1.as_mut_slice(),
             l,
@@ -250,23 +255,27 @@ pub(super) fn construct_determinant_indices<T: NOCIScalar>(
             let mut wp = w_ex.parts;
             let mut i = 0usize;
 
-            // Map the x-reference pairs to the `V_x` row block and `O_x` column block.
+            // Bra pairs: `(r_k,c_k) = (a_k,i_k)`. Compact virtual row labels subtract
+            // `N_{\text{occ}}` from the particle's MO index.
             while xh != 0 {
                 let hole = xh.trailing_zeros() as usize;
                 let part = xp.trailing_zeros() as usize;
                 xh &= xh - 1;
                 xp &= xp - 1;
+
                 rows[i] = part - nocc;
                 cols[i] = hole;
                 i += 1;
             }
 
-            // Append the w-reference pairs in the `O_w` row block and `V_w` column block.
+            // Ket pairs: `(r_{R_x+k},c_{R_x+k}) = (j_k,b_k)`. Offset occupied rows by
+            // `N_{\text{virt}}` so the row space is ordered as `V_x \cup O_w`.
             while wh != 0 {
                 let hole = wh.trailing_zeros() as usize;
                 let part = wp.trailing_zeros() as usize;
                 wh &= wh - 1;
                 wp &= wp - 1;
+
                 rows[i] = nvirt + hole;
                 cols[i] = part;
                 i += 1;

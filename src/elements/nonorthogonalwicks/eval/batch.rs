@@ -255,6 +255,8 @@ impl<'a, const LANES: usize> Packet<'a, LANES> {
             }
         };
 
+        // `(r_\eta,c_z)` follows the operator string: bra `(a,i)` pairs, then ket `(j,b)`.
+        // Transposed slabs instead gather `M_{c_z r_\eta}` without changing those labels.
         let index = |lane: usize| -> usize {
             let row = if eta < RX {
                 usize::from(unsafe { *bra(lane).particles.get_unchecked(eta) }) - self.nocc
@@ -398,7 +400,8 @@ impl<F: SpinFactor<K>, T: NOCIScalar, const K: usize> LaneBatch
         position: usize,
         values: [T; K],
     ) {
-        // Restore the excitation phases and scatter from evaluation order to source order.
+        // `M_{xw}=p_x p_w\,M_{\text{Wick}}`: the family already supplied the reduced overlap
+        // and its orbital-pairing phase. Scatter to the original source-column order.
         let column = self.row.sources.columns[position];
         let phase = T::from_real(self.row.target.phase * self.row.sources.states[position].phase);
 
@@ -455,8 +458,8 @@ pub(crate) fn xw_spin_factor_row<F: SpinFactor<K>, T: NOCIScalar, const K: usize
     mut row: SpinFactorRow<'_, T, K>,
     scratch: &mut WickScratch<T>,
 ) {
-    // Resolve the stored zero-overlap branches before batching. Their sum gives the complete
-    // constrained contraction expression for S or F; each branch already carries its weight.
+    // Resolve near-zero branches before batching: `M_{xw}=\sum_b M_{xw}^{(b)}` for
+    // each factor `M \in \{S,F\}`. Each branch's weight is already in its reduced overlap.
     if w.nbranches() > 1 {
         let zero = T::from_real(0.0);
         let ncol = row.out[0].len();
