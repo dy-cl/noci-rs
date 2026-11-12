@@ -13,23 +13,6 @@ use crate::{ExcitationSpin, ExcitationSpinCache, StateScalar};
 // Parent/sibling imports.
 use super::parent::ParentDeterminant;
 
-/// Compact index of a spin string in one parent determinant.
-pub(crate) trait SpinStringIndex: Copy + Eq {
-    /// Construct an index from its parent-local position.
-    /// # Arguments:
-    /// - `index`: Parent-local spin-string position.
-    /// # Returns:
-    /// - `Self`: Typed spin-string index.
-    fn from_usize(index: usize) -> Self;
-
-    /// Return the parent-local position.
-    /// # Arguments:
-    /// - `self`: Typed spin-string index.
-    /// # Returns:
-    /// - `usize`: Parent-local spin-string position.
-    fn as_usize(self) -> usize;
-}
-
 /// Define a typed spin-string handle, a parent-local position implementing `SpinStringIndex`.
 macro_rules! determinant_index {
     ($name:ident, $trait_name:ident) => {
@@ -65,9 +48,26 @@ macro_rules! determinant_index {
 
 pub(super) use determinant_index;
 
+/// Compact index of a spin string in one parent determinant.
+pub(crate) trait SpinStringIndex: Copy + Eq {
+    /// Construct an index from its parent-local position.
+    /// # Arguments:
+    /// - `index`: Parent-local spin-string position.
+    /// # Returns:
+    /// - `Self`: Typed spin-string index.
+    fn from_usize(index: usize) -> Self;
+
+    /// Return the parent-local position.
+    /// # Arguments:
+    /// - `self`: Typed spin-string index.
+    /// # Returns:
+    /// - `usize`: Parent-local spin-string position.
+    fn as_usize(self) -> usize;
+}
+
 /// A determinant's spin-string handles in one space: its parent and the positions of its alpha
 /// and beta spin strings among that parent's spin strings.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy)]
 pub(crate) struct SpinStringPair<I: SpinStringIndex> {
     /// Orbital-frame parent of the determinant.
     pub(crate) parent: usize,
@@ -88,6 +88,57 @@ pub(crate) struct SpinStringData {
     pub(crate) phase: f64,
     /// Excitation rank and fixed-rank orbital labels.
     pub(crate) cache: ExcitationSpinCache,
+}
+
+/// One spin string of a parent, stored once per space: its occupation, its data relative to the
+/// parent, and the orbital of every occupied and virtual rank.
+#[derive(Clone)]
+pub(crate) struct SpinStringState {
+    /// Occupation bitstring in the parent orbital frame.
+    pub(crate) occupation: u128,
+    /// Excitation, phase and fixed-rank cache relative to the parent spin string.
+    pub(crate) data: SpinStringData,
+    /// Physical orbital labels indexed by occupied rank.
+    pub(crate) occupied: Vec<u8>,
+    /// Physical orbital labels indexed by virtual rank.
+    pub(crate) virtuals: Vec<u8>,
+}
+
+/// Unique alpha and beta spin strings in one parent and one determinant space.
+#[derive(Clone)]
+pub(crate) struct ParentSpinStrings<I: SpinStringIndex> {
+    /// Canonical alpha spin strings indexed by typed spin ID.
+    pub(crate) alpha: Vec<SpinStringState>,
+    /// Canonical beta spin strings indexed by typed spin ID.
+    pub(crate) beta: Vec<SpinStringState>,
+    /// Alpha occupation-to-spin-string-ID map.
+    pub(crate) aids: HashMap<u128, I>,
+    /// Beta occupation-to-spin-string-ID map.
+    pub(crate) bids: HashMap<u128, I>,
+}
+
+/// The identity of a determinant: its parent orbital frame and its alpha and beta occupations in
+/// that frame. It is the same whichever space holds the determinant, and it is the determinant of
+/// every matrix-element request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DeterminantState {
+    /// Parent orbital frame of the determinant.
+    pub(crate) parent: usize,
+    /// Alpha occupation bitstring in the parent frame.
+    pub(crate) alpha: u128,
+    /// Beta occupation bitstring in the parent frame.
+    pub(crate) beta: u128,
+}
+
+/// A determinant relative to a reference determinant of the same frame, an alpha spin string times
+/// a beta spin string: for a determinant's own data the reference is its parent, and for a
+/// connection it is the source. It carries no identity.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DeterminantData {
+    /// Alpha spin string relative to the reference.
+    pub(crate) alpha: SpinStringData,
+    /// Beta spin string relative to the reference.
+    pub(crate) beta: SpinStringData,
 }
 
 impl SpinStringData {
@@ -111,20 +162,6 @@ impl SpinStringData {
             cache: excitation.cache(),
         }
     }
-}
-
-/// One spin string of a parent, stored once per space: its occupation, its data relative to the
-/// parent, and the orbital of every occupied and virtual rank.
-#[derive(Clone)]
-pub(crate) struct SpinStringState {
-    /// Occupation bitstring in the parent orbital frame.
-    pub(crate) occupation: u128,
-    /// Excitation, phase and fixed-rank cache relative to the parent spin string.
-    pub(crate) data: SpinStringData,
-    /// Physical orbital labels indexed by occupied rank.
-    pub(crate) occupied: Vec<u8>,
-    /// Physical orbital labels indexed by virtual rank.
-    pub(crate) virtuals: Vec<u8>,
 }
 
 impl SpinStringState {
@@ -158,19 +195,6 @@ impl SpinStringState {
             virtuals,
         }
     }
-}
-
-/// Unique alpha and beta spin strings in one parent and one determinant space.
-#[derive(Clone)]
-pub(crate) struct ParentSpinStrings<I: SpinStringIndex> {
-    /// Canonical alpha spin strings indexed by typed spin ID.
-    pub(crate) alpha: Vec<SpinStringState>,
-    /// Canonical beta spin strings indexed by typed spin ID.
-    pub(crate) beta: Vec<SpinStringState>,
-    /// Alpha occupation-to-spin-string-ID map.
-    pub(crate) aids: HashMap<u128, I>,
-    /// Beta occupation-to-spin-string-ID map.
-    pub(crate) bids: HashMap<u128, I>,
 }
 
 impl<I: SpinStringIndex> ParentSpinStrings<I> {
@@ -271,30 +295,6 @@ impl<I: SpinStringIndex> ParentSpinStrings<I> {
         self.beta.push(state);
         id
     }
-}
-
-/// The identity of a determinant: its parent orbital frame and its alpha and beta occupations in
-/// that frame. It is the same whichever space holds the determinant, and it is the determinant of
-/// every matrix-element request.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct DeterminantState {
-    /// Parent orbital frame of the determinant.
-    pub(crate) parent: usize,
-    /// Alpha occupation bitstring in the parent frame.
-    pub(crate) alpha: u128,
-    /// Beta occupation bitstring in the parent frame.
-    pub(crate) beta: u128,
-}
-
-/// A determinant relative to a reference determinant of the same frame, an alpha spin string times
-/// a beta spin string: for a determinant's own data the reference is its parent, and for a
-/// connection it is the source. It carries no identity.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DeterminantData {
-    /// Alpha spin string relative to the reference.
-    pub(crate) alpha: SpinStringData,
-    /// Beta spin string relative to the reference.
-    pub(crate) beta: SpinStringData,
 }
 
 impl DeterminantState {

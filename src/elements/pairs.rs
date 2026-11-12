@@ -15,7 +15,7 @@ use crate::elements::{DetPair, NOCIData};
 use crate::time_call;
 
 // Parent/sibling imports.
-use super::nonorthogonalwicks::{WickScratchSpin, WicksView};
+use super::nonorthogonalwicks::WickScratchSpin;
 use super::operator::PairOperator;
 use super::orthogonal::{calculate_pairs_orthogonal_batched, connection_data};
 
@@ -67,16 +67,6 @@ where
     if wicks { Route::Wicks } else { Route::Naive }
 }
 
-/// Return the Wick intermediates when nonorthogonal pairs should use them.
-/// # Arguments:
-/// - `data`: Shared data required for NOCI matrix-element evaluation.
-/// # Returns:
-/// - `Option<&WicksView<T>>`: Wick intermediates, or `None` for the generalised Slater-Condon
-///   rules.
-fn enabled_wicks<'a, T: NOCIScalar>(data: &NOCIData<'a, T>) -> Option<&'a WicksView<T>> {
-    data.wicks.filter(|_| data.input.wicks.enabled)
-}
-
 /// Evaluate the matrix elements of an operator for a batch of determinant pairs. A single pair
 /// is evaluated directly. Larger batches group same-parent pairs by parent for the orthogonal
 /// kernels and Wick pairs by ordered reference pair for the nonorthogonal kernels.
@@ -108,7 +98,7 @@ pub(crate) fn calculate_pairs<T, Op>(
         }
 
         let space = data.space;
-        let wicks = enabled_wicks(data);
+        let wicks = data.wicks.filter(|_| data.input.wicks.enabled);
         let nref = wicks.map_or(0, |wicks| wicks.nref);
         let mut orthogonal = vec![Vec::new(); space.parents.len()];
         let mut nonorthogonal = vec![Vec::new(); nref * nref];
@@ -179,13 +169,17 @@ where
     T: NOCIScalar,
     Op: PairOperator<T>,
 {
-    let wicks = enabled_wicks(data);
+    let wicks = data.wicks.filter(|_| data.input.wicks.enabled);
     let mut value = [Op::zero()];
 
+    // Use the same routing as a batch, but pass a single connection or Wick request directly.
     match route(data, op, wicks.is_some(), pair) {
         Route::Zero => {}
         Route::Orthogonal => {
             let g_occ = (pair.ket.alpha, pair.ket.beta);
+
+            // Measure the bra from the ket in their shared frame. A missing connection leaves
+            // the element zero; a valid one carries both its orbital labels and fermionic phase.
             if let Some(connection) =
                 connection_data((pair.bra.alpha, pair.bra.beta), g_occ, Op::RANK)
             {
@@ -194,6 +188,7 @@ where
             }
         }
         Route::Wicks => {
+            // Wick intermediates belong to an ordered parent pair, even for a single request.
             let w = wicks.unwrap().pair(pair.bra.parent, pair.ket.parent);
             let scratch = scratch.expect("Wick pairs require Wick scratch space");
             op.wicks(data, &w, &[(0, pair)], scratch, &mut value);
@@ -236,7 +231,7 @@ pub(crate) fn calculate_pairs_dense<T, Op>(
 {
     time_call!(Op::TIMER, {
         let (right, runs) = kets;
-        let wicks = enabled_wicks(data);
+        let wicks = data.wicks.filter(|_| data.input.wicks.enabled);
         let lp = ldet.parent;
         let mut orthogonal = Vec::new();
         let mut nonorthogonal = Vec::new();
@@ -309,6 +304,9 @@ where
         .pair(pair.bra.parent, pair.ket.parent);
 
     let mut wick = [Op::zero()];
+
+    // Evaluate the same occupations in both engines, then compare with the operator's metric
+    // (including both H and S when the output is a pair).
     op.wicks(data, &w, &[(0, pair)], scratch, &mut wick);
     let naive = op.naive(data, &pair.bra, &pair.ket);
 

@@ -24,6 +24,131 @@ use super::helpers::{
 };
 use super::prepare::prepare_same;
 
+/// Batch of Hamiltonian and overlap requests of one ordered reference pair, grouped by their four
+/// excitation ranks.
+/// Every lane evaluates `S = S^\alpha S^\beta` and `H = \langle D_x|\hat H|D_w\rangle` together.
+/// The same-spin two-body terms share `\det D`, the one-column replacements and second minors;
+/// the different-spin term couples `\operatorname{cof}(D_\alpha)` and
+/// `\operatorname{cof}(D_\beta)` through `\mathcal{II}_{\eta z,\xi y}`. Keeping both spins in
+/// one lane lets all Hamiltonian contributions reuse the same contraction determinants.
+struct HamiltonianLanes<'a, T: NOCIScalar> {
+    /// Wick intermediates of the ordered reference pair.
+    w: &'a WicksPairView<'a, T>,
+    /// Nuclear repulsion energy.
+    enuc: f64,
+    /// Numerical tolerance of the scalar evaluator.
+    tol: f64,
+    /// Reusable Wick workspace for scalar evaluation.
+    scratch: &'a mut WickScratchSpin<T>,
+    /// Output positions with their bra and ket determinants.
+    requests: &'a [(usize, DeterminantData, DeterminantData)],
+    /// Request of every lane.
+    order: &'a [usize],
+    /// Hamiltonian and overlap results in output order.
+    out: &'a mut [(T, T)],
+}
+
+impl<T: NOCIScalar> LaneBatch for HamiltonianLanes<'_, T> {
+    type Lane = (DeterminantData, DeterminantData);
+    type Out = (T, T);
+
+    /// Evaluate the Hamiltonian and overlap of one determinant pair through the prepared scalar
+    /// path.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `_`: Position of the lane, unused by the scalar path.
+    /// - `lane`: Bra and ket determinants relative to their references.
+    /// # Returns
+    /// - `(T, T)`: Hamiltonian and overlap matrix elements `(H, S)`.
+    fn scalar(
+        &mut self,
+        _: usize,
+        lane: &(DeterminantData, DeterminantData),
+    ) -> (T, T) {
+        let (x, wdet) = lane;
+        xw_hamiltonian_overlap_prepared(self.w, (x, wdet), self.enuc, self.scratch, self.tol)
+    }
+
+    /// Write the Hamiltonian and overlap of one lane to the output of its request.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `position`: Position of the lane in rank order.
+    /// - `value`: Hamiltonian and overlap matrix elements `(H, S)`.
+    /// # Returns
+    /// - `()`: Writes one entry of `out`.
+    fn write(
+        &mut self,
+        position: usize,
+        value: (T, T),
+    ) {
+        self.out[self.requests[self.order[position]].0] = value;
+    }
+
+    /// Select the four-lane kernel of a group of equal excitation ranks when
+    /// `m_\alpha = m_\beta = 0`.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `lane`: First determinant pair of the group.
+    /// # Returns
+    /// - `Option<LaneKernel<Self, 4>>`: Kernel of the group, or `None` for scalar evaluation.
+    #[cfg(target_arch = "x86_64")]
+    fn kernel_x4(
+        &self,
+        lane: &(DeterminantData, DeterminantData),
+    ) -> Option<LaneKernel<Self, 4>> {
+        if self.w.aa.m != 0 || self.w.bb.m != 0 {
+            return None;
+        }
+        let (x, w) = lane;
+        let ranks = (
+            usize::from(x.alpha.cache.rank),
+            usize::from(w.alpha.cache.rank),
+            usize::from(x.beta.cache.rank),
+            usize::from(w.beta.cache.rank),
+        );
+        dispatch_hamiltonian_ranks!(
+            ranks,
+            |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| Some(
+                packet_x4::<T, RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB>
+                    as LaneKernel<Self, 4>
+            ),
+            None,
+        )
+    }
+
+    /// Select the eight-lane kernel of a group of equal excitation ranks when
+    /// `m_\alpha = m_\beta = 0`.
+    /// # Arguments:
+    /// - `self`: Batch of one ordered reference pair.
+    /// - `lane`: First determinant pair of the group.
+    /// # Returns
+    /// - `Option<LaneKernel<Self, 8>>`: Kernel of the group, or `None` for scalar evaluation.
+    #[cfg(target_arch = "x86_64")]
+    fn kernel_x8(
+        &self,
+        lane: &(DeterminantData, DeterminantData),
+    ) -> Option<LaneKernel<Self, 8>> {
+        if self.w.aa.m != 0 || self.w.bb.m != 0 {
+            return None;
+        }
+        let (x, w) = lane;
+        let ranks = (
+            usize::from(x.alpha.cache.rank),
+            usize::from(w.alpha.cache.rank),
+            usize::from(x.beta.cache.rank),
+            usize::from(w.beta.cache.rank),
+        );
+        dispatch_hamiltonian_ranks!(
+            ranks,
+            |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| Some(
+                packet_x8::<T, RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB>
+                    as LaneKernel<Self, 8>
+            ),
+            None,
+        )
+    }
+}
+
 /// Evaluate the Hamiltonian and overlap matrix elements between two determinants generated from
 /// one ordered pair of nonorthogonal references.
 /// For `m_\alpha = m_\beta = 0`, the scalar fixed path is used when each determinant's total
@@ -224,126 +349,6 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
             xw_lanes(&mut batch, &lanes, &groups);
         }
     )
-}
-
-/// Batch of Hamiltonian and overlap requests of one ordered reference pair, grouped by their four
-/// excitation ranks.
-struct HamiltonianLanes<'a, T: NOCIScalar> {
-    /// Wick intermediates of the ordered reference pair.
-    w: &'a WicksPairView<'a, T>,
-    /// Nuclear repulsion energy.
-    enuc: f64,
-    /// Numerical tolerance of the scalar evaluator.
-    tol: f64,
-    /// Reusable Wick workspace for scalar evaluation.
-    scratch: &'a mut WickScratchSpin<T>,
-    /// Output positions with their bra and ket determinants.
-    requests: &'a [(usize, DeterminantData, DeterminantData)],
-    /// Request of every lane.
-    order: &'a [usize],
-    /// Hamiltonian and overlap results in output order.
-    out: &'a mut [(T, T)],
-}
-
-impl<T: NOCIScalar> LaneBatch for HamiltonianLanes<'_, T> {
-    type Lane = (DeterminantData, DeterminantData);
-    type Out = (T, T);
-
-    /// Evaluate the Hamiltonian and overlap of one determinant pair through the prepared scalar
-    /// path.
-    /// # Arguments:
-    /// - `self`: Batch of one ordered reference pair.
-    /// - `_`: Position of the lane, unused by the scalar path.
-    /// - `lane`: Bra and ket determinants relative to their references.
-    /// # Returns
-    /// - `(T, T)`: Hamiltonian and overlap matrix elements `(H, S)`.
-    fn scalar(
-        &mut self,
-        _: usize,
-        lane: &(DeterminantData, DeterminantData),
-    ) -> (T, T) {
-        let (x, wdet) = lane;
-        xw_hamiltonian_overlap_prepared(self.w, (x, wdet), self.enuc, self.scratch, self.tol)
-    }
-
-    /// Write the Hamiltonian and overlap of one lane to the output of its request.
-    /// # Arguments:
-    /// - `self`: Batch of one ordered reference pair.
-    /// - `position`: Position of the lane in rank order.
-    /// - `value`: Hamiltonian and overlap matrix elements `(H, S)`.
-    /// # Returns
-    /// - `()`: Writes one entry of `out`.
-    fn write(
-        &mut self,
-        position: usize,
-        value: (T, T),
-    ) {
-        self.out[self.requests[self.order[position]].0] = value;
-    }
-
-    /// Select the four-lane kernel of a group of equal excitation ranks when
-    /// `m_\alpha = m_\beta = 0`.
-    /// # Arguments:
-    /// - `self`: Batch of one ordered reference pair.
-    /// - `lane`: First determinant pair of the group.
-    /// # Returns
-    /// - `Option<LaneKernel<Self, 4>>`: Kernel of the group, or `None` for scalar evaluation.
-    #[cfg(target_arch = "x86_64")]
-    fn kernel_x4(
-        &self,
-        lane: &(DeterminantData, DeterminantData),
-    ) -> Option<LaneKernel<Self, 4>> {
-        if self.w.aa.m != 0 || self.w.bb.m != 0 {
-            return None;
-        }
-        let (x, w) = lane;
-        let ranks = (
-            usize::from(x.alpha.cache.rank),
-            usize::from(w.alpha.cache.rank),
-            usize::from(x.beta.cache.rank),
-            usize::from(w.beta.cache.rank),
-        );
-        dispatch_hamiltonian_ranks!(
-            ranks,
-            |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| Some(
-                packet_x4::<T, RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB>
-                    as LaneKernel<Self, 4>
-            ),
-            None,
-        )
-    }
-
-    /// Select the eight-lane kernel of a group of equal excitation ranks when
-    /// `m_\alpha = m_\beta = 0`.
-    /// # Arguments:
-    /// - `self`: Batch of one ordered reference pair.
-    /// - `lane`: First determinant pair of the group.
-    /// # Returns
-    /// - `Option<LaneKernel<Self, 8>>`: Kernel of the group, or `None` for scalar evaluation.
-    #[cfg(target_arch = "x86_64")]
-    fn kernel_x8(
-        &self,
-        lane: &(DeterminantData, DeterminantData),
-    ) -> Option<LaneKernel<Self, 8>> {
-        if self.w.aa.m != 0 || self.w.bb.m != 0 {
-            return None;
-        }
-        let (x, w) = lane;
-        let ranks = (
-            usize::from(x.alpha.cache.rank),
-            usize::from(w.alpha.cache.rank),
-            usize::from(x.beta.cache.rank),
-            usize::from(w.beta.cache.rank),
-        );
-        dispatch_hamiltonian_ranks!(
-            ranks,
-            |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| Some(
-                packet_x8::<T, RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB>
-                    as LaneKernel<Self, 8>
-            ),
-            None,
-        )
-    }
 }
 
 /// Dispatch an `m_\alpha = m_\beta = 0` Hamiltonian and overlap matrix element to the generated

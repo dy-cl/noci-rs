@@ -186,11 +186,15 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
         parent.entries_by_b[bid].push(det);
     }
 
-    // Materialise the spin-string payloads and their packed evaluation orders.
+    // Copy each parent's canonical spin-string data in ID order: FactorEntry.a/b index these
+    // arrays, so their order must continue to match the retained determinant topology.
     for (parent_id, parent) in parents.iter_mut().enumerate() {
         let strings = space.parent_spin_strings(parent_id);
         parent.areps = strings.alpha.iter().map(|string| string.data).collect();
         parent.breps = strings.beta.iter().map(|string| string.data).collect();
+
+        // Build a separate evaluation order grouped by excitation rank and common holes.
+        // SpinStringSources keeps the original columns so factor rows scatter back to ID order.
         parent.a_sources = SpinStringSources::new(&parent.areps);
         parent.b_sources = SpinStringSources::new(&parent.breps);
     }

@@ -21,6 +21,9 @@ use super::prepare::construct_determinant_indices;
 
 /// The same-spin one-body factor family: the overlap together with the generalised-Fock matrix
 /// element `\langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat f|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`.
+/// This type selects `SpinFactor<2>` for both pair batches and factorised Fock applications.
+/// Its tolerance configures the runtime determinant/cofactor fallback; the fixed-rank packed
+/// evaluator needs no tolerance. Keeping it here lets both paths use the same row scaffold.
 pub(crate) struct OneBodyFactor {
     /// Numerical tolerance used by scalar determinant and adjugate evaluation.
     pub(crate) tol: f64,
@@ -95,6 +98,7 @@ impl SpinFactor<2> for OneBodyFactor {
                 // `-\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z})`.
                 let determinant = adjugate_transpose_const::<V, LANES, L, D>(&mut cof, &d);
                 let mut replacement = V::zero();
+
                 for eta in 0..L {
                     for z in 0..L {
                         let entry = unsafe { packet.load::<T, V, RX, XFIX>(fsl, eta, z, true) };
@@ -102,13 +106,15 @@ impl SpinFactor<2> for OneBodyFactor {
                     }
                 }
 
-                // Apply the reduced-overlap phase and singular-value product after the packed
-                // determinant work.
+                // Restore `{}^{xw}\tilde S` to both matrix elements. Its orbital-pairing phase
+                // is stored in `w.phase`; the row writer later supplies the excitation phases.
                 let fock = V::sub(V::mul(determinant, V::splat(w.f0f[0])), replacement);
                 let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
+
                 let mut values = [[T::from_real(0.0); LANES]; 2];
                 V::store(V::mul(pref, determinant), &mut values[0]);
                 V::store(V::mul(pref, fock), &mut values[1]);
+
                 values
             }
         )
@@ -232,9 +238,7 @@ fn xw_onebody_m0_gen_prepared<T: NOCIScalar>(
     tol: f64,
 ) -> (T, T) {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_onebody_m0_gen, {
-        // Generic `m = 0` path: build `\mathbf D_{\mathrm{ov}}` once, then use
-        // `\operatorname{cof}[\mathbf D_{\mathrm{ov}}]` for every
-        // one-column F replacement determinant.
+        // Build `\mathbf D_{\text{ov}}(0,\ldots,0)` once for both S and F.
         scratch.ensure_same(l);
 
         construct_determinant_indices(
@@ -261,6 +265,8 @@ fn xw_onebody_m0_gen_prepared<T: NOCIScalar>(
         let det0 = &scratch.det0.as_slice()[..l * l];
         let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
 
+        // `F = \tilde S[F_0^{(0)}\det D - \sum_z\det D^{z\rightarrow\mathcal F_z}]`.
+        // Reuse `\operatorname{cof}(D)` for each replacement column.
         if let Some(det_det) = adjugate_transpose_dynamic(
             scratch.adjt_det.as_mut_slice(),
             scratch.invs.as_mut_slice(),
@@ -272,6 +278,8 @@ fn xw_onebody_m0_gen_prepared<T: NOCIScalar>(
             let mut contrib = det_det * w.f0f[0];
             let fsl = w.ff_t_slice(0, 0);
 
+            // `w.f0f[0]` is `{}^xF_0^{(0)}`. Column z of the replacement intermediate
+            // is contiguous in `fsl`, which stores `\mathcal F_{\eta z}` transposed.
             for b in 0..l {
                 let cb = scratch.cols[b];
                 let base = cb * n;
@@ -279,6 +287,8 @@ fn xw_onebody_m0_gen_prepared<T: NOCIScalar>(
                     column_replacement_correction(l, det0, scratch.adjt_det.as_slice(), b, |r| {
                         fsl[base + scratch.rows[r]]
                     });
+
+                // The correction is `\det D^{z\rightarrow\mathcal F_z} - \det D`.
                 contrib -= det_det + corr;
             }
 
@@ -316,8 +326,8 @@ fn xw_onebody_gen_prepared<T: NOCIScalar>(
     tol: f64,
 ) -> (T, T) {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_onebody_gen, {
-        // General zero-overlap path: prepare the all-zero and all-one endpoint determinants,
-        // then sum the GNME one-body expression over every allowed mixed distribution.
+        // For `m > 0`, sum the one-body expression over
+        // `m_1 + \cdots + m_{L+1} = m`, with each `m_i \in \{0,1\}`.
         let l = x_ex.holes.count_ones() as usize + w_ex.holes.count_ones() as usize;
         scratch.ensure_same(l);
 
@@ -360,6 +370,7 @@ fn xw_onebody_gen_prepared<T: NOCIScalar>(
         let mut fock_acc = zero;
 
         mix_dets_same(w, l, 1, scratch, |bits, scratch| {
+            // Bit 0 is the operator assignment `m_1`; bits 1..L select the columns of D.
             let mi = bit(bits, 0);
 
             // Use the adjugate to evaluate every one-column Laplace replacement together.
@@ -370,6 +381,7 @@ fn xw_onebody_gen_prepared<T: NOCIScalar>(
                 tol,
             ) {
                 if mi == 0 {
+                    // Only these terms also satisfy the overlap sum over L columns.
                     overlap_acc += det_det;
                 }
 
@@ -377,7 +389,9 @@ fn xw_onebody_gen_prepared<T: NOCIScalar>(
                 let f0 = w.ff_t_slice(mi, 0);
                 let f1 = w.ff_t_slice(mi, 1);
 
-                // Replace each excitation column by its precomputed one-body intermediate.
+                // Subtract `\sum_z\det D^{z\rightarrow\boldsymbol{\mathcal F}_z}`.
+                // `ff_t_slice(mi,mj)` stores `\mathcal F_{\eta z}` transposed, so each
+                // creation-column index selects one contiguous replacement column.
                 for b in 0..l {
                     let mj = bit(bits, b + 1);
                     let cb = scratch.cols[b];
@@ -390,6 +404,7 @@ fn xw_onebody_gen_prepared<T: NOCIScalar>(
                         b,
                         |r| fsl[base + scratch.rows[r]],
                     );
+
                     contrib -= det_det + corr;
                 }
 
@@ -400,7 +415,8 @@ fn xw_onebody_gen_prepared<T: NOCIScalar>(
             }
         });
 
-        // Restore the reduced-overlap and excitation-phase prefactor common to both results.
+        // Restore `{}^{xw}\tilde S`, including its orbital-pairing phase, to both results.
+        // Excitation phases are applied by the calling row or determinant-pair evaluator.
         let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
         (pref * overlap_acc, pref * fock_acc)
     })

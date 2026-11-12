@@ -29,10 +29,13 @@ use num_complex::Complex64;
 /// # Returns
 /// - Implementations provide packed construction, arithmetic, loading, and storage operations.
 pub trait Simd<const N: usize>: Copy {
-    /// Scalar value stored independently in each SIMD lane.
+    /// Scalar value stored independently in each SIMD lane. Generic kernels use this associated
+    /// type to load and store either real or complex values through the same interface.
     type Scalar: Copy;
 
-    /// Packed real type with the same number of lanes.
+    /// Packed real type with the same number of lanes. `madd_real_lanes` uses it to accumulate
+    /// products with packed real factors; real packets name themselves. Both bindings are
+    /// required by each implementation.
     type Real: Simd<N, Scalar = f64>;
 
     /// Construct packed additive zero.

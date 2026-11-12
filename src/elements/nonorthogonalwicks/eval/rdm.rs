@@ -21,6 +21,115 @@ use super::helpers::{extend_rdm_d, for_each_m_combination};
 use super::overlap::xw_overlap_prepared;
 use super::prepare::construct_determinant_indices;
 
+/// Extended `X^{(0)}` and `Y^{(0)}` contractions in the external RDM basis, the optional `m_i = 1`
+/// contractions and the row dimension.
+type RdmFundamental<'a, T> = (&'a [T], &'a [T], Option<(&'a [T], &'a [T])>, usize);
+
+/// Batch of same-spin rank-`K` RDM requests of one determinant pair.
+struct RdmLanes<'a, T: NOCIScalar, const K: usize> {
+    /// Same-spin reference-pair Wick intermediates.
+    w: &'a SameSpinView<'a, T>,
+    /// Bra and ket excitations.
+    ex: (&'a ExcitationSpin, &'a ExcitationSpin),
+    /// Extended `X^{(0)}`, `Y^{(0)}`, optional `m_i = 1` branches, and matrix rank.
+    fundamental: RdmFundamental<'a, T>,
+    /// Reusable determinant storage for scalar evaluation.
+    scratch: &'a mut WickScratch<T>,
+    /// Numerical threshold applied to individual determinant contributions.
+    tol: f64,
+    /// Same-spin RDM elements in request order.
+    out: &'a mut [T],
+}
+
+impl<T: NOCIScalar, const K: usize> LaneBatch for RdmLanes<'_, T, K> {
+    // LaneBatch requires the index request and scalar result types for its shared packet loop.
+    type Lane = ([usize; K], [usize; K]);
+    type Out = T;
+
+    /// Evaluate one RDM request through the scalar prepared path.
+    /// # Arguments:
+    /// - `self`: Batch of one determinant pair.
+    /// - `_`: Position of the request, unused by the scalar path.
+    /// - `request`: Creation and annihilation index arrays.
+    /// # Returns
+    /// - `T`: Unnormalised same-spin rank-`K` transition-density element.
+    fn scalar(
+        &mut self,
+        _: usize,
+        request: &([usize; K], [usize; K]),
+    ) -> T {
+        xw_rdmk_same_prepared_scalar_value(
+            self.w,
+            self.ex,
+            self.fundamental,
+            request,
+            self.scratch,
+            self.tol,
+        )
+    }
+
+    /// Write the RDM element of one request.
+    /// # Arguments:
+    /// - `self`: Batch of one determinant pair.
+    /// - `position`: Position of the request.
+    /// - `value`: Transition-density element of the request.
+    /// # Returns
+    /// - `()`: Writes one entry of `out`.
+    fn write(
+        &mut self,
+        position: usize,
+        value: T,
+    ) {
+        self.out[position] = value;
+    }
+
+    /// Select the four-lane kernel of the batch, which dispatches the fixed ranks of the pair.
+    /// # Arguments:
+    /// - `self`: Batch of one determinant pair.
+    /// - `_`: First request, unused since every request shares the ranks of the pair.
+    /// # Returns
+    /// - `Option<LaneKernel<Self, 4>>`: Kernel of the batch, or `None` for scalar evaluation.
+    #[cfg(target_arch = "x86_64")]
+    fn kernel_x4(
+        &self,
+        _: &([usize; K], [usize; K]),
+    ) -> Option<LaneKernel<Self, 4>> {
+        self.packed()
+            .then_some(packet_x4::<T, K> as LaneKernel<Self, 4>)
+    }
+
+    /// Select the eight-lane kernel of the batch, which dispatches the fixed ranks of the pair.
+    /// # Arguments:
+    /// - `self`: Batch of one determinant pair.
+    /// - `_`: First request, unused since every request shares the ranks of the pair.
+    /// # Returns
+    /// - `Option<LaneKernel<Self, 8>>`: Kernel of the batch, or `None` for scalar evaluation.
+    #[cfg(target_arch = "x86_64")]
+    fn kernel_x8(
+        &self,
+        _: &([usize; K], [usize; K]),
+    ) -> Option<LaneKernel<Self, 8>> {
+        self.packed()
+            .then_some(packet_x8::<T, K> as LaneKernel<Self, 8>)
+    }
+}
+
+impl<T: NOCIScalar, const K: usize> RdmLanes<'_, T, K> {
+    /// Return whether the generated packets cover the batch: `m = 0`, external rank `K <= 4` and
+    /// excitation ranks up to `MAXEXCIT`.
+    /// # Arguments:
+    /// - `self`: Batch of RDM requests.
+    /// # Returns
+    /// - `bool`: Whether the batch is evaluated in packets.
+    #[cfg(target_arch = "x86_64")]
+    fn packed(&self) -> bool {
+        self.w.m == 0
+            && K <= 4
+            && self.ex.0.holes.count_ones() as usize <= MAXEXCIT
+            && self.ex.1.holes.count_ones() as usize <= MAXEXCIT
+    }
+}
+
 /// Evaluate a batch of unnormalised same-spin rank-`K` transition-density elements.
 /// Every request evaluates
 /// `{}^{xw}\tilde S\sum_{\sum_i m_i = m}`
@@ -131,114 +240,6 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
         out,
     };
     xw_lanes(&mut batch, requests, &[0, requests.len()]);
-}
-
-/// Extended `X^{(0)}` and `Y^{(0)}` contractions in the external RDM basis, the optional `m_i = 1`
-/// contractions and the row dimension.
-type RdmFundamental<'a, T> = (&'a [T], &'a [T], Option<(&'a [T], &'a [T])>, usize);
-
-/// Batch of same-spin rank-`K` RDM requests of one determinant pair.
-struct RdmLanes<'a, T: NOCIScalar, const K: usize> {
-    /// Same-spin reference-pair Wick intermediates.
-    w: &'a SameSpinView<'a, T>,
-    /// Bra and ket excitations.
-    ex: (&'a ExcitationSpin, &'a ExcitationSpin),
-    /// Extended `X^{(0)}`, `Y^{(0)}`, optional `m_i = 1` branches, and matrix rank.
-    fundamental: RdmFundamental<'a, T>,
-    /// Reusable determinant storage for scalar evaluation.
-    scratch: &'a mut WickScratch<T>,
-    /// Numerical threshold applied to individual determinant contributions.
-    tol: f64,
-    /// Same-spin RDM elements in request order.
-    out: &'a mut [T],
-}
-
-impl<T: NOCIScalar, const K: usize> LaneBatch for RdmLanes<'_, T, K> {
-    type Lane = ([usize; K], [usize; K]);
-    type Out = T;
-
-    /// Evaluate one RDM request through the scalar prepared path.
-    /// # Arguments:
-    /// - `self`: Batch of one determinant pair.
-    /// - `_`: Position of the request, unused by the scalar path.
-    /// - `request`: Creation and annihilation index arrays.
-    /// # Returns
-    /// - `T`: Unnormalised same-spin rank-`K` transition-density element.
-    fn scalar(
-        &mut self,
-        _: usize,
-        request: &([usize; K], [usize; K]),
-    ) -> T {
-        xw_rdmk_same_prepared_scalar_value(
-            self.w,
-            self.ex,
-            self.fundamental,
-            request,
-            self.scratch,
-            self.tol,
-        )
-    }
-
-    /// Write the RDM element of one request.
-    /// # Arguments:
-    /// - `self`: Batch of one determinant pair.
-    /// - `position`: Position of the request.
-    /// - `value`: Transition-density element of the request.
-    /// # Returns
-    /// - `()`: Writes one entry of `out`.
-    fn write(
-        &mut self,
-        position: usize,
-        value: T,
-    ) {
-        self.out[position] = value;
-    }
-
-    /// Select the four-lane kernel of the batch, which dispatches the fixed ranks of the pair.
-    /// # Arguments:
-    /// - `self`: Batch of one determinant pair.
-    /// - `_`: First request, unused since every request shares the ranks of the pair.
-    /// # Returns
-    /// - `Option<LaneKernel<Self, 4>>`: Kernel of the batch, or `None` for scalar evaluation.
-    #[cfg(target_arch = "x86_64")]
-    fn kernel_x4(
-        &self,
-        _: &([usize; K], [usize; K]),
-    ) -> Option<LaneKernel<Self, 4>> {
-        self.packed()
-            .then_some(packet_x4::<T, K> as LaneKernel<Self, 4>)
-    }
-
-    /// Select the eight-lane kernel of the batch, which dispatches the fixed ranks of the pair.
-    /// # Arguments:
-    /// - `self`: Batch of one determinant pair.
-    /// - `_`: First request, unused since every request shares the ranks of the pair.
-    /// # Returns
-    /// - `Option<LaneKernel<Self, 8>>`: Kernel of the batch, or `None` for scalar evaluation.
-    #[cfg(target_arch = "x86_64")]
-    fn kernel_x8(
-        &self,
-        _: &([usize; K], [usize; K]),
-    ) -> Option<LaneKernel<Self, 8>> {
-        self.packed()
-            .then_some(packet_x8::<T, K> as LaneKernel<Self, 8>)
-    }
-}
-
-impl<T: NOCIScalar, const K: usize> RdmLanes<'_, T, K> {
-    /// Return whether the generated packets cover the batch: `m = 0`, external rank `K <= 4` and
-    /// excitation ranks up to `MAXEXCIT`.
-    /// # Arguments:
-    /// - `self`: Batch of RDM requests.
-    /// # Returns
-    /// - `bool`: Whether the batch is evaluated in packets.
-    #[cfg(target_arch = "x86_64")]
-    fn packed(&self) -> bool {
-        self.w.m == 0
-            && K <= 4
-            && self.ex.0.holes.count_ones() as usize <= MAXEXCIT
-            && self.ex.1.holes.count_ones() as usize <= MAXEXCIT
-    }
 }
 
 /// Evaluate packed fixed-rank same-spin RDM determinants.

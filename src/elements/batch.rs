@@ -16,9 +16,12 @@ use crate::maths::{self, Lanes};
 /// A batch of lanes of one operator family, evaluated in packets where a packed kernel exists and
 /// lane by lane otherwise.
 pub(crate) trait LaneBatch: Sized {
-    /// Payload of one lane.
+    /// Payload of one lane: an orthogonal connection, same-spin excitation cache, two-spin
+    /// determinant pair or RDM index request. This associated type lets `xw_lanes` pass each
+    /// family's payload directly without converting it to a shared representation.
     type Lane: Copy;
-    /// Result of one lane.
+    /// Result of one lane: a scalar element, `K` same-spin factors or the pair `(H,S)`.
+    /// Required alongside `Lane` so one packet loop can write each family's actual output type.
     type Out: Copy;
 
     /// Evaluate one lane through the scalar path.

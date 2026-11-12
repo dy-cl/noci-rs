@@ -8,6 +8,12 @@
 //! ordered reference pair is evaluated from its distinct same-spin factors. Each distinct pair of
 //! spin strings is evaluated once, and the distinct ket spin strings of each bra spin string form
 //! one same-spin factor row.
+//!
+//! The Hamiltonian's two-body part also contains the mixed-spin cofactor coupling
+//! `\sum_{\eta z,\xi y}\operatorname{cof}(D_\alpha)_{\eta z}`
+//! `\mathcal{II}_{\eta z,\xi y}\operatorname{cof}(D_\beta)_{\xi y}`. It therefore uses the fused
+//! two-spin evaluator in `eval/hamiltonian.rs`, which reuses determinants, cofactors and second
+//! minors across H and S, rather than the independent same-spin factor rows used here.
 
 // Standard library imports.
 use std::ops::Range;
@@ -56,6 +62,7 @@ impl SpinPairRows {
         let mut column_of: Vec<FastMap<u128, usize>> = Vec::new();
         let mut positions = Vec::with_capacity(occupations.len());
         let mut previous: Option<(u128, usize)> = None;
+
         for &(bra, ket) in occupations {
             // Consecutive requests usually share their bra, so check the previous row first.
             let row = match previous {
@@ -68,6 +75,7 @@ impl SpinPairRows {
             };
             previous = Some((bra, row));
 
+            // Intern the ket within this bra row and remember where the request will read it.
             let sources = &mut row_sources[row].1;
             let column = *column_of[row].entry(ket).or_insert_with(|| {
                 sources.push(SpinStringData::between(references.1, ket));
@@ -79,6 +87,7 @@ impl SpinPairRows {
         // Lay the factor slots of the rows out contiguously, so each row writes one slice.
         let mut rows = Vec::with_capacity(row_sources.len());
         let mut nslot = 0;
+
         for (bra, kets) in row_sources {
             rows.push((
                 bra,
@@ -87,6 +96,7 @@ impl SpinPairRows {
             ));
             nslot += kets.len();
         }
+
         let slots = positions
             .iter()
             .map(|&(row, column)| rows[row].1.start + column)
@@ -115,6 +125,7 @@ impl SpinPairRows {
                 )
             })
             .unzip();
+
         (
             Self::new((x.oa, w.oa), &alpha),
             Self::new((x.ob, w.ob), &beta),
@@ -138,6 +149,7 @@ fn spin_factor<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
 ) -> [T; K] {
     let (bra, ket) = pair;
     let phase = T::from_real(bra.phase * ket.phase);
+
     factor
         .values(w, (&bra, &ket), scratch)
         .map(|value| phase * value)
@@ -159,6 +171,7 @@ fn spin_factors<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
     scratch: &mut WickScratch<T>,
 ) -> [Vec<T>; K] {
     let mut out: [Vec<T>; K] = std::array::from_fn(|_| vec![T::from_real(0.0); pairs.nslot]);
+
     for (target, slots, sources) in &pairs.rows {
         let row = SpinFactorRow {
             target: *target,
@@ -168,6 +181,7 @@ fn spin_factors<F: SpinFactor<K>, T: NOCIScalar, const K: usize>(
         };
         xw_spin_factor_row(factor, w, row, scratch);
     }
+
     out
 }
 
@@ -197,8 +211,10 @@ where
             pair.ket.data(space.parents()),
         );
         let (alpha, beta) = ((bra.alpha, ket.alpha), (bra.beta, ket.beta));
+
         let [sa] = spin_factor(&OverlapFactor, &w.aa, alpha, &mut scratch.aa);
         let [sb] = spin_factor(&OverlapFactor, &w.bb, beta, &mut scratch.bb);
+
         return vec![sa * sb];
     }
 
@@ -207,9 +223,11 @@ where
     let parents = space.parents();
     let references = (&parents[first.bra.parent], &parents[first.ket.parent]);
     let (alpha, beta) = SpinPairRows::spins(references, requests);
+
     let [sa] = spin_factors(&OverlapFactor, &w.aa, &alpha, &mut scratch.aa);
     let [sb] = spin_factors(&OverlapFactor, &w.bb, &beta, &mut scratch.bb);
 
+    // Recover `S_{xw} = S^\alpha_{xw} S^\beta_{xw}` in determinant-request order.
     (0..requests.len())
         .map(|k| sa[alpha.slots[k]] * sb[beta.slots[k]])
         .collect()
@@ -240,14 +258,17 @@ where
 {
     // A single pair shares no factors with other requests, so evaluate both spins directly.
     let factor = OneBodyFactor { tol };
+
     if let [(_, pair)] = requests {
         let (bra, ket) = (
             pair.bra.data(space.parents()),
             pair.ket.data(space.parents()),
         );
         let (alpha, beta) = ((bra.alpha, ket.alpha), (bra.beta, ket.beta));
+
         let [sa, fa] = spin_factor(&factor, &w.aa, alpha, &mut scratch.aa);
         let [sb, fb] = spin_factor(&factor, &w.bb, beta, &mut scratch.bb);
+
         return vec![(fa * sb + fb * sa, sa * sb)];
     }
 
@@ -256,12 +277,15 @@ where
     let parents = space.parents();
     let references = (&parents[first.bra.parent], &parents[first.ket.parent]);
     let (alpha, beta) = SpinPairRows::spins(references, requests);
+
     let [sa, fa] = spin_factors(&factor, &w.aa, &alpha, &mut scratch.aa);
     let [sb, fb] = spin_factors(&factor, &w.bb, &beta, &mut scratch.bb);
 
+    // Combine `F = F^\alpha S^\beta + S^\alpha F^\beta` and `S = S^\alpha S^\beta`.
     (0..requests.len())
         .map(|k| {
             let (a, b) = (alpha.slots[k], beta.slots[k]);
+
             (fa[a] * sb[b] + fb[b] * sa[a], sa[a] * sb[b])
         })
         .collect()

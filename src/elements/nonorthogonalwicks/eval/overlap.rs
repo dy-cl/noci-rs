@@ -15,6 +15,80 @@ use super::dispatch::{dispatch_pair_ranks, dispatch_spin_ranks};
 use super::helpers::mix_dets_same;
 use super::prepare::{construct_determinant_indices, prepare_same};
 
+/// The same-spin overlap factor family,
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`.
+pub(crate) struct OverlapFactor;
+
+impl SpinFactor<1> for OverlapFactor {
+    /// Evaluate one same-spin overlap through the prepared scalar path.
+    /// # Arguments:
+    /// - `self`: Overlap factor family.
+    /// - `w`: Same-spin reference-pair Wick intermediates.
+    /// - `pair`: Bra and ket determinants, oriented as the reference pair `(x,w)`.
+    /// - `scratch`: Reusable same-spin Wick workspace.
+    /// # Returns
+    /// - `[T; 1]`: Same-spin overlap, excluding the excitation phases.
+    fn values<T: NOCIScalar>(
+        &self,
+        w: &SameSpinView<'_, T>,
+        pair: (&SpinStringData, &SpinStringData),
+        scratch: &mut WickScratch<T>,
+    ) -> [T; 1] {
+        let (x, wdet) = pair;
+        [xw_overlap_prepared(
+            w,
+            &x.excitation,
+            &wdet.excitation,
+            scratch,
+        )]
+    }
+
+    /// Evaluate one packet of fixed-rank same-spin overlaps. Each lane evaluates
+    /// `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`, with `X^{(0)}` contractions
+    /// on and below the diagonal and `Y^{(0)}` contractions above it.
+    /// # Arguments:
+    /// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
+    /// - `packet`: Contraction labels of every lane.
+    /// # Returns
+    /// - `[[T; LANES]; 1]`: Overlap of every lane, excluding the excitation phases.
+    /// # Safety
+    /// - Cached labels must match `RX` and `RW`, and the caller must establish CPU support for `V`.
+    #[inline(always)]
+    unsafe fn packed<
+        T: NOCIScalar,
+        V: Simd<LANES, Scalar = T>,
+        const LANES: usize,
+        const RX: usize,
+        const RW: usize,
+        const L: usize,
+        const D: usize,
+        const XFIX: bool,
+    >(
+        w: &SameSpinView<'_, T>,
+        packet: &Packet<'_, LANES>,
+    ) -> [[T; LANES]; 1] {
+        // Build packed `\mathbf D_{\mathrm{ov}}(0,\ldots,0)`: lower entries use `X^{(0)}` and
+        // upper entries use `Y^{(0)}`.
+        let x0 = w.x_slice(0);
+        let y0 = w.y_slice(0);
+        let mut d = [V::zero(); D];
+        for eta in 0..L {
+            for z in 0..L {
+                let matrix = if eta >= z { x0 } else { y0 };
+                d[eta * L + z] = unsafe { packet.load::<T, V, RX, XFIX>(matrix, eta, z, false) };
+            }
+        }
+
+        // `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`; `w.phase` carries the orbital-pairing
+        // sign.
+        let determinant = det_const::<V, LANES, L, D>(&d);
+        let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
+        let mut overlap = [T::from_real(0.0); LANES];
+        V::store(V::mul(determinant, pref), &mut overlap);
+        [overlap]
+    }
+}
+
 /// Evaluate the same-spin overlap between excited determinants generated from the reference pair
 /// `\langle{}^x\Psi| and |{}^w\Psi\rangle:`
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
@@ -103,80 +177,6 @@ pub(crate) fn xw_overlap_prepared<T: NOCIScalar>(
     // before applying the standard overlap evaluation.
     prepare_same(w, l_ex, g_ex, scratch);
     xw_overlap(w, l_ex, g_ex, scratch)
-}
-
-/// The same-spin overlap factor family,
-/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`.
-pub(crate) struct OverlapFactor;
-
-impl SpinFactor<1> for OverlapFactor {
-    /// Evaluate one same-spin overlap through the prepared scalar path.
-    /// # Arguments:
-    /// - `self`: Overlap factor family.
-    /// - `w`: Same-spin reference-pair Wick intermediates.
-    /// - `pair`: Bra and ket determinants, oriented as the reference pair `(x,w)`.
-    /// - `scratch`: Reusable same-spin Wick workspace.
-    /// # Returns
-    /// - `[T; 1]`: Same-spin overlap, excluding the excitation phases.
-    fn values<T: NOCIScalar>(
-        &self,
-        w: &SameSpinView<'_, T>,
-        pair: (&SpinStringData, &SpinStringData),
-        scratch: &mut WickScratch<T>,
-    ) -> [T; 1] {
-        let (x, wdet) = pair;
-        [xw_overlap_prepared(
-            w,
-            &x.excitation,
-            &wdet.excitation,
-            scratch,
-        )]
-    }
-
-    /// Evaluate one packet of fixed-rank same-spin overlaps. Each lane evaluates
-    /// `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`, with `X^{(0)}` contractions
-    /// on and below the diagonal and `Y^{(0)}` contractions above it.
-    /// # Arguments:
-    /// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-    /// - `packet`: Contraction labels of every lane.
-    /// # Returns
-    /// - `[[T; LANES]; 1]`: Overlap of every lane, excluding the excitation phases.
-    /// # Safety
-    /// - Cached labels must match `RX` and `RW`, and the caller must establish CPU support for `V`.
-    #[inline(always)]
-    unsafe fn packed<
-        T: NOCIScalar,
-        V: Simd<LANES, Scalar = T>,
-        const LANES: usize,
-        const RX: usize,
-        const RW: usize,
-        const L: usize,
-        const D: usize,
-        const XFIX: bool,
-    >(
-        w: &SameSpinView<'_, T>,
-        packet: &Packet<'_, LANES>,
-    ) -> [[T; LANES]; 1] {
-        // Build packed `\mathbf D_{\mathrm{ov}}(0,\ldots,0)`: lower entries use `X^{(0)}` and
-        // upper entries use `Y^{(0)}`.
-        let x0 = w.x_slice(0);
-        let y0 = w.y_slice(0);
-        let mut d = [V::zero(); D];
-        for eta in 0..L {
-            for z in 0..L {
-                let matrix = if eta >= z { x0 } else { y0 };
-                d[eta * L + z] = unsafe { packet.load::<T, V, RX, XFIX>(matrix, eta, z, false) };
-            }
-        }
-
-        // `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`; `w.phase` carries the orbital-pairing
-        // sign.
-        let determinant = det_const::<V, LANES, L, D>(&d);
-        let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
-        let mut overlap = [T::from_real(0.0); LANES];
-        V::store(V::mul(determinant, pref), &mut overlap);
-        [overlap]
-    }
 }
 
 /// Evaluate the same-spin overlap directly when `m = 0`:
