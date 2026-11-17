@@ -837,10 +837,32 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
             })
             .unwrap_or(defaults.imag_shifts.clone());
 
+        // Each listed NOCI state receives its own state-specific NOCI-PT2 correction.
+        let roots: Vec<usize> = snoci_tbl
+            .get::<_, Option<Table>>("roots")
+            .unwrap_or(None)
+            .map(|t| {
+                t.sequence_values::<usize>()
+                    .map(|x| {
+                        x.unwrap_or_else(|_| {
+                            eprintln!("snoci.roots entries must be non-negative integers");
+                            std::process::exit(1);
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or(defaults.roots.clone());
+
+        if roots.is_empty() {
+            eprintln!("snoci.roots must list at least one NOCI state");
+            std::process::exit(1);
+        }
+
         SNOCIOptions {
             sigma: snoci_tbl.get("sigma").unwrap_or(defaults.sigma),
             tol: snoci_tbl.get("tol").unwrap_or(defaults.tol),
             imag_shifts,
+            roots,
             max_iter: snoci_tbl.get("max_iter").unwrap_or(defaults.max_iter),
             max_add: snoci_tbl.get("max_add").unwrap_or(defaults.max_add),
             max_dim: snoci_tbl.get("max_dim").unwrap_or(defaults.max_dim),

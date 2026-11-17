@@ -89,8 +89,8 @@ impl<T: NOCIScalar> CandidateM<T> {
 /// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `tol`: Tolerance for whether a number is considered zero.
 /// # Returns:
-/// - `(Array2<T>, Array2<T>, f64, Array1<T>)`: Hamiltonian matrix in the current space,
-///   overlap matrix in the current space, lowest eigenvalue, and corresponding eigenvector.
+/// - `(Array2<T>, Array2<T>, Array1<f64>, Array2<T>)`: Hamiltonian matrix in the current space,
+///   overlap matrix in the current space, ascending eigenvalues, and eigenvectors as columns.
 pub(in crate::noci::selected) fn solve_current_space<T: NOCIScalar>(
     ao: &AoData,
     space: &NOCISpace<T>,
@@ -99,17 +99,14 @@ pub(in crate::noci::selected) fn solve_current_space<T: NOCIScalar>(
     wicks: Option<&WicksShared<T>>,
     mocache: &[MOCache<T>],
     tol: f64,
-) -> (Array2<T>, Array2<T>, f64, Array1<T>) {
+) -> (Array2<T>, Array2<T>, Array1<f64>, Array2<T>) {
     time_call!(crate::timers::selected::add_solve_current_space, {
         let wview = wicks.as_ref().map(|ws| ws.view());
         let data = NOCIData::new(ao, space, input, tol, wview).withmocache(mocache);
         let (hcurrent, scurrent, _) = build_noci_hs(&data, current_space, current_space, true);
         let (evals, c) = general_evp(&hcurrent, &scurrent, true, tol);
 
-        let ecurrent = evals[0];
-        let coeffs = c.column(0).to_owned();
-
-        (hcurrent, scurrent, ecurrent, coeffs)
+        (hcurrent, scurrent, evals, c)
     })
 }
 

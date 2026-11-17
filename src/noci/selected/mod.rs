@@ -40,7 +40,7 @@ mod step;
 mod types;
 
 // Public type re-exports.
-pub use types::{SNOCIPT2Result, SNOCIState};
+pub use types::{NOCIPT2Energy, SNOCIPT2Result, SNOCIState};
 
 // Public function re-exports.
 pub use step::snoci_step;

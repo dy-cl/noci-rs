@@ -6,6 +6,7 @@ use num_complex::Complex64;
 // Crate-root imports.
 use crate::driver::post::{PostGuess, PostReferenceResults};
 use crate::driver::reference::ReferenceRun;
+use crate::noci::selected::NOCIPT2Energy;
 use crate::timers;
 use crate::{HSCFState, SCFState};
 
@@ -36,8 +37,8 @@ pub struct GeometryResults {
     pub e_jmnoccmc_stoch: Option<f64>,
     /// Selected NOCI energy if calculated.
     pub e_snoci: Option<f64>,
-    /// NOCI-PT2 energy if calculated.
-    pub e_pt2: Option<Vec<(f64, f64)>>,
+    /// NOCI-PT2 energies of every corrected state and imaginary shift if calculated.
+    pub e_pt2: Option<Vec<NOCIPT2Energy>>,
     /// Post-reference solutions carried to the next geometry.
     pub guess: PostGuess,
     /// Number of MPI ranks for printing.

@@ -137,4 +137,11 @@ The iteration stops when $|E_\text{PT2}^{(k)}|$ falls below `tol`, when no candi
 $\sigma$, or after `max_iter` iterations or once the space reaches `max_dim` determinants. A
 calculation limited to one iteration is a plain NOCI-PT2 calculation.
 
+The correction is state-specific: $|\Psi^{(k)}\rangle$ may be any eigenstate of the reference
+NOCI problem, not only the lowest. `roots` lists the states to correct, and each receives its own
+generalised Fock operator, projector and amplitude equation. With spin-broken references the NOCI
+states need not be spin-pure, so each is reported with its
+$\langle S^2\rangle = \sum_{wx} c_w^* c_x \langle{}^w\Psi|\hat S^2|{}^x\Psi\rangle$; where two states
+of different spin cross, listing both follows each surface through the crossing.
+
 NOCI-PT2 and SNOCI support holomorphic SCF states.

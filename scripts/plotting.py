@@ -47,6 +47,8 @@ DETCOEFFLINEREGEX = re.compile(
 ISHIFTREGEX = re.compile(
     r"(?:iShift\s*=|i\s*:)\s*([+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)"
 )
+# Index of the NOCI state corrected by NOCI-PT2, as printed (`NOCI-PT2: 1`) or plotted (`state=1`).
+PT2STATEREGEX = re.compile(r"(?:NOCI-PT2:|state=)\s*(\d+)")
 
 LIVE_READ_ERRORS = (
     OSError,
@@ -646,13 +648,17 @@ def createEnergyLabel(idx: str, rawLabel: str) -> str:
         return "NOCIQMC"
 
     if idx.startswith("NOCI-PT2"):
+        label = "NOCI-PT2"
+
+        state = PT2STATEREGEX.search(idx)
+        if state is not None:
+            label += f" state={int(state.group(1))}"
+
         m = ISHIFTREGEX.search(idx)
-
         if m is not None:
-            shift = float(m.group(1))
-            return f"NOCI-PT2 iShift={shift:g}"
+            label += f" iShift={float(m.group(1)):g}"
 
-        return "NOCI-PT2"
+        return label
 
     # if idx.startswith("SNOCI"):
     #     return "SNOCI"
@@ -1018,16 +1024,25 @@ def plotEnergy(args):
             color=color,
         )
 
+    def pt2State(lbl):
+        m = PT2STATEREGEX.search(lbl)
+        return int(m.group(1)) if m else 0
+
     pt2Labels = sorted(
         [lbl for lbl in df["label"].unique() if lbl.startswith("NOCI-PT2")],
         key=(
             lambda lbl: (
+                pt2State(lbl),
                 float(ISHIFTREGEX.search(lbl).group(1))
                 if ISHIFTREGEX.search(lbl)
-                else -1.0
+                else -1.0,
             )
         ),
     )
+
+    # Each corrected NOCI state keeps its own line style; colour still encodes the shift.
+    pt2States = sorted({pt2State(lbl) for lbl in pt2Labels})
+    pt2Styles = ["-", "--", ":", "-."]
 
     pt2Shifts = [
         float(ISHIFTREGEX.search(lbl).group(1))
@@ -1067,15 +1082,22 @@ def plotEnergy(args):
 
             color = cmap(norm(shift)) if pt2Shifts else "tab:purple"
 
+            # Label the last shift of each state, with the state index when several are plotted.
+            state = pt2State(lbl)
+            lastOfState = i == len(pt2Labels) - 1 or pt2State(pt2Labels[i + 1]) != state
+
+            if not lastOfState:
+                display = "_nolegend_"
+            elif len(pt2States) > 1:
+                display = rf"$|\Psi_{{{state}}}^{{\mathrm{{NOCI-PT2}}}}\rangle$"
+            else:
+                display = r"$|\Psi^{\mathrm{NOCI-PT2}}\rangle$"
+
             plotLabel(
                 lbl,
-                display=(
-                    r"$|\Psi^{\mathrm{NOCI-PT2}}\rangle$"
-                    if i == len(pt2Labels) - 1
-                    else "_nolegend_"
-                ),
+                display=display,
                 linewidth=LINEWIDTH,
-                linestyle="-",
+                linestyle=pt2Styles[pt2States.index(state) % len(pt2Styles)],
                 zorder=15,
                 color=color,
             )

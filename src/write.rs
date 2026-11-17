@@ -253,6 +253,7 @@ pub fn print_input(input: &Input) {
             println!("SIGMA: {}", s.sigma);
             println!("TOL: {}", s.tol);
             println!("IMAG_SHIFTS: {:?}", s.imag_shifts);
+            println!("ROOTS: {:?}", s.roots);
             println!("PRECONDITIONER: {}", s.preconditioner.as_str());
             println!("FULL_M: {}", s.full_m.as_str());
             println!("FACTOR_TABLES: {}", s.factor_tables.as_str());

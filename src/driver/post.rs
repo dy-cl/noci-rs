@@ -13,6 +13,7 @@ use crate::driver::reference::ReferenceRun;
 use crate::input::Input;
 #[cfg(feature = "gnocc")]
 use crate::nocc::AmplitudeGuess;
+use crate::noci::selected::NOCIPT2Energy;
 use crate::{AoData, PostSCFData};
 
 /// Post-reference solutions of one geometry carried to the next as starting guesses.
@@ -35,8 +36,8 @@ pub struct PostReferenceResults {
     pub e_jmnoccmc_stoch: Option<f64>,
     /// Selected NOCI energy if calculated.
     pub e_snoci: Option<f64>,
-    /// NOCI-PT2 energy if calculated.
-    pub e_pt2: Option<Vec<(f64, f64)>>,
+    /// NOCI-PT2 energies of every corrected state and imaginary shift if calculated.
+    pub e_pt2: Option<Vec<NOCIPT2Energy>>,
     /// Solutions carried to the next geometry.
     pub guess: PostGuess,
 }

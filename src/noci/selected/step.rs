@@ -10,7 +10,7 @@ use crate::NOCIScalar;
 use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::elements::nonorthogonalwicks::WicksShared;
 use crate::elements::{FockData, NOCIData};
-use crate::elements::{build_fock_mo_cache, noci_density, update_wicks_fock};
+use crate::elements::{build_fock_mo_cache, noci_density, noci_spin_square, update_wicks_fock};
 use crate::input::{SNOCIPreconditioner, SNOCIStorage};
 use crate::maths::gmres::{GMRESPrint, gmres};
 use crate::noci::{OneBodyFactorisation, OneBodyScratch};
@@ -19,7 +19,7 @@ use crate::time_call;
 use crate::{PostSCFData, input::Input};
 
 // Parent/sibling imports.
-use super::{CandidatePool, PT2ProjectedOperator, SNOCIPT2Result, SNOCIState};
+use super::{CandidatePool, PT2ProjectedOperator, SNOCIOverlaps, SNOCIPT2Result, SNOCIState};
 use super::{
     apply_factorised_shifted_omega_m, apply_factorised_shifted_omega_m_mpi, apply_shifted_omega_m,
     apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
@@ -154,9 +154,11 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
     for r in &state.pt2 {
         println!();
         println!("  NOCI-PT2 result");
+        println!("  NOCI state:         {}", r.root);
+        println!("  <S^2>:              {:.12}", r.s2);
         println!("  Imag shift:         {:.12}", r.imag_shift);
         println!("  EPT2:               {:.12}", r.ept2);
-        println!("  E + EPT2:           {:.12}", state.ecurrent + r.ept2);
+        println!("  E + EPT2:           {:.12}", r.e_noci + r.ept2);
         println!("  Max |a_i|:          {:.12}", r.max_abs_a);
         println!("  Max |v_i|:          {:.12}", r.max_abs_v);
         println!("  Max |a_i v_i|:      {:.12}", r.max_abs_av);
@@ -165,6 +167,349 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
         println!("  GMRES converged:    {}", r.gmres_converged);
         println!("  {}", "-".repeat(98));
     }
+}
+
+/// Solve the state-specific NOCI-PT2 problem `M^Omega(epsilon) a(epsilon) = -V^Omega` for one
+/// NOCI state of the current space at every imaginary shift.
+/// The generalised Fock operator, `E_0`, the projector `Q = 1 - |\Psi\rangle\langle\Psi|` and
+/// `V^Omega` are all built from the chosen state, so each state needs its own Fock-dependent
+/// intermediates and GMRES solve. Candidate overlaps and `H_ai` do not depend on the state and are
+/// passed in.
+/// # Arguments:
+/// - `post`: Data shared by post-SCF methods.
+/// - `input`: User-defined input options.
+/// - `spaces`: Determinant space, current selected space, candidate determinants and the candidate
+///   subset of the determinant space.
+/// - `blocks`: Candidate-current overlaps and candidate-current Hamiltonian `H_ai`.
+/// - `target`: Index, NOCI energy and current-space eigenvector of the corrected NOCI state.
+/// - `wicks`: Mutable Wick's intermediates, whose Fock intermediates are rebuilt for this state.
+/// - `run`: MPI communicator and SNOCI iteration index.
+/// # Returns:
+/// - `Vec<SNOCIPT2Result>`: NOCI-PT2 results for this state, one per imaginary shift.
+fn solve_pt2_state<T, R, C>(
+    post: &PostSCFData<'_, T>,
+    input: &Input,
+    spaces: (&NOCISpace<T>, &[NOCIIndex], &[NOCIIndex], &NOCISpace<T>),
+    blocks: (&SNOCIOverlaps<T>, &Array2<T>),
+    target: (usize, f64, &Array1<T>),
+    mut wicks: Option<&mut WicksShared<T>>,
+    run: (&C, usize),
+) -> Vec<SNOCIPT2Result>
+where
+    T: NOCIScalar + Into<Complex64>,
+    R: NOCIScalar + From<T> + Into<Complex64>,
+    C: Communicator,
+{
+    let opts = input.snoci.as_ref().unwrap();
+    let (space, selected_space, candidates, candidate_basis) = spaces;
+    let (overlaps, h_ai) = blocks;
+    let (root, e_noci, coeffs) = target;
+    let (world, it) = run;
+
+    // `\langle S^2\rangle` identifies the spin of the corrected state in the printed results.
+    let s2 = noci_spin_square(post.ao, space, selected_space, coeffs, post.tol);
+    if world.rank() == 0 {
+        println!();
+        println!("  NOCI state:         {}", root);
+        println!("  E:                  {:.12}", e_noci);
+        println!("  <S^2>:              {:.12}", s2);
+    }
+
+    // Form multireference NOCI density and generalised AO Focks.
+    let (da, db) = noci_density(post.ao, space, selected_space, coeffs, post.tol);
+    let (fa, fb) = time_call!(crate::timers::selected::add_build_generalised_fock, {
+        fock(&post.ao.h, &post.ao.eri_coul, &da, &db)
+    });
+
+    // Transform Focks into MO basis for each reference.
+    let fock_mocache = build_fock_mo_cache(&fa, &fb, &post.space.parents, &post.ao.s, post.tol);
+
+    // Update the Wick's intermediates if using them.
+    if input.wicks.enabled
+        && let Some(ws) = wicks.as_deref_mut()
+    {
+        update_wicks_fock(&fa, &fb, &post.space.parents, &post.ao.s, post.tol, ws);
+    }
+
+    // Build the candidate-current and candidate-candidate Fock matrix, alongside the shifted Fock `M`.
+    let wview = wicks.as_ref().map(|ws| ws.view());
+    let candidate_data =
+        NOCIData::new(post.ao, space, input, post.tol, wview).withmocache(post.mocache);
+    let current_data =
+        NOCIData::new(post.ao, space, input, post.tol, wview).withmocache(post.mocache);
+    let fock = FockData::new(&fock_mocache, &fa, &fb);
+    let focks = build_snoci_focks(
+        &current_data,
+        &candidate_data,
+        &fock,
+        selected_space,
+        candidates,
+    );
+
+    let fc = focks.f_ii.dot(coeffs);
+    let e0_z = coeffs
+        .iter()
+        .zip(fc.iter())
+        .fold(T::from_real(0.0), |acc, (&c, &x)| acc + c.conj() * x);
+    let e0 = scalar_real(e0_z);
+    let projection = build_snoci_projection(overlaps, &focks, coeffs, e0);
+
+    let v_a = build_candidate_v(h_ai, coeffs);
+    let v_omega = build_omega_v(&overlaps.s_ai, coeffs, v_a, e_noci);
+
+    // `M^Omega(epsilon) a(epsilon) = -V^Omega` is solved in scalar `R`.
+    // Chemistry-derived projection vectors and `V^Omega` cross the scalar boundary only here.
+    let krylov_projection = projection.cast::<R>();
+    let v_omega_krylov = v_omega.mapv(<R as From<T>>::from);
+
+    // PT2's numerical plan uses dense candidate-local indices into the candidate subset.
+    let candidate_indices = (0..candidate_basis.len())
+        .map(NOCIIndex)
+        .collect::<Vec<_>>();
+    let operator_data =
+        NOCIData::new(post.ao, candidate_basis, input, post.tol, wview).withmocache(post.mocache);
+    let op = PT2ProjectedOperator {
+        data: &operator_data,
+        fock: &fock,
+        candidates: &candidate_indices,
+        projection: &projection,
+    };
+    if world.rank() == 0 {
+        print_candidate_m_storage::<T>(op.candidates.len());
+        print_factor_table_storage(&operator_data, &fock);
+    }
+
+    let one_body = if matches!(opts.full_m, SNOCIStorage::None)
+        && input.wicks.enabled
+        && operator_data.wicks.is_some()
+    {
+        let cache = input.wicks.cachedir.as_deref().unwrap_or(".");
+        Some(OneBodyFactorisation::new(
+            &operator_data,
+            &fock,
+            std::path::Path::new(cache),
+            world.rank(),
+            it,
+            opts.factor_tables,
+        ))
+    } else {
+        None
+    };
+
+    let m = match opts.full_m {
+        SNOCIStorage::None => None,
+        SNOCIStorage::RAM => {
+            if world.rank() == 0 {
+                print_build_candidate_m::<T>(op.candidates.len());
+            }
+            Some(build_candidate_m(&op))
+        }
+        SNOCIStorage::Disk => {
+            if world.rank() == 0 {
+                print_build_candidate_m::<T>(op.candidates.len());
+            }
+            let cache = input.wicks.cachedir.as_deref().unwrap_or(".");
+            let path = std::path::Path::new(cache).join(format!(
+                "snoci_m_rank{}_iter{}.bin",
+                world.rank(),
+                it
+            ));
+            Some(build_candidate_m_disk(&op, &path))
+        }
+    };
+
+    let m_slice = m.as_ref().map(|m| m.as_slice());
+
+    // Candidate diagonals are needed only for actual preconditioners.
+    let (m_diag, factorised_s_diag) = match opts.preconditioner {
+        SNOCIPreconditioner::None => (None, None),
+        SNOCIPreconditioner::Diag | SNOCIPreconditioner::Woodbury => {
+            if let Some(one_body) = one_body.as_ref() {
+                let (m_diag, s_diag) = build_factorised_candidate_diags(
+                    &op,
+                    one_body,
+                    T::from_real(-op.projection.e0),
+                );
+                (Some(m_diag), Some(s_diag))
+            } else {
+                (Some(build_candidate_m_diag(&op, m_slice)), None)
+            }
+        }
+    };
+
+    let shifts = if opts.imag_shifts.is_empty() {
+        vec![0.0]
+    } else {
+        opts.imag_shifts.clone()
+    };
+
+    // Shifted diagonal data are also unnecessary when GMRES is unpreconditioned.
+    let s_diag = if m_diag.is_some() && shifts.iter().any(|&imag_shift| imag_shift != 0.0) {
+        factorised_s_diag.or_else(|| Some(build_candidate_s_diag(&op)))
+    } else {
+        None
+    };
+
+    let rhs = v_omega_krylov.mapv(|x| -x);
+    let mut one_body_scratch: Option<OneBodyScratch<R>> = one_body
+        .as_ref()
+        .map(|factorisation| factorisation.scratch());
+
+    // Evaluate NOCI-PT2 energies, scores and diagnostics for each imaginary shift.
+    let mut pt2 = Vec::new();
+    for &imag_shift in &shifts {
+        let prec = m_diag.as_ref().map(|m_diag| {
+            build_preconditioner(
+                m_diag,
+                s_diag.as_ref(),
+                &krylov_projection,
+                opts.preconditioner,
+                imag_shift,
+            )
+        });
+
+        let a = {
+            let mut apply = |x: &Array1<R>| {
+                if let (Some(one_body), Some(scratch)) =
+                    (one_body.as_ref(), one_body_scratch.as_mut())
+                {
+                    if world.size() > 1 {
+                        apply_factorised_shifted_omega_m_mpi(
+                            &op,
+                            &krylov_projection,
+                            one_body,
+                            scratch,
+                            x,
+                            world,
+                            imag_shift,
+                        )
+                    } else {
+                        apply_factorised_shifted_omega_m(
+                            &op,
+                            &krylov_projection,
+                            one_body,
+                            scratch,
+                            x,
+                            imag_shift,
+                        )
+                    }
+                } else if world.size() > 1 {
+                    apply_shifted_omega_m_mpi(
+                        &op,
+                        &krylov_projection,
+                        x,
+                        m_slice,
+                        world,
+                        imag_shift,
+                    )
+                } else {
+                    apply_shifted_omega_m(&op, &krylov_projection, x, m_slice, imag_shift)
+                }
+            };
+
+            let g = &opts.gmres;
+            let print = if world.rank() == 0 {
+                GMRESPrint::Hylleraas
+            } else {
+                GMRESPrint::Silent
+            };
+            time_call!(crate::timers::selected::add_gmres, {
+                if let Some(prec) = prec.as_ref() {
+                    gmres(
+                        &mut apply,
+                        |x| prec.apply(x),
+                        &rhs,
+                        g.restart,
+                        g.max_iter,
+                        g.res_tol,
+                        print,
+                    )
+                } else {
+                    gmres(
+                        &mut apply,
+                        |x| x.clone(),
+                        &rhs,
+                        g.restart,
+                        g.max_iter,
+                        g.res_tol,
+                        print,
+                    )
+                }
+            })
+        };
+
+        let ma = if let (Some(one_body), Some(scratch)) =
+            (one_body.as_ref(), one_body_scratch.as_mut())
+        {
+            if world.size() > 1 {
+                apply_factorised_shifted_omega_m_mpi(
+                    &op,
+                    &krylov_projection,
+                    one_body,
+                    scratch,
+                    &a.x,
+                    world,
+                    imag_shift,
+                )
+            } else {
+                apply_factorised_shifted_omega_m(
+                    &op,
+                    &krylov_projection,
+                    one_body,
+                    scratch,
+                    &a.x,
+                    imag_shift,
+                )
+            }
+        } else if world.size() > 1 {
+            apply_shifted_omega_m_mpi(&op, &krylov_projection, &a.x, m_slice, world, imag_shift)
+        } else {
+            apply_shifted_omega_m(&op, &krylov_projection, &a.x, m_slice, imag_shift)
+        };
+
+        let ama =
+            a.x.iter()
+                .zip(ma.iter())
+                .fold(R::from_real(0.0), |acc, (&aa, &maa)| acc + aa.conj() * maa);
+
+        let av =
+            a.x.iter()
+                .zip(v_omega_krylov.iter())
+                .fold(R::from_real(0.0), |acc, (&aa, &v)| acc + aa.conj() * v);
+
+        let va = v_omega_krylov
+            .iter()
+            .zip(a.x.iter())
+            .fold(R::from_real(0.0), |acc, (&v, &aa)| acc + v.conj() * aa);
+        let ept2 = scalar_real(ama + av + va);
+
+        let candidate_scores: Vec<f64> =
+            a.x.iter()
+                .zip(v_omega_krylov.iter())
+                .map(|(&a, &v)| (a * v).abs())
+                .collect();
+
+        let max_abs_a = a.x.iter().map(|x| x.abs()).fold(0.0, f64::max);
+        let max_abs_v = v_omega_krylov.iter().map(|x| x.abs()).fold(0.0, f64::max);
+        let max_abs_av = candidate_scores.iter().copied().fold(0.0, f64::max);
+
+        pt2.push(SNOCIPT2Result {
+            root,
+            e_noci,
+            s2,
+            imag_shift,
+            ept2,
+            candidate_scores,
+            max_abs_a,
+            max_abs_v,
+            max_abs_av,
+            gmres_residual: a.residual_rms,
+            gmres_iterations: a.iterations,
+            gmres_converged: a.converged,
+        });
+    }
+
+    pt2
 }
 
 /// Perform selected NOCI and solve
@@ -201,8 +546,8 @@ where
         let mut candidate_pool: Option<CandidatePool> = None;
 
         for it in 0..opts.max_iter {
-            // Generate matrix elements for current space and solve GEVP for the energy.
-            let (hcurrent, scurrent, ecurrent, coeffs) = solve_current_space(
+            // Generate matrix elements for current space and solve GEVP for every NOCI state.
+            let (hcurrent, scurrent, evals, evecs) = solve_current_space(
                 post.ao,
                 &space,
                 &selected_space,
@@ -211,6 +556,20 @@ where
                 post.mocache,
                 post.tol,
             );
+
+            // Every requested state must exist after the overlap projection of the GEVP.
+            if let Some(&root) = opts.roots.iter().find(|&&root| root >= evals.len()) {
+                eprintln!(
+                    "snoci.roots requests NOCI state {} but the current space has only {} states",
+                    root,
+                    evals.len()
+                );
+                std::process::exit(1);
+            }
+
+            // The first listed state drives candidate selection and convergence.
+            let ecurrent = evals[opts.roots[0]];
+            let coeffs = evecs.column(opts.roots[0]).to_owned();
 
             if candidate_pool.is_none() {
                 candidate_pool = Some(CandidatePool::new(&mut space, &selected_space, input));
@@ -234,90 +593,6 @@ where
             let h_ai =
                 build_candidate_current_h(&candidate_data, &pool.candidates, &selected_space);
 
-            // Form multireference NOCI density and generalised AO Focks.
-            let (da, db) = noci_density(post.ao, &space, &selected_space, &coeffs, post.tol);
-            let (fa, fb) = time_call!(crate::timers::selected::add_build_generalised_fock, {
-                fock(&post.ao.h, &post.ao.eri_coul, &da, &db)
-            });
-
-            // Transform Focks into MO basis for each reference.
-            let fock_mocache =
-                build_fock_mo_cache(&fa, &fb, &post.space.parents, &post.ao.s, post.tol);
-
-            // Update the Wick's intermediates if using them.
-            if input.wicks.enabled
-                && let Some(ws) = wicks.as_deref_mut()
-            {
-                update_wicks_fock(&fa, &fb, &post.space.parents, &post.ao.s, post.tol, ws);
-            }
-
-            // Build the candidate-current and candidate-candidate Fock matrix, alongside the shifted Fock `M`.
-            let wview = wicks.as_ref().map(|ws| ws.view());
-            let candidate_data =
-                NOCIData::new(post.ao, &space, input, post.tol, wview).withmocache(post.mocache);
-            let current_data =
-                NOCIData::new(post.ao, &space, input, post.tol, wview).withmocache(post.mocache);
-            let fock = FockData::new(&fock_mocache, &fa, &fb);
-            let focks = build_snoci_focks(
-                &current_data,
-                &candidate_data,
-                &fock,
-                &selected_space,
-                &pool.candidates,
-            );
-
-            let fc = focks.f_ii.dot(&coeffs);
-            let e0_z = coeffs
-                .iter()
-                .zip(fc.iter())
-                .fold(T::from_real(0.0), |acc, (&c, &x)| acc + c.conj() * x);
-            let e0 = scalar_real(e0_z);
-            let projection = build_snoci_projection(&overlaps, &focks, &coeffs, e0);
-
-            let v_a = build_candidate_v(&h_ai, &coeffs);
-            let v_omega = build_omega_v(&overlaps.s_ai, &coeffs, v_a, ecurrent);
-
-            // `M^Omega(epsilon) a(epsilon) = -V^Omega` is solved in scalar `R`.
-            // Chemistry-derived projection vectors and `V^Omega` cross the scalar boundary only here.
-            let krylov_projection = projection.cast::<R>();
-            let v_omega_krylov = v_omega.mapv(<R as From<T>>::from);
-
-            // PT2's numerical plan uses dense candidate-local indices. This temporary
-            // NOCISpace subset shares parent frames with the selection topology.
-            let candidate_basis = space.subset(&pool.candidates);
-            let candidate_indices = (0..candidate_basis.len())
-                .map(NOCIIndex)
-                .collect::<Vec<_>>();
-            let operator_data = NOCIData::new(post.ao, &candidate_basis, input, post.tol, wview)
-                .withmocache(post.mocache);
-            let op = PT2ProjectedOperator {
-                data: &operator_data,
-                fock: &fock,
-                candidates: &candidate_indices,
-                projection: &projection,
-            };
-            if world.rank() == 0 {
-                print_candidate_m_storage::<T>(op.candidates.len());
-                print_factor_table_storage(&operator_data, &fock);
-            }
-
-            let one_body = if matches!(opts.full_m, SNOCIStorage::None)
-                && input.wicks.enabled
-                && operator_data.wicks.is_some()
-            {
-                let cache = input.wicks.cachedir.as_deref().unwrap_or(".");
-                Some(OneBodyFactorisation::new(
-                    &operator_data,
-                    &fock,
-                    std::path::Path::new(cache),
-                    world.rank(),
-                    it,
-                    opts.factor_tables,
-                ))
-            } else {
-                None
-            };
-
             if it > 0 && world.rank() == 0 {
                 println!("{}", "=".repeat(100));
             }
@@ -326,221 +601,24 @@ where
                 print_snoci_iteration_start(it, selected_space.len(), npoolpre, npoolpost);
             }
 
-            let m = match opts.full_m {
-                SNOCIStorage::None => None,
-                SNOCIStorage::RAM => {
-                    if world.rank() == 0 {
-                        print_build_candidate_m::<T>(op.candidates.len());
-                    }
-                    Some(build_candidate_m(&op))
-                }
-                SNOCIStorage::Disk => {
-                    if world.rank() == 0 {
-                        print_build_candidate_m::<T>(op.candidates.len());
-                    }
-                    let cache = input.wicks.cachedir.as_deref().unwrap_or(".");
-                    let path = std::path::Path::new(cache).join(format!(
-                        "snoci_m_rank{}_iter{}.bin",
-                        world.rank(),
-                        it
-                    ));
-                    Some(build_candidate_m_disk(&op, &path))
-                }
-            };
+            // PT2's numerical plan uses dense candidate-local indices. This temporary
+            // NOCISpace subset shares parent frames with the selection topology and does not
+            // depend on the corrected state.
+            let candidate_basis = space.subset(&pool.candidates);
 
-            let m_slice = m.as_ref().map(|m| m.as_slice());
-
-            // Candidate diagonals are needed only for actual preconditioners.
-            let (m_diag, factorised_s_diag) = match opts.preconditioner {
-                SNOCIPreconditioner::None => (None, None),
-                SNOCIPreconditioner::Diag | SNOCIPreconditioner::Woodbury => {
-                    if let Some(one_body) = one_body.as_ref() {
-                        let (m_diag, s_diag) = build_factorised_candidate_diags(
-                            &op,
-                            one_body,
-                            T::from_real(-op.projection.e0),
-                        );
-                        (Some(m_diag), Some(s_diag))
-                    } else {
-                        (Some(build_candidate_m_diag(&op, m_slice)), None)
-                    }
-                }
-            };
-
-            let shifts = if opts.imag_shifts.is_empty() {
-                vec![0.0]
-            } else {
-                opts.imag_shifts.clone()
-            };
-
-            // Shifted diagonal data are also unnecessary when GMRES is unpreconditioned.
-            let s_diag = if m_diag.is_some() && shifts.iter().any(|&imag_shift| imag_shift != 0.0) {
-                factorised_s_diag.or_else(|| Some(build_candidate_s_diag(&op)))
-            } else {
-                None
-            };
-
-            let rhs = v_omega_krylov.mapv(|x| -x);
-            let mut one_body_scratch: Option<OneBodyScratch<R>> = one_body
-                .as_ref()
-                .map(|factorisation| factorisation.scratch());
-
-            // Evaluate NOCI-PT2 energies, scores and diagnostics for each imaginary shift.
+            // Each listed NOCI state receives its own state-specific NOCI-PT2 correction.
             let mut pt2 = Vec::new();
-            for &imag_shift in &shifts {
-                let prec = m_diag.as_ref().map(|m_diag| {
-                    build_preconditioner(
-                        m_diag,
-                        s_diag.as_ref(),
-                        &krylov_projection,
-                        opts.preconditioner,
-                        imag_shift,
-                    )
-                });
-
-                let a = {
-                    let mut apply = |x: &Array1<R>| {
-                        if let (Some(one_body), Some(scratch)) =
-                            (one_body.as_ref(), one_body_scratch.as_mut())
-                        {
-                            if world.size() > 1 {
-                                apply_factorised_shifted_omega_m_mpi(
-                                    &op,
-                                    &krylov_projection,
-                                    one_body,
-                                    scratch,
-                                    x,
-                                    world,
-                                    imag_shift,
-                                )
-                            } else {
-                                apply_factorised_shifted_omega_m(
-                                    &op,
-                                    &krylov_projection,
-                                    one_body,
-                                    scratch,
-                                    x,
-                                    imag_shift,
-                                )
-                            }
-                        } else if world.size() > 1 {
-                            apply_shifted_omega_m_mpi(
-                                &op,
-                                &krylov_projection,
-                                x,
-                                m_slice,
-                                world,
-                                imag_shift,
-                            )
-                        } else {
-                            apply_shifted_omega_m(&op, &krylov_projection, x, m_slice, imag_shift)
-                        }
-                    };
-
-                    let g = &opts.gmres;
-                    let print = if world.rank() == 0 {
-                        GMRESPrint::Hylleraas
-                    } else {
-                        GMRESPrint::Silent
-                    };
-                    time_call!(crate::timers::selected::add_gmres, {
-                        if let Some(prec) = prec.as_ref() {
-                            gmres(
-                                &mut apply,
-                                |x| prec.apply(x),
-                                &rhs,
-                                g.restart,
-                                g.max_iter,
-                                g.res_tol,
-                                print,
-                            )
-                        } else {
-                            gmres(
-                                &mut apply,
-                                |x| x.clone(),
-                                &rhs,
-                                g.restart,
-                                g.max_iter,
-                                g.res_tol,
-                                print,
-                            )
-                        }
-                    })
-                };
-
-                let ma = if let (Some(one_body), Some(scratch)) =
-                    (one_body.as_ref(), one_body_scratch.as_mut())
-                {
-                    if world.size() > 1 {
-                        apply_factorised_shifted_omega_m_mpi(
-                            &op,
-                            &krylov_projection,
-                            one_body,
-                            scratch,
-                            &a.x,
-                            world,
-                            imag_shift,
-                        )
-                    } else {
-                        apply_factorised_shifted_omega_m(
-                            &op,
-                            &krylov_projection,
-                            one_body,
-                            scratch,
-                            &a.x,
-                            imag_shift,
-                        )
-                    }
-                } else if world.size() > 1 {
-                    apply_shifted_omega_m_mpi(
-                        &op,
-                        &krylov_projection,
-                        &a.x,
-                        m_slice,
-                        world,
-                        imag_shift,
-                    )
-                } else {
-                    apply_shifted_omega_m(&op, &krylov_projection, &a.x, m_slice, imag_shift)
-                };
-
-                let ama =
-                    a.x.iter()
-                        .zip(ma.iter())
-                        .fold(R::from_real(0.0), |acc, (&aa, &maa)| acc + aa.conj() * maa);
-
-                let av =
-                    a.x.iter()
-                        .zip(v_omega_krylov.iter())
-                        .fold(R::from_real(0.0), |acc, (&aa, &v)| acc + aa.conj() * v);
-
-                let va = v_omega_krylov
-                    .iter()
-                    .zip(a.x.iter())
-                    .fold(R::from_real(0.0), |acc, (&v, &aa)| acc + v.conj() * aa);
-                let ept2 = scalar_real(ama + av + va);
-
-                let candidate_scores: Vec<f64> =
-                    a.x.iter()
-                        .zip(v_omega_krylov.iter())
-                        .map(|(&a, &v)| (a * v).abs())
-                        .collect();
-
-                let max_abs_a = a.x.iter().map(|x| x.abs()).fold(0.0, f64::max);
-                let max_abs_v = v_omega_krylov.iter().map(|x| x.abs()).fold(0.0, f64::max);
-                let max_abs_av = candidate_scores.iter().copied().fold(0.0, f64::max);
-
-                pt2.push(SNOCIPT2Result {
-                    imag_shift,
-                    ept2,
-                    candidate_scores,
-                    max_abs_a,
-                    max_abs_v,
-                    max_abs_av,
-                    gmres_residual: a.residual_rms,
-                    gmres_iterations: a.iterations,
-                    gmres_converged: a.converged,
-                });
+            for &root in &opts.roots {
+                let state_coeffs = evecs.column(root).to_owned();
+                pt2.extend(solve_pt2_state::<T, R, _>(
+                    post,
+                    input,
+                    (&space, &selected_space, &pool.candidates, &candidate_basis),
+                    (&overlaps, &h_ai),
+                    (root, evals[root], &state_coeffs),
+                    wicks.as_deref_mut(),
+                    (world, it),
+                ));
             }
 
             let remaining = opts.max_dim.saturating_sub(selected_space.len());
@@ -559,9 +637,10 @@ where
                 };
             }
 
-            // Use the final imaginary shift in the input list as the main shift for selection.
+            // Use the final imaginary shift of the first listed state as the main result for selection.
             let main_pt2 = pt2
-                .last()
+                .iter()
+                .rfind(|r| r.root == opts.roots[0])
                 .expect("At least one NOCI-PT2 shift must be evaluated.");
 
             let selected = select_candidates(
@@ -598,7 +677,8 @@ where
 
             let main_pt2 = state
                 .pt2
-                .last()
+                .iter()
+                .rfind(|r| r.root == opts.roots[0])
                 .expect("At least one NOCI-PT2 shift must be evaluated.");
 
             if main_pt2.ept2.abs() < opts.tol {
@@ -626,7 +706,7 @@ where
         }
 
         final_state.unwrap_or_else(|| {
-            let (hcurrent, scurrent, ecurrent, coeffs) = solve_current_space(
+            let (hcurrent, scurrent, evals, evecs) = solve_current_space(
                 post.ao,
                 &space,
                 &selected_space,
@@ -635,7 +715,8 @@ where
                 post.mocache,
                 post.tol,
             );
-            empty_state(ecurrent, coeffs, hcurrent, scurrent)
+            let coeffs = evecs.column(opts.roots[0]).to_owned();
+            empty_state(evals[opts.roots[0]], coeffs, hcurrent, scurrent)
         })
     })
 }

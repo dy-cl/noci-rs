@@ -18,6 +18,9 @@ snoci = {
     preconditioner = "woodbury",
     imag_shift = {0.0},
 
+    -- Correct the lowest NOCI state only.
+    roots = {0},
+
     -- Form operator products on demand from factor tables held in memory.
     full_m = "none",
     factor_tables = "ram",
@@ -39,6 +42,7 @@ snoci = {
 | `max_add` | integer | `1` | Maximum determinants added per iteration. |
 | `max_dim` | integer | `100` | Maximum size of the selected space. |
 | `imag_shift` | list of numbers | `{0.0}` | Imaginary level shifts. NOCI-PT2 is evaluated for each; the **last** drives selection and convergence. Any nonzero shift switches to complex arithmetic. An empty list means `{0.0}`. |
+| `roots` | list of integers | `{0}` | NOCI states to correct, counted from the lowest at `0`. Each listed state receives its own state-specific NOCI-PT2 correction, with its own generalised Fock operator, projector and GMRES solve; the Wick intermediates, candidate pool, candidate overlaps and $H_{ai}$ are shared. The **first** drives selection and convergence. Results print as `State(NOCI-PT2: n i: ε)` together with each state's $\langle S^2\rangle$. |
 | `preconditioner` | string | `"woodbury"` | GMRES preconditioner: `"none"`, `"diag"` (inverse diagonal of the projected operator) or `"woodbury"` (diagonal plus a rank-2 correction for the projection). `"none"` skips building the diagonals. |
 | `full_m` | string | `"none"` | Store the full candidate–candidate operator ${}^{xJ,wI}M^{(k)}$: `"none"`, `"ram"` or `"disk"`. With `"none"`, products are formed on demand from the factorised tables. |
 | `factor_tables` | string | `"ram"` | Storage of the spin-factorised one-body tables used when `full_m = "none"`: `"none"`, `"ram"` or `"disk"`. |
