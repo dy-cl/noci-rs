@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::Mutex;
 
 // External crate imports.
 use ndarray::Array1;
@@ -25,6 +26,11 @@ use crate::input::SNOCIStorage;
 // Parent/sibling imports.
 use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
 use super::{ParentSpinSpace, SpinFactorisation, ordered_parent_pair};
+
+/// Number of output entries summed per Rayon task when combining per-thread products.
+const SUMCHUNK: usize = 4096;
+/// Minimum number of target determinants per Rayon task when one spin string's products are split.
+const DOTCHUNK: usize = 64;
 
 /// Persistent one-body block for one ordered source-target parent pair `QP`.
 enum OneBodyBlock<T: NOCIScalar> {
@@ -440,6 +446,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     }
 
     /// Apply same-parent orthogonal `Y^P += (F^{PP}+\lambda S^{PP})D^P`.
+    /// Sources are applied in parallel, each Rayon thread accumulating into its own output vector.
     /// # Arguments:
     /// - `block`: Same-parent orthogonal action data.
     /// - `vectors`: Source determinant vector and output determinant vector to accumulate.
@@ -466,13 +473,23 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let source_parent = &self.spin.parents[block.parent];
         let (worker, nworker) = partition;
 
+        // Sources scatter into overlapping targets, so every Rayon thread accumulates into its
+        // own output vector, added into `y` once all sources are applied.
+        let outputs: Vec<_> = (0..rayon::current_num_threads())
+            .map(|_| Mutex::new(vec![zero; y.len()]))
+            .collect();
+
         // Identical occupations contribute `(F + \lambda S)_{II} x_I` to
         // every retained target sharing the source spin strings.
-        for entry in &source_parent.entries {
+        source_parent.entries.par_iter().for_each(|entry| {
             let xe = x[entry.det];
             if xe == zero {
-                continue;
+                return;
             }
+            let mut output = outputs[rayon::current_thread_index().unwrap()]
+                .lock()
+                .unwrap();
+            let y = output.as_mut_slice();
             let source = NOCIIndex(entry.det);
             let source_state = space.spin_string_pair(source);
             let group = &block.groups[block.opos[&(source_state.aid, source_state.bid)]];
@@ -493,7 +510,24 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             // excitations; the helpers enumerate only retained targets.
             apply_orthogonal_alpha_singles(block, source, xe, y, space, cache, partition);
             apply_orthogonal_beta_singles(block, source, xe, y, space, cache, partition);
-        }
+        });
+
+        // Add the per-thread outputs, splitting the entries of `y` across threads.
+        let outputs: Vec<Vec<R>> = outputs
+            .into_iter()
+            .map(|output| output.into_inner().unwrap())
+            .collect();
+
+        y.par_chunks_mut(SUMCHUNK)
+            .enumerate()
+            .for_each(|(chunk, entries)| {
+                let first = chunk * SUMCHUNK;
+                for output in &outputs {
+                    for (entry, &value) in entries.iter_mut().zip(&output[first..]) {
+                        *entry += value;
+                    }
+                }
+            });
     }
 
     /// Apply alpha-first contraction for
@@ -801,29 +835,33 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         (srow.as_mut_slice(), frow.as_mut_slice()),
                     );
 
-                    let mut updates = Vec::with_capacity(target.entries_by_b[tb].len());
+                    // One beta string can be shared by most target determinants, such as the
+                    // reference string with every alpha excitation, so split its products
+                    // across threads as well.
+                    let (srow, frow) = (&*srow, &*frow);
+                    target.entries_by_b[tb]
+                        .par_iter()
+                        .with_min_len(DOTCHUNK)
+                        .filter_map(|&det| {
+                            let ta = data.space.spin_string_pair(NOCIIndex(det)).aid.0;
+                            if ta % nworker != worker {
+                                return None;
+                            }
 
-                    for &det in &target.entries_by_b[tb] {
-                        let ta = data.space.spin_string_pair(NOCIIndex(det)).aid.0;
-                        if ta % nworker != worker {
-                            continue;
-                        }
+                            let tf = &scratch.first_f[ta * nsb..(ta + 1) * nsb];
+                            let ts = &scratch.first_s[ta * nsb..(ta + 1) * nsb];
+                            let mut value = zero;
 
-                        let tf = &scratch.first_f[ta * nsb..(ta + 1) * nsb];
-                        let ts = &scratch.first_s[ta * nsb..(ta + 1) * nsb];
-                        let mut value = zero;
+                            // `Y^Q = T^F (S^\beta)^T + T^S (F^\beta + lambda S^\beta)^T`.
+                            for b in 0..nsb {
+                                let s = <R as From<T>>::from(srow[b]);
+                                let f = <R as From<T>>::from(frow[b]);
+                                value += tf[b] * s + ts[b] * (f + lambda * s);
+                            }
 
-                        // `Y^Q = T^F (S^\beta)^T + T^S (F^\beta + lambda S^\beta)^T`.
-                        for b in 0..nsb {
-                            let s = <R as From<T>>::from(srow[b]);
-                            let f = <R as From<T>>::from(frow[b]);
-                            value += tf[b] * s + ts[b] * (f + lambda * s);
-                        }
-
-                        updates.push((det, value));
-                    }
-
-                    updates
+                            Some((det, value))
+                        })
+                        .collect::<Vec<_>>()
                 },
             )
             .collect::<Vec<_>>();
@@ -965,29 +1003,33 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         (srow.as_mut_slice(), frow.as_mut_slice()),
                     );
 
-                    let mut updates = Vec::with_capacity(target.entries_by_a[ta].len());
+                    // One alpha string can be shared by most target determinants, such as the
+                    // reference string with every beta excitation, so split its products
+                    // across threads as well.
+                    let (srow, frow) = (&*srow, &*frow);
+                    target.entries_by_a[ta]
+                        .par_iter()
+                        .with_min_len(DOTCHUNK)
+                        .filter_map(|&det| {
+                            let tb = data.space.spin_string_pair(NOCIIndex(det)).bid.0;
+                            if tb % nworker != worker {
+                                return None;
+                            }
 
-                    for &det in &target.entries_by_a[ta] {
-                        let tb = data.space.spin_string_pair(NOCIIndex(det)).bid.0;
-                        if tb % nworker != worker {
-                            continue;
-                        }
+                            let uf = &scratch.first_f[tb * nsa..(tb + 1) * nsa];
+                            let us = &scratch.first_s[tb * nsa..(tb + 1) * nsa];
+                            let mut value = zero;
 
-                        let uf = &scratch.first_f[tb * nsa..(tb + 1) * nsa];
-                        let us = &scratch.first_s[tb * nsa..(tb + 1) * nsa];
-                        let mut value = zero;
+                            // `Y^Q = S^\alpha U^F + (F^\alpha + lambda S^\alpha) U^S`.
+                            for a in 0..nsa {
+                                let s = <R as From<T>>::from(srow[a]);
+                                let f = <R as From<T>>::from(frow[a]);
+                                value += s * uf[a] + (f + lambda * s) * us[a];
+                            }
 
-                        // `Y^Q = S^\alpha U^F + (F^\alpha + lambda S^\alpha) U^S`.
-                        for a in 0..nsa {
-                            let s = <R as From<T>>::from(srow[a]);
-                            let f = <R as From<T>>::from(frow[a]);
-                            value += s * uf[a] + (f + lambda * s) * us[a];
-                        }
-
-                        updates.push((det, value));
-                    }
-
-                    updates
+                            Some((det, value))
+                        })
+                        .collect::<Vec<_>>()
                 },
             )
             .collect::<Vec<_>>();
