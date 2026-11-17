@@ -6,8 +6,8 @@
 // External crate imports.
 #[cfg(feature = "gnocc")]
 use ndarray::Array2;
-use ndarray::{ArrayView2, ArrayViewMut2};
-use ndarray_linalg::{Determinant, FactorizeInto, InverseInto, SVD};
+use ndarray::ArrayView2;
+use ndarray_linalg::{Determinant, SVD};
 
 // Crate-root imports.
 use crate::NOCIScalar;
@@ -508,6 +508,81 @@ pub fn det_dynamic<T: NOCIScalar>(
     }
 }
 
+/// Invert a matrix by partial-pivot Gauss-Jordan elimination in caller-owned row-major storage.
+/// # Arguments:
+/// - `a`: Runtime-rank matrix, overwritten by the identity on success.
+/// - `inv`: Receives the inverse on success.
+/// - `n`: Runtime matrix rank.
+/// # Returns
+/// - `Option<T>`: Determinant, or `None` for a zero pivot or non-finite arithmetic.
+fn inverse_in_place<T: NOCIScalar>(
+    a: &mut [T],
+    inv: &mut [T],
+    n: usize,
+) -> Option<T> {
+    inv.fill(T::from_real(0.0));
+
+    for k in 0..n {
+        inv[k * n + k] = T::from_real(1.0);
+    }
+
+    let mut determinant = T::from_real(1.0);
+
+    for k in 0..n {
+        // Select the largest entry in this column to control numerical growth.
+        let mut pivot = k;
+        let mut pivot_abs = a[k * n + k].abs();
+
+        for row in (k + 1)..n {
+            let value = a[row * n + k].abs();
+
+            if value > pivot_abs {
+                pivot = row;
+                pivot_abs = value;
+            }
+        }
+
+        if !pivot_abs.is_finite() || pivot_abs == 0.0 {
+            return None;
+        }
+
+        if pivot != k {
+            for col in 0..n {
+                a.swap(k * n + col, pivot * n + col);
+                inv.swap(k * n + col, pivot * n + col);
+            }
+
+            determinant = -determinant;
+        }
+
+        // Normalise the pivot row, then eliminate the pivot column from every other row.
+        let pivot_value = a[k * n + k];
+        determinant *= pivot_value;
+        let scale = T::from_real(1.0) / pivot_value;
+
+        for col in 0..n {
+            a[k * n + col] *= scale;
+            inv[k * n + col] *= scale;
+        }
+
+        for row in 0..n {
+            if row == k {
+                continue;
+            }
+
+            let factor = a[row * n + k];
+
+            for col in 0..n {
+                let (pivot_a, pivot_inv) = (a[k * n + col], inv[k * n + col]);
+                a[row * n + col] -= factor * pivot_a;
+                inv[row * n + col] -= factor * pivot_inv;
+            }
+        }
+    }
+
+    Some(determinant)
+}
+
 /// Compute a determinant using partial-pivot LU in caller-owned row-major storage.
 /// # Arguments:
 /// - `lu`: Runtime-rank matrix overwritten by its LU factors.
@@ -712,19 +787,19 @@ pub fn adjugate_transpose_dynamic<T: NOCIScalar>(
     }
 
     // For a nonsingular matrix, `cof(A) = det(A) A^{-T}` gives determinant and cofactors from one
-    // LU factorisation.
+    // Gauss-Jordan elimination.
     lu[..nn].copy_from_slice(&matrix[..nn]);
-    let lu_view = ArrayViewMut2::from_shape((n, n), &mut lu[..nn]).ok()?;
 
-    if let Ok(factorisation) = lu_view.to_owned().factorize_into()
-        && let (Ok(determinant), Ok(inverse)) = (factorisation.det(), factorisation.inv_into())
-    {
-        let inverse = inverse.as_slice()?;
-
+    if let Some(determinant) = inverse_in_place(&mut lu[..nn], &mut cof[..nn], n) {
+        // `cof` holds `A^{-1}`; transpose it in place and scale by the determinant.
         for row in 0..n {
-            for col in 0..n {
-                cof[row * n + col] = determinant * inverse[col * n + row];
+            for col in (row + 1)..n {
+                cof.swap(row * n + col, col * n + row);
             }
+        }
+
+        for value in &mut cof[..nn] {
+            *value *= determinant;
         }
 
         return Some(determinant);
