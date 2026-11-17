@@ -38,7 +38,7 @@ pub use nonorthogonalwicks::build_wicks_shared;
 pub(crate) use batch::LaneBatch;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use batch::LaneKernel;
-pub(crate) use operator::{Fock, HamiltonianOverlap, Overlap};
+pub(crate) use operator::{Fock, HamiltonianOverlap, Overlap, PairOperator};
 pub(crate) use orthogonal::OrthogonalHamiltonianScratch;
 #[cfg(feature = "gnocc")]
 pub(crate) use rdm::{RDM1, RDM2, RDM3, RDM4};

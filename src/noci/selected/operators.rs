@@ -15,7 +15,9 @@ use rayon::prelude::*;
 use crate::NOCIScalar;
 use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::elements::nonorthogonalwicks::{WickScratchSpin, WicksShared};
-use crate::elements::{DetPair, Fock, FockData, MOCache, NOCIData, Overlap, calculate_pairs};
+use crate::elements::{
+    DetPair, Fock, FockData, MOCache, NOCIData, Overlap, PairOperator, calculate_pairs,
+};
 use crate::maths::{adjoint, general_evp};
 use crate::mpiutils::all_reduce_array1;
 use crate::noci::{OneBodyFactorisation, OneBodyScratch};
@@ -419,7 +421,118 @@ pub(in crate::noci::selected) fn build_factorised_candidate_diags<T: NOCIScalar>
     one_body.one_body_diagonals(op.data, op.fock, lambda)
 }
 
-/// Apply the unprojected candidate-candidate shifted Fock matrix `M`.
+/// Apply the rows of a Hermitian candidate-candidate matrix `A_{ab} = \langle a|\hat O|b\rangle`
+/// owned by this process to `x`, where row `a` is owned when `a = a_0 + k s` for offset `a_0`
+/// and stride `s`.
+/// Each owned row adds its upper-triangle pairs `b \ge a` as `y_a \mathrel{+}= A_{ab} x_b` and,
+/// for `b \ne a`, the Hermitian partner `y_b \mathrel{+}= A_{ab}^* x_a`, so the partial products
+/// of the offsets `0, \ldots, s - 1` sum to `y = A x`. Elements are read from the packed upper
+/// triangle when it is given and are otherwise evaluated on demand, skipping pairs with
+/// `x_a = x_b = 0`. `A_{ab}` uses chemistry scalar `T` and `x` uses Krylov scalar `R`.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `pair_op`: Pair operator `\hat O` evaluating `A_{ab}` on demand.
+/// - `packed`: Optional packed upper triangle of `A`, used in place of `pair_op`.
+/// - `x`: Krylov vector to apply `A` to.
+/// - `offset`: First owned row `a_0`.
+/// - `stride`: Row stride `s`.
+/// # Returns:
+/// - `Vec<R>`: Partial product of the owned rows.
+fn apply_owned_rows<T, R, Op>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    pair_op: &Op,
+    packed: Option<&[T]>,
+    x: &Array1<R>,
+    offset: usize,
+    stride: usize,
+) -> Vec<R>
+where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+    Op: PairOperator<T, Out = T> + Sync,
+{
+    let n = op.candidates.len();
+    let zero = R::from_real(0.0);
+
+    if offset >= n {
+        return vec![zero; n];
+    }
+
+    let xs = x.as_slice_memory_order().unwrap();
+    let nrows = (n - offset).div_ceil(stride);
+    let min_len = (nrows / (rayon::current_num_threads() * 8)).max(1);
+
+    // Rayon splits the owned rows; each worker accumulates into its own output vector.
+    (0..nrows)
+        .into_par_iter()
+        .with_min_len(min_len)
+        .fold(
+            || {
+                (
+                    WickScratchSpin::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    vec![zero; n],
+                )
+            },
+            |(mut scratch, mut pairs, mut values, mut y), k| {
+                let a = offset + k * stride;
+                let xa = xs[a];
+
+                // Read the row `A_{ab}, b \ge a` from the packed upper triangle, or evaluate
+                // its contributing pairs as one batch.
+                let row: &[T] = match packed {
+                    Some(packed) => {
+                        let start = a * (2 * n - a + 1) / 2;
+                        &packed[start..start + n - a]
+                    }
+                    None => {
+                        let ldet = op.candidates[a];
+                        pairs.clear();
+                        for (&xb, &gdet) in xs[a..].iter().zip(&op.candidates[a..]) {
+                            if xa == zero && xb == zero {
+                                continue;
+                            }
+                            pairs.push(DetPair::from_space(op.data.space, ldet, gdet));
+                        }
+                        values.clear();
+                        values.resize(pairs.len(), T::from_real(0.0));
+                        calculate_pairs(op.data, pair_op, &pairs, Some(&mut scratch), &mut values);
+                        &values
+                    }
+                };
+
+                // Scatter `A_{ab} x_b` to row `a` and `A_{ab}^* x_a` to row `b`.
+                let cols = (a..n).filter(|&b| packed.is_some() || xa != zero || xs[b] != zero);
+                for (b, &a_ab) in cols.zip(row) {
+                    let xb = xs[b];
+                    let a_ab = <R as From<T>>::from(a_ab);
+
+                    if xb != zero {
+                        y[a] += a_ab * xb;
+                    }
+
+                    if b != a && xa != zero {
+                        y[b] += a_ab.conj() * xa;
+                    }
+                }
+
+                (scratch, pairs, values, y)
+            },
+        )
+        .map(|(_, _, _, y)| y)
+        .reduce(
+            || vec![zero; n],
+            |mut lhs, rhs| {
+                for i in 0..n {
+                    lhs[i] += rhs[i];
+                }
+                lhs
+            },
+        )
+}
+
+/// Apply the unprojected candidate-candidate shifted Fock matrix `M = F - E_0 S`.
 /// Uses a cached packed matrix if provided, otherwise evaluates matrix elements on the fly.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
@@ -437,131 +550,18 @@ where
     R: NOCIScalar + From<T>,
 {
     time_call!(crate::timers::selected::add_apply_candidate_m, {
-        let n = op.candidates.len();
+        let fock = Fock {
+            fock: op.fock,
+            shift: op.projection.e0,
+        };
 
-        if n == 0 {
-            return Array1::from_vec(Vec::new());
-        }
-
-        let xs = x.as_slice_memory_order().unwrap();
-
-        let min_len = (n / (rayon::current_num_threads() * 8)).max(1);
-        let zero = R::from_real(0.0);
-
-        // `y_a = \sum_b M_{ab} x_b`: `M_{ab}` uses chemistry scalar `T`
-        // and the Krylov vector `x_b` uses scalar `R`.
-        // Use the packed upper triangle when it is already available.
-        if let Some(m) = m {
-            let y = (0..n)
-                .into_par_iter()
-                .with_min_len(min_len)
-                .fold(
-                    || vec![zero; n],
-                    |mut y, a| {
-                        let xa = xs[a];
-                        let row_start = a * (2 * n - a + 1) / 2;
-
-                        for (db, &m_ab) in m[row_start..row_start + n - a].iter().enumerate() {
-                            let b = a + db;
-                            let m_ab = <R as From<T>>::from(m_ab);
-                            let xb = xs[b];
-
-                            if xb != zero {
-                                y[a] += m_ab * xb;
-                            }
-
-                            if b != a && xa != zero {
-                                y[b] += m_ab.conj() * xa;
-                            }
-                        }
-
-                        y
-                    },
-                )
-                .reduce(
-                    || vec![zero; n],
-                    |mut lhs, rhs| {
-                        for i in 0..n {
-                            lhs[i] += rhs[i];
-                        }
-                        lhs
-                    },
-                );
-            return Array1::from_vec(y);
-        }
-
-        // Evaluate the upper triangle on demand, skipping pairs with zero input amplitudes.
-        let y = (0..n)
-            .into_par_iter()
-            .with_min_len(min_len)
-            .fold(
-                || {
-                    (
-                        WickScratchSpin::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        vec![zero; n],
-                    )
-                },
-                |(mut scratch, mut pairs, mut values, mut y), a| {
-                    let xa = xs[a];
-                    let ldet = op.candidates[a];
-
-                    // Evaluate the row's contributing pairs as one batch.
-                    pairs.clear();
-                    for (&xb, &gdet) in xs[a..].iter().zip(&op.candidates[a..]) {
-                        if xa == zero && xb == zero {
-                            continue;
-                        }
-                        pairs.push(DetPair::from_space(op.data.space, ldet, gdet));
-                    }
-                    values.clear();
-                    values.resize(pairs.len(), T::from_real(0.0));
-                    calculate_pairs(
-                        op.data,
-                        &Fock {
-                            fock: op.fock,
-                            shift: op.projection.e0,
-                        },
-                        &pairs,
-                        Some(&mut scratch),
-                        &mut values,
-                    );
-
-                    let cols = (a..n).filter(|&b| xa != zero || xs[b] != zero);
-                    for (b, &m_ab) in cols.zip(&values) {
-                        let xb = xs[b];
-                        let m_ab = <R as From<T>>::from(m_ab);
-
-                        if xb != zero {
-                            y[a] += m_ab * xb;
-                        }
-
-                        if b != a && xa != zero {
-                            y[b] += m_ab.conj() * xa;
-                        }
-                    }
-
-                    (scratch, pairs, values, y)
-                },
-            )
-            .map(|(_, _, _, y)| y)
-            .reduce(
-                || vec![zero; n],
-                |mut lhs, rhs| {
-                    for i in 0..n {
-                        lhs[i] += rhs[i];
-                    }
-                    lhs
-                },
-            );
-
-        Array1::from_vec(y)
+        Array1::from_vec(apply_owned_rows(op, &fock, m, x, 0, 1))
     })
 }
 
-/// Apply the unprojected candidate-candidate shifted Fock matrix `M` across MPI ranks.
-/// Uses a replicated input vector and returns the globally reduced output vector on every rank.
+/// Apply the unprojected candidate-candidate shifted Fock matrix `M = F - E_0 S` across MPI
+/// ranks. Each rank applies every `n_{\text{ranks}}`-th row with Rayon, and the partial
+/// products are summed into the replicated result on every rank.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
 /// - `x`: Replicated Krylov vector to apply `M` to.
@@ -580,87 +580,19 @@ where
     R: NOCIScalar + From<T> + Into<Complex64>,
 {
     time_call!(crate::timers::selected::add_apply_candidate_m, {
-        let n = op.candidates.len();
-        if n == 0 {
+        if op.candidates.is_empty() {
             return Array1::from_vec(Vec::new());
         }
 
+        let fock = Fock {
+            fock: op.fock,
+            shift: op.projection.e0,
+        };
         let irank = world.rank() as usize;
         let nranks = world.size() as usize;
-        let xs = x.as_slice_memory_order().unwrap();
-        let zero = R::from_real(0.0);
 
-        let mut y = vec![zero; n];
-
-        // Each rank owns every `n_{\text{ranks}}`-th output row. Recover `M_{ab}` below
-        // the packed upper triangle through Hermitian symmetry `M_{ab} = M_{ba}^*`.
-        if let Some(m) = m {
-            for a in (irank..n).step_by(nranks) {
-                let mut ya = zero;
-
-                for (b, &xb) in xs.iter().enumerate().take(a) {
-                    let k = b * (2 * n - b + 1) / 2 + (a - b);
-                    ya += <R as From<T>>::from(m[k]).conj() * xb;
-                }
-
-                let row = a * (2 * n - a + 1) / 2;
-                for (b, &xb) in xs.iter().enumerate().skip(a) {
-                    let k = row + (b - a);
-                    ya += <R as From<T>>::from(m[k]) * xb;
-                }
-
-                y[a] = ya;
-            }
-
-            // Sum disjoint row contributions into the replicated result.
-            return all_reduce_array1(world, Array1::from_vec(y));
-        }
-
-        let mut scratch = WickScratchSpin::new();
-        let mut pairs = Vec::new();
-        let mut values = Vec::new();
-
-        // Without a packed matrix, evaluate each owned upper-triangle row as one batch
-        // and scatter `M_{ab} x_b` and `M_{ab}^* x_a` to both output rows.
-        for a in (irank..n).step_by(nranks) {
-            let xa = xs[a];
-            let ldet = op.candidates[a];
-
-            pairs.clear();
-            for (&xb, &gdet) in xs[a..].iter().zip(&op.candidates[a..]) {
-                if xa == zero && xb == zero {
-                    continue;
-                }
-                pairs.push(DetPair::from_space(op.data.space, ldet, gdet));
-            }
-            values.clear();
-            values.resize(pairs.len(), T::from_real(0.0));
-            calculate_pairs(
-                op.data,
-                &Fock {
-                    fock: op.fock,
-                    shift: op.projection.e0,
-                },
-                &pairs,
-                Some(&mut scratch),
-                &mut values,
-            );
-
-            let cols = (a..n).filter(|&b| xa != zero || xs[b] != zero);
-            for (b, &m_ab) in cols.zip(&values) {
-                let xb = xs[b];
-                let m_ab = <R as From<T>>::from(m_ab);
-
-                if xb != zero {
-                    y[a] += m_ab * xb;
-                }
-                if b != a && xa != zero {
-                    y[b] += m_ab.conj() * xa;
-                }
-            }
-        }
-
-        // Pair ownership partitions the work; the output rows may overlap.
+        // Hermitian-partner contributions overlap across ranks, so sum the partial products.
+        let y = apply_owned_rows(op, &fock, m, x, irank, nranks);
         all_reduce_array1(world, Array1::from_vec(y))
     })
 }
@@ -679,79 +611,12 @@ where
     T: NOCIScalar,
     R: NOCIScalar + From<T>,
 {
-    let n = op.candidates.len();
-
-    if n == 0 {
-        return Array1::from_vec(Vec::new());
-    }
-
-    let xs = x.as_slice_memory_order().unwrap();
-    let min_len = (n / (rayon::current_num_threads() * 8)).max(1);
-    let zero = R::from_real(0.0);
-
-    // `y_a = \sum_b S_{ab} x_b`: `S_{ab}` uses chemistry scalar `T`
-    // and the Krylov vector `x_b` uses scalar `R`.
-    let y = (0..n)
-        .into_par_iter()
-        .with_min_len(min_len)
-        .fold(
-            || {
-                (
-                    WickScratchSpin::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    vec![zero; n],
-                )
-            },
-            |(mut scratch, mut pairs, mut values, mut y), a| {
-                let xa = xs[a];
-                let ldet = op.candidates[a];
-
-                // Evaluate the row's contributing pairs as one batch.
-                pairs.clear();
-                for (&xb, &gdet) in xs[a..].iter().zip(&op.candidates[a..]) {
-                    if xa == zero && xb == zero {
-                        continue;
-                    }
-                    pairs.push(DetPair::from_space(op.data.space, ldet, gdet));
-                }
-                values.clear();
-                values.resize(pairs.len(), T::from_real(0.0));
-                calculate_pairs(op.data, &Overlap, &pairs, Some(&mut scratch), &mut values);
-
-                let cols = (a..n).filter(|&b| xa != zero || xs[b] != zero);
-                for (b, &s_ab) in cols.zip(&values) {
-                    let xb = xs[b];
-                    let s_ab = <R as From<T>>::from(s_ab);
-
-                    if xb != zero {
-                        y[a] += s_ab * xb;
-                    }
-
-                    if b != a && xa != zero {
-                        y[b] += s_ab.conj() * xa;
-                    }
-                }
-
-                (scratch, pairs, values, y)
-            },
-        )
-        .map(|(_, _, _, y)| y)
-        .reduce(
-            || vec![zero; n],
-            |mut lhs, rhs| {
-                for i in 0..n {
-                    lhs[i] += rhs[i];
-                }
-                lhs
-            },
-        );
-
-    Array1::from_vec(y)
+    Array1::from_vec(apply_owned_rows(op, &Overlap, None, x, 0, 1))
 }
 
 /// Apply the unprojected candidate-candidate overlap matrix `S` across MPI ranks.
-/// Uses a replicated input vector and returns the globally reduced output vector on every rank.
+/// Each rank applies every `n_{\text{ranks}}`-th row with Rayon, and the partial products are
+/// summed into the replicated result on every rank.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
 /// - `x`: Replicated Krylov vector to apply `S` to.
@@ -767,53 +632,15 @@ where
     T: NOCIScalar,
     R: NOCIScalar + From<T> + Into<Complex64>,
 {
-    let n = op.candidates.len();
-    if n == 0 {
+    if op.candidates.is_empty() {
         return Array1::from_vec(Vec::new());
     }
 
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
-    let xs = x.as_slice_memory_order().unwrap();
-    let zero = R::from_real(0.0);
 
-    let mut y = vec![zero; n];
-    let mut scratch = WickScratchSpin::new();
-    let mut pairs = Vec::new();
-    let mut values = Vec::new();
-
-    // Partition upper-triangle pairs by their first index. Each rank evaluates its rows as
-    // batches and adds `S_{ab} x_b` and, for `a \ne b`, the Hermitian partner `S_{ab}^* x_a`.
-    for a in (irank..n).step_by(nranks) {
-        let xa = xs[a];
-        let ldet = op.candidates[a];
-
-        pairs.clear();
-        for (&xb, &gdet) in xs[a..].iter().zip(&op.candidates[a..]) {
-            if xa == zero && xb == zero {
-                continue;
-            }
-            pairs.push(DetPair::from_space(op.data.space, ldet, gdet));
-        }
-        values.clear();
-        values.resize(pairs.len(), T::from_real(0.0));
-        calculate_pairs(op.data, &Overlap, &pairs, Some(&mut scratch), &mut values);
-
-        let cols = (a..n).filter(|&b| xa != zero || xs[b] != zero);
-        for (b, &s_ab) in cols.zip(&values) {
-            let xb = xs[b];
-            let s_ab = <R as From<T>>::from(s_ab);
-
-            if xb != zero {
-                y[a] += s_ab * xb;
-            }
-            if b != a && xa != zero {
-                y[b] += s_ab.conj() * xa;
-            }
-        }
-    }
-
-    // Pair contributions to output rows overlap across ranks.
+    // Hermitian-partner contributions overlap across ranks, so sum the partial products.
+    let y = apply_owned_rows(op, &Overlap, None, x, irank, nranks);
     all_reduce_array1(world, Array1::from_vec(y))
 }
 
