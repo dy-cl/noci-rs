@@ -17,7 +17,7 @@ use crate::time_call;
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 use super::dispatch::{dispatch_pair_ranks, dispatch_rdm_ranks, dispatch_spin_ranks};
-use super::helpers::{MCombinations, extend_rdm_d, for_each_m_combination, mix_dets_same_const};
+use super::helpers::{MCombinations, extend_rdm_d, mix_dets_same_const};
 use super::overlap::xw_overlap_prepared;
 use super::prepare::construct_determinant_indices;
 
@@ -1120,7 +1120,7 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
 
             // Sum `\det\mathbf D_{\mathrm{RDM}}(m_1,\ldots,m_D)` over every binary assignment
             // satisfying `\sum_i m_i = m`.
-            for_each_m_combination(d_rank, w.m, |bits| {
+            for bits in MCombinations::new(d_rank, w.m) {
                 mix_columns_dynamic(
                     scratch.det_mix.as_mut_slice(),
                     scratch.det0.as_slice(),
@@ -1135,7 +1135,7 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
                 {
                     acc += value;
                 }
-            });
+            }
 
             // `\Gamma^{\mathbf p}_{\mathbf q}={}^{xw}\tilde S`
             // `\sum_{\sum_i m_i=m}\det\mathbf D_{\text{RDM}}^{\mathbf p\mathbf q}(\{m_i\})`.

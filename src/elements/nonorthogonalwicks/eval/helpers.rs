@@ -63,8 +63,9 @@ pub(super) struct Minor {
 }
 
 /// Binary distributions `(m_1,\ldots,m_L)` with `\sum_{i = 1}^{L}m_i = m`, `m_i \in \{0,1\}`, as
-/// `L`-bit masks with exactly m set bits in increasing order. Fixed-rank kernels iterate it in plain
-/// loops, so the work of every distribution stays inside the caller's target features.
+/// `L`-bit masks with exactly m set bits in increasing order. Every distribution sum iterates it in a
+/// plain loop, so the work of each distribution in a fixed-rank kernel stays inside the caller's
+/// target features.
 pub(super) struct MCombinations {
     /// Next mask to yield.
     next: u64,
@@ -498,7 +499,7 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
 
     // Enumerate the assignments satisfying `\sum_{i = 1}^{L+p}m_i = m`, then remove the
     // p operator-specific assignments to obtain the L determinant-column assignments.
-    for_each_m_combination(l + pbits, w.m, |bits| {
+    for bits in MCombinations::new(l + pbits, w.m) {
         let cbits = bits >> pbits;
         match prev_cbits {
             None => {
@@ -546,7 +547,7 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
         // The callback sees both the complete operator assignment and its mixed determinant.
         prev_cbits = Some(cbits);
         f(bits, scratch);
-    });
+    }
 }
 
 /// Update a packed mixed contraction determinant to the column assignment of one distribution of
@@ -618,7 +619,7 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
     time_call!(crate::timers::nonorthogonalwicks::add_get_det_adjt_diff, {
         // Enumerate `m_{\alpha 0} + \sum_z m_{\alpha z} = m_\alpha`. Bit zero is
         // `m_{\alpha 0}`; the remaining bits select alpha-spin determinant columns.
-        for_each_m_combination(la + 1, w.aa.m, |bits_a| {
+        for bits_a in MCombinations::new(la + 1, w.aa.m) {
             let inda = bits_a >> 1;
             mix_columns_dynamic(
                 scratch.deta_mix.as_mut_slice(),
@@ -637,7 +638,7 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
             ) {
                 // For each retained alpha-spin distribution, independently enumerate
                 // `m_{\beta 0} + \sum_y m_{\beta y} = m_\beta`.
-                for_each_m_combination(lb + 1, w.bb.m, |bits_b| {
+                for bits_b in MCombinations::new(lb + 1, w.bb.m) {
                     let indb = bits_b >> 1;
                     mix_columns_dynamic(
                         scratch.detb_mix.as_mut_slice(),
@@ -657,9 +658,9 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
                     ) {
                         f(bits_a, bits_b, scratch, det_a, det_b);
                     }
-                });
+                }
             }
-        });
+        }
     })
 }
 
@@ -696,28 +697,6 @@ pub(super) fn minor_adjt<T: NOCIScalar>(
         adjugate_transpose_generic(adjtb.as_mut_slice(), minorb.as_slice(), lm1, tol)
     {
         f(lm1, minorb.as_slice(), adjtb.as_slice(), det_minor);
-    }
-}
-
-/// `Enumerate every binary distribution (m_1,\ldots,m_L) satisfying`
-/// `\sum_{i = 1}^{L}m_i = m`, with `m_i \in \{0,1\}`. Each distribution is represented by an
-/// `L`-bit mask
-/// containing exactly m set bits.
-/// # Arguments:
-/// - `l`: Number L of fundamental contractions.
-/// - `m`: Number of zero-overlap orbital pairs that must be assigned.
-/// - `f`: Called once for each valid distribution.
-/// # Returns
-/// - `()`: `Calls f exactly \binom{L}{m} times when 0\leq m\leq L.`
-#[inline(always)]
-pub(super) fn for_each_m_combination(
-    l: usize,
-    m: usize,
-    mut f: impl FnMut(u64),
-) {
-    // Enumerate the `\binom{L}{m}` fixed-population bit masks in increasing integer order.
-    for bits in MCombinations::new(l, m) {
-        f(bits);
     }
 }
 
