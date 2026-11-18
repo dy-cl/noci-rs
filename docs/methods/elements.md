@@ -191,7 +191,9 @@ allowed $m_i$ distributions, not on the number of electrons or basis functions.
 
 Fixed-rank kernels are compiled up to the total excitation rank `MAXEXCIT` (see
 [Installation](../getting-started/installation.md#fixed-rank-wick-kernels)) and packed into AVX2
-or AVX-512 lanes of four or eight determinant pairs. Higher ranks use generic fallbacks.
+or AVX-512 lanes of four or eight determinant pairs. They cover both the single determinant of
+$m = 0$ and the constrained $m_i$ distribution sums of $m > 0$, where every lane of a packet shares
+the distributions and only $m$ is a runtime value. Higher ranks use generic fallbacks.
 
 The intermediates scale as the fourth power of the number of orbitals for every reference pair.
 They can be held in memory, shared between MPI ranks on a node, or stored in a disk-backed cache
