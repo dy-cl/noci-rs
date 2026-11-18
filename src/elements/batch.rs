@@ -7,11 +7,15 @@
 //! RDM pair. Each family supplies its scalar evaluator, the write of one result and, for every
 //! packet width, the packed kernel of a group; this module dispatches to the widest width the CPU
 //! supports, splits every group into packets, pads the last packet of a group with its final lane
-//! and writes only the genuine lanes.
+//! and writes only the genuine lanes. `packet_x4` and `packet_x8` are the only target-feature
+//! boundaries: each family supplies the packed kernel of a group as a `LanePacket`, written once
+//! over the packet width.
 
 // Crate-root imports.
 #[cfg(target_arch = "x86_64")]
-use crate::maths::{self, Lanes};
+use crate::NOCIScalar;
+#[cfg(target_arch = "x86_64")]
+use crate::maths::{self, Lanes, Simd};
 
 /// A batch of lanes of one operator family, evaluated in packets where a packed kernel exists and
 /// lane by lane otherwise.
@@ -73,6 +77,25 @@ pub(crate) trait LaneBatch: Sized {
         &self,
         lane: &Self::Lane,
     ) -> Option<LaneKernel<Self, 8>>;
+}
+
+/// The packed kernel of one group of a lane batch, written once over the packet width. Each family
+/// supplies one zero-size implementor whose const parameters are the fixed ranks of the group, so
+/// `packet_x4` and `packet_x8` evaluate every family's kernel inside their target features.
+#[cfg(target_arch = "x86_64")]
+pub(crate) trait LanePacket<B: LaneBatch, T: NOCIScalar> {
+    /// Evaluate one packet of the group with `N` lanes of the packed type `V`.
+    /// # Arguments:
+    /// - `batch`: Batch and the data its evaluators read.
+    /// - `lanes`: Lanes of the packet, all in the group.
+    /// # Returns
+    /// - `[B::Out; N]`: Result of every lane.
+    /// # Safety
+    /// - The caller must establish CPU support for `V`, and every lane must match the fixed ranks.
+    unsafe fn evaluate<V: Simd<N, Scalar = T>, const N: usize>(
+        batch: &B,
+        lanes: &[B::Lane; N],
+    ) -> [B::Out; N];
 }
 
 /// Packed kernel of one group behind a target-feature boundary.
@@ -159,6 +182,40 @@ fn xw_lane_packets<B: LaneBatch, const N: usize>(
             }
         }
     }
+}
+
+/// Evaluate one four-lane packet of a group with AVX2/FMA.
+/// # Arguments:
+/// - `batch`: Batch and the data its evaluators read.
+/// - `lanes`: Lanes of the packet, all in the group of `P`.
+/// # Returns
+/// - `[B::Out; 4]`: Result of every lane.
+/// # Safety
+/// - The current CPU must support AVX2 and FMA, and every lane must match the ranks of `P`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+pub(crate) unsafe fn packet_x4<B: LaneBatch, T: NOCIScalar, P: LanePacket<B, T>>(
+    batch: &B,
+    lanes: &[B::Lane; 4],
+) -> [B::Out; 4] {
+    unsafe { P::evaluate::<T::Packed4, 4>(batch, lanes) }
+}
+
+/// Evaluate one eight-lane packet of a group with AVX-512F.
+/// # Arguments:
+/// - `batch`: Batch and the data its evaluators read.
+/// - `lanes`: Lanes of the packet, all in the group of `P`.
+/// # Returns
+/// - `[B::Out; 8]`: Result of every lane.
+/// # Safety
+/// - The current CPU must support AVX-512F, and every lane must match the ranks of `P`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub(crate) unsafe fn packet_x8<B: LaneBatch, T: NOCIScalar, P: LanePacket<B, T>>(
+    batch: &B,
+    lanes: &[B::Lane; 8],
+) -> [B::Out; 8] {
+    unsafe { P::evaluate::<T::Packed8, 8>(batch, lanes) }
 }
 
 /// Arrange lanes into contiguous groups by key, keeping request order within a group.

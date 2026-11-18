@@ -638,6 +638,43 @@ fn pt2_h6_sto_3g_1_5_ang_complex_energies_agree() {
     );
 }
 
+/// Test that the C2H4 STO-3G 88 degree transient factor tables fixture reproduces the expected
+/// SCF state energies, reference NOCI energy and total NOCI-PT2 energy.
+/// # Panics
+/// - If the number of SCF states differs from the stored reference.
+/// - If SCF, reference NOCI or total NOCI-PT2 energy differs from the known good value
+///   outside tolerance.
+/// - If the NOCI-PT2 GMRES solve does not converge.
+#[test]
+#[serial]
+fn pt2_c2h4_sto_3g_88_deg_energies_wicks_factor_tables_none() {
+    let (_input, _ao, expected): (_, _, ExpectedPT2) =
+        load_test("PT2_C2H4_STO-3G_88_WICKS_FULL_M_NONE_FACTOR_TABLES_NONE");
+    let (got_scf, got_ref, got_pt2) =
+        run_pt2_fixture_wicks("PT2_C2H4_STO-3G_88_WICKS_FULL_M_NONE_FACTOR_TABLES_NONE");
+
+    let mut want_scf = expected.scf_energies;
+    want_scf.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    assert_eq!(got_scf.len(), want_scf.len());
+    for (i, (&x, &y)) in got_scf.iter().zip(want_scf.iter()).enumerate() {
+        assert_close(x, y, 1e-8, &format!("C2H4 SCF state {i}"));
+    }
+
+    assert_close(
+        got_ref,
+        expected.reference_noci_energy,
+        1e-8,
+        "C2H4 reference NOCI energy",
+    );
+    assert_close(
+        got_pt2,
+        expected.noci_pt2_energy,
+        1e-8,
+        "C2H4 NOCI-PT2 energy",
+    );
+}
+
 /// Test that the H2 3-21G 1.5 Angstrom RAM-backed factor tables fixture reproduces the
 /// expected SCF state energies, reference NOCI energy and total NOCI-PT2 energy.
 /// # Panics

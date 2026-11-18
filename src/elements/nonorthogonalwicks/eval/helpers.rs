@@ -62,6 +62,74 @@ pub(super) struct Minor {
     pub col: usize,
 }
 
+/// Binary distributions `(m_1,\ldots,m_L)` with `\sum_{i = 1}^{L}m_i = m`, `m_i \in \{0,1\}`, as
+/// `L`-bit masks with exactly m set bits in increasing order. Every distribution sum iterates it in a
+/// plain loop, so the work of each distribution in a fixed-rank kernel stays inside the caller's
+/// target features.
+pub(super) struct MCombinations {
+    /// Next mask to yield.
+    next: u64,
+    /// `2^L`, the first mask outside the distribution space.
+    limit: u64,
+    /// Whether every mask has been yielded.
+    done: bool,
+}
+
+impl MCombinations {
+    /// Start the distributions of `m` zero-overlap orbital pairs over `L` fundamental contractions.
+    /// # Arguments:
+    /// - `l`: Number L of fundamental contractions.
+    /// - `m`: Number of zero-overlap orbital pairs that must be assigned.
+    /// # Returns
+    /// - `Self`: Iterator over the `\binom{L}{m}` masks, empty when `m > L`.
+    #[inline(always)]
+    pub(super) fn new(
+        l: usize,
+        m: usize,
+    ) -> Self {
+        // The first mask sets the lowest m bits; the `m = 0` distribution is the empty mask.
+        Self {
+            next: if m == 0 { 0 } else { (1u64 << m) - 1 },
+            limit: 1u64 << l,
+            done: m > l,
+        }
+    }
+}
+
+impl Iterator for MCombinations {
+    type Item = u64;
+
+    /// Yield the next distribution mask.
+    /// # Arguments:
+    /// - `self`: Distribution iterator.
+    /// # Returns
+    /// - `Option<u64>`: Next mask, or `None` after the last one.
+    #[inline(always)]
+    fn next(&mut self) -> Option<u64> {
+        if self.done {
+            return None;
+        }
+
+        // The unique `m = 0` distribution has every `m_i = 0`.
+        let x = self.next;
+        if x == 0 {
+            self.done = true;
+            return Some(0);
+        }
+
+        // Gosper's successor keeps `\operatorname{popcount}(x)=m` while increasing the mask.
+        let c = x & x.wrapping_neg();
+        let r = x + c;
+        let successor = (((r ^ x) >> 2) / c) | r;
+        if successor < self.limit {
+            self.next = successor;
+        } else {
+            self.done = true;
+        }
+        Some(x)
+    }
+}
+
 /// Extend one fundamental-contraction matrix to include the external RDM basis:
 /// `\mathbf D_{\mathrm{ext}}^{(m)}` has upper-left block `\mathbf D^{(m)}`, upper-right block
 /// `\mathbf C_{\mathrm{row}}^\dagger\mathbf D_{\mathrm{RDM}}^{(m)}`, lower-left block
@@ -431,7 +499,7 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
 
     // Enumerate the assignments satisfying `\sum_{i = 1}^{L+p}m_i = m`, then remove the
     // p operator-specific assignments to obtain the L determinant-column assignments.
-    for_each_m_combination(l + pbits, w.m, |bits| {
+    for bits in MCombinations::new(l + pbits, w.m) {
         let cbits = bits >> pbits;
         match prev_cbits {
             None => {
@@ -479,7 +547,44 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
         // The callback sees both the complete operator assignment and its mixed determinant.
         prev_cbits = Some(cbits);
         f(bits, scratch);
-    });
+    }
+}
+
+/// Update a packed mixed contraction determinant to the column assignment of one distribution of
+/// `\sum_{\substack{m_1,\ldots,m_{L+p}\\m_1 + \cdots + m_{L+p} = m}}`
+/// `\det\mathbf D_{\mathrm{ov}}(m_{p+1},\ldots,m_{p+L})`:
+/// `D_{\eta z}(\{m_z\}) = D^{(m_z)}_{\eta z}`, with column z taken from the packed
+/// `\mathbf D_{\mathrm{ov}}(0,\ldots,0)` or `\mathbf D_{\mathrm{ov}}(1,\ldots,1)`. Only the columns
+/// whose assignment changed since the previous distribution are copied, and every lane shares the
+/// distribution, so one column copy updates all lanes.
+/// # Arguments:
+/// - `mixed`: Packed mixed determinant, holding the assignment `current` on entry.
+/// - `current`: Column assignment of `mixed`, updated to `columns`.
+/// - `columns`: Column assignment of the distribution, its leading operator bits removed.
+/// - `endpoints`: Packed all-`m_i = 0` and all-`m_i = 1` endpoint determinants.
+/// # Returns
+/// - `()`: Writes the mixed determinant of the distribution into `mixed`.
+#[inline(always)]
+pub(super) fn mix_dets_same_const<V: Copy, const L: usize, const D: usize>(
+    mixed: &mut [V; D],
+    current: &mut u64,
+    columns: u64,
+    endpoints: (&[V; D], &[V; D]),
+) {
+    let (zero, one) = endpoints;
+    let mut changed = *current ^ columns;
+
+    // Copy each changed column from the endpoint selected by its new assignment.
+    while changed != 0 {
+        let col = changed.trailing_zeros() as usize;
+        let source = if bit(columns, col) == 0 { zero } else { one };
+        for row in 0..L {
+            mixed[row * L + col] = source[row * L + col];
+        }
+        changed &= changed - 1;
+    }
+
+    *current = columns;
 }
 
 /// Independently enumerate the alpha- and beta-spin distributions required by the different-spin
@@ -514,7 +619,7 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
     time_call!(crate::timers::nonorthogonalwicks::add_get_det_adjt_diff, {
         // Enumerate `m_{\alpha 0} + \sum_z m_{\alpha z} = m_\alpha`. Bit zero is
         // `m_{\alpha 0}`; the remaining bits select alpha-spin determinant columns.
-        for_each_m_combination(la + 1, w.aa.m, |bits_a| {
+        for bits_a in MCombinations::new(la + 1, w.aa.m) {
             let inda = bits_a >> 1;
             mix_columns_dynamic(
                 scratch.deta_mix.as_mut_slice(),
@@ -533,7 +638,7 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
             ) {
                 // For each retained alpha-spin distribution, independently enumerate
                 // `m_{\beta 0} + \sum_y m_{\beta y} = m_\beta`.
-                for_each_m_combination(lb + 1, w.bb.m, |bits_b| {
+                for bits_b in MCombinations::new(lb + 1, w.bb.m) {
                     let indb = bits_b >> 1;
                     mix_columns_dynamic(
                         scratch.detb_mix.as_mut_slice(),
@@ -553,9 +658,9 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
                     ) {
                         f(bits_a, bits_b, scratch, det_a, det_b);
                     }
-                });
+                }
             }
-        });
+        }
     })
 }
 
@@ -592,53 +697,6 @@ pub(super) fn minor_adjt<T: NOCIScalar>(
         adjugate_transpose_generic(adjtb.as_mut_slice(), minorb.as_slice(), lm1, tol)
     {
         f(lm1, minorb.as_slice(), adjtb.as_slice(), det_minor);
-    }
-}
-
-/// `Enumerate every binary distribution (m_1,\ldots,m_L) satisfying`
-/// `\sum_{i = 1}^{L}m_i = m`, with `m_i \in \{0,1\}`. Each distribution is represented by an
-/// `L`-bit mask
-/// containing exactly m set bits.
-/// # Arguments:
-/// - `l`: Number L of fundamental contractions.
-/// - `m`: Number of zero-overlap orbital pairs that must be assigned.
-/// - `f`: Called once for each valid distribution.
-/// # Returns
-/// - `()`: `Calls f exactly \binom{L}{m} times when 0\leq m\leq L.`
-#[inline(always)]
-pub(super) fn for_each_m_combination(
-    l: usize,
-    m: usize,
-    mut f: impl FnMut(u64),
-) {
-    // No allowed distribution exists when more zero-overlap orbital pairs are required than
-    // there are fundamental contractions.
-    if m > l {
-        return;
-    }
-
-    // The unique `m = 0` distribution has every `m_i = 0`.
-    if m == 0 {
-        f(0);
-        return;
-    }
-
-    // The unique `m = L` distribution has every `m_i = 1`.
-    if m == l {
-        f((1u64 << l) - 1);
-        return;
-    }
-
-    // Enumerate the `\binom{L}{m}` fixed-population bit masks in increasing integer order.
-    let limit = 1u64 << l;
-    let mut x = (1u64 << m) - 1;
-    while x < limit {
-        f(x);
-
-        // Gosper's successor keeps `\operatorname{popcount}(x)=m` while increasing the mask.
-        let c = x & x.wrapping_neg();
-        let r = x + c;
-        x = (((r ^ x) >> 2) / c) | r;
     }
 }
 

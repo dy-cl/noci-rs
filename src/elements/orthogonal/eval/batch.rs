@@ -9,9 +9,9 @@
 // Crate-root imports.
 use crate::NOCIScalar;
 use crate::determinant::DeterminantData;
-#[cfg(target_arch = "x86_64")]
-use crate::elements::LaneKernel;
 use crate::elements::{LaneBatch, group_lanes, xw_lanes};
+#[cfg(target_arch = "x86_64")]
+use crate::elements::{LaneKernel, LanePacket, packet_x4, packet_x8};
 #[cfg(target_arch = "x86_64")]
 use crate::maths::Simd;
 
@@ -73,6 +73,10 @@ struct OrthogonalLanes<'a, E, T> {
     out: &'a mut [T],
 }
 
+/// Fixed-rank sector `(R_\alpha, R_\beta)` of an orthogonal operator batch, evaluated in packets.
+#[cfg(target_arch = "x86_64")]
+struct OrthogonalRanks<const RA: usize, const RB: usize>;
+
 impl<E: OrthogonalElement<T>, T: NOCIScalar> LaneBatch for OrthogonalLanes<'_, E, T> {
     type Lane = DeterminantData;
     type Out = T;
@@ -128,7 +132,7 @@ impl<E: OrthogonalElement<T>, T: NOCIScalar> LaneBatch for OrthogonalLanes<'_, E
         }
         dispatch_orthogonal_ranks!(
             ranks,
-            |RA, RB| Some(packet_x4::<E, T, RA, RB> as LaneKernel<Self, 4>),
+            |RA, RB| Some(packet_x4::<Self, T, OrthogonalRanks<RA, RB>> as LaneKernel<Self, 4>),
             None,
         )
     }
@@ -153,9 +157,31 @@ impl<E: OrthogonalElement<T>, T: NOCIScalar> LaneBatch for OrthogonalLanes<'_, E
         }
         dispatch_orthogonal_ranks!(
             ranks,
-            |RA, RB| Some(packet_x8::<E, T, RA, RB> as LaneKernel<Self, 8>),
+            |RA, RB| Some(packet_x8::<Self, T, OrthogonalRanks<RA, RB>> as LaneKernel<Self, 8>),
             None,
         )
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl<E: OrthogonalElement<T>, T: NOCIScalar, const RA: usize, const RB: usize>
+    LanePacket<OrthogonalLanes<'_, E, T>, T> for OrthogonalRanks<RA, RB>
+{
+    /// Evaluate one packet of matrix elements of the sector `(RA, RB)` with the operator's packed
+    /// Slater-Condon formula.
+    /// # Arguments:
+    /// - `batch`: Batch holding the operator and the parent data it reads.
+    /// - `states`: Data of every lane: fixed-rank excitation labels and phases.
+    /// # Returns
+    /// - `[T; N]`: Matrix element of every lane.
+    /// # Safety
+    /// - The caller must establish CPU support for `V`, and cached labels must match `(RA, RB)`.
+    #[inline(always)]
+    unsafe fn evaluate<V: Simd<N, Scalar = T>, const N: usize>(
+        batch: &OrthogonalLanes<'_, E, T>,
+        states: &[DeterminantData; N],
+    ) -> [T; N] {
+        unsafe { batch.element.packed::<V, N, RA, RB>(states) }
     }
 }
 
@@ -203,38 +229,4 @@ pub(crate) fn xw_orthogonal_batched<E: OrthogonalElement<T>, T: NOCIScalar>(
         out,
     };
     xw_lanes(&mut batch, &lanes, &groups);
-}
-
-/// Evaluate one four-lane packet of an operator with AVX2/FMA.
-/// # Arguments:
-/// - `batch`: Batch holding the operator and the parent data it reads.
-/// - `states`: Data of every lane: fixed-rank excitation labels and phases.
-/// # Returns
-/// - `[T; 4]`: Matrix element of every lane.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA, and cached labels must match `(RA, RB)`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn packet_x4<E: OrthogonalElement<T>, T: NOCIScalar, const RA: usize, const RB: usize>(
-    batch: &OrthogonalLanes<'_, E, T>,
-    states: &[DeterminantData; 4],
-) -> [T; 4] {
-    unsafe { batch.element.packed::<T::Packed4, 4, RA, RB>(states) }
-}
-
-/// Evaluate one eight-lane packet of an operator with AVX-512F.
-/// # Arguments:
-/// - `batch`: Batch holding the operator and the parent data it reads.
-/// - `states`: Data of every lane: fixed-rank excitation labels and phases.
-/// # Returns
-/// - `[T; 8]`: Matrix element of every lane.
-/// # Safety
-/// - The current CPU must support AVX-512F, and cached labels must match `(RA, RB)`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn packet_x8<E: OrthogonalElement<T>, T: NOCIScalar, const RA: usize, const RB: usize>(
-    batch: &OrthogonalLanes<'_, E, T>,
-    states: &[DeterminantData; 8],
-) -> [T; 8] {
-    unsafe { batch.element.packed::<T::Packed8, 8, RA, RB>(states) }
 }

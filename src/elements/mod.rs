@@ -37,7 +37,7 @@ pub use nonorthogonalwicks::build_wicks_shared;
 // Crate-visible type re-exports.
 pub(crate) use batch::LaneBatch;
 #[cfg(target_arch = "x86_64")]
-pub(crate) use batch::LaneKernel;
+pub(crate) use batch::{LaneKernel, LanePacket};
 pub(crate) use operator::{Fock, HamiltonianOverlap, Overlap, PairOperator};
 pub(crate) use orthogonal::OrthogonalHamiltonianScratch;
 #[cfg(feature = "gnocc")]
@@ -46,6 +46,8 @@ pub(crate) use types::{DetPair, FockData};
 
 // Crate-visible function re-exports.
 pub(crate) use batch::{group_lanes, xw_lanes};
+#[cfg(target_arch = "x86_64")]
+pub(crate) use batch::{packet_x4, packet_x8};
 pub(crate) use cache::build_fock_mo_cache;
 pub(crate) use naive::{build_s_pair, build_s_pair_floored, occ_coeffs, pair_density};
 pub(crate) use nonorthogonalwicks::update_wicks_fock;

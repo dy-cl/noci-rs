@@ -12,7 +12,7 @@ use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 use super::batch::{Packet, SpinFactor};
 use super::dispatch::{dispatch_pair_ranks, dispatch_spin_ranks};
-use super::helpers::mix_dets_same;
+use super::helpers::{MCombinations, mix_dets_same, mix_dets_same_const};
 use super::prepare::{construct_determinant_indices, prepare_same};
 
 /// The same-spin overlap factor family,
@@ -90,6 +90,65 @@ impl SpinFactor<1> for OverlapFactor {
         // Restore the reduced overlap in each lane; the row writer supplies `p_x p_w`.
         let mut overlap = [T::from_real(0.0); LANES];
         V::store(V::mul(determinant, pref), &mut overlap);
+        [overlap]
+    }
+
+    /// Evaluate one packet of fixed-rank same-spin overlaps when `m > 0`. Each lane sums
+    /// `S = {}^{xw}\tilde S\sum_{m_1+\cdots+m_L=m}\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)`,
+    /// where column z of every term comes from `X^{(m_z)}` on and below the diagonal and from
+    /// `Y^{(m_z)}` above it.
+    /// # Arguments:
+    /// - `w`: Same-spin reference-pair Wick intermediates with `m > 0`.
+    /// - `packet`: Contraction labels of every lane.
+    /// # Returns
+    /// - `[[T; LANES]; 1]`: Overlap of every lane, excluding the excitation phases.
+    /// # Safety
+    /// - Cached labels must match `RX` and `RW`, and the caller must establish CPU support for `V`.
+    #[inline(always)]
+    unsafe fn packed_m<
+        T: NOCIScalar,
+        V: Simd<LANES, Scalar = T>,
+        const LANES: usize,
+        const RX: usize,
+        const RW: usize,
+        const L: usize,
+        const D: usize,
+        const XFIX: bool,
+    >(
+        w: &SameSpinView<'_, T>,
+        packet: &Packet<'_, LANES>,
+    ) -> [[T; LANES]; 1] {
+        // No distribution satisfies `\sum_z m_z = m` when `m > L`.
+        let mut overlap = [T::from_real(0.0); LANES];
+        if w.m > L {
+            return [overlap];
+        }
+
+        // Gather both packed endpoints, `D^{(m)}_{\eta z} = X^{(m)}_{r_\eta c_z}` for
+        // `\eta \geq z` and `D^{(m)}_{\eta z} = Y^{(m)}_{r_\eta c_z}` for `\eta < z`.
+        let (x0, y0) = (w.x_slice(0), w.y_slice(0));
+        let (x1, y1) = (w.x_slice(1), w.y_slice(1));
+        let mut d0 = [V::zero(); D];
+        let mut d1 = [V::zero(); D];
+        for eta in 0..L {
+            for z in 0..L {
+                let (zero, one) = if eta >= z { (x0, x1) } else { (y0, y1) };
+                d0[eta * L + z] = unsafe { packet.load::<T, V, RX, XFIX>(zero, eta, z, false) };
+                d1[eta * L + z] = unsafe { packet.load::<T, V, RX, XFIX>(one, eta, z, false) };
+            }
+        }
+
+        // `\sum_{\sum_z m_z=m}\det\mathbf D_{\mathrm{ov}}(\{m_z\})` over the mixed determinants.
+        let mut sum = V::zero();
+        let (mut mixed, mut current) = (d0, 0u64);
+        for bits in MCombinations::new(L, w.m) {
+            mix_dets_same_const::<V, L, D>(&mut mixed, &mut current, bits, (&d0, &d1));
+            sum = V::add(sum, det_const::<V, LANES, L, D>(&mixed));
+        }
+
+        // Restore the reduced overlap in each lane; the row writer supplies `p_x p_w`.
+        let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
+        V::store(V::mul(sum, pref), &mut overlap);
         [overlap]
     }
 }
@@ -178,10 +237,47 @@ pub(crate) fn xw_overlap_prepared<T: NOCIScalar>(
         return xw_overlap_m0_direct(w, l_ex, g_ex);
     }
 
-    // Prepare the all-`m_i = 0` and, where required, all-`m_i = 1` contraction determinants
-    // before applying the standard overlap evaluation.
-    prepare_same(w, l_ex, g_ex, scratch);
-    xw_overlap(w, l_ex, g_ex, scratch)
+    xw_overlap_m_direct(w, l_ex, g_ex, scratch)
+}
+
+/// Evaluate the same-spin overlap directly when `m > 0`:
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
+/// ` = {}^{xw}\tilde S\sum_{m_1+\cdots+m_L=m}\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)`.
+/// Generated ranks evaluate the packed kernel with one lane; larger ranks prepare both endpoint
+/// determinants and use the runtime distribution sum.
+/// # Arguments:
+/// - `w`: Same-spin reference-pair Wick intermediates with `0 < m \leq L`.
+/// - `l_ex`: Excitation defining the bra determinant.
+/// - `g_ex`: Excitation defining the ket determinant.
+/// - `scratch`: Scratch storage used by the runtime path.
+/// # Returns
+/// - `T`: Same-spin overlap excluding excitation phases applied outside the Wick evaluation.
+#[inline(always)]
+fn xw_overlap_m_direct<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    scratch: &mut WickScratch<T>,
+) -> T {
+    // Fixed ranks evaluate the packed kernel with one lane, the ket as its varying determinant.
+    let rx = l_ex.holes.count_ones() as usize;
+    let rw = g_ex.holes.count_ones() as usize;
+    dispatch_spin_ranks!(
+        (rx, rw),
+        |RX, RW, L, D| {
+            let (fixed, varying) = (l_ex.cache(), [g_ex.cache()]);
+            let packet = Packet::new(w, &fixed, &varying);
+            unsafe {
+                OverlapFactor::packed_m::<T, T::Packed1, 1, RX, RW, L, D, true>(w, &packet)[0][0]
+            }
+        },
+        {
+            // Prepare the all-`m_i = 0` and all-`m_i = 1` contraction determinants before
+            // applying the runtime overlap evaluation.
+            prepare_same(w, l_ex, g_ex, scratch);
+            xw_overlap(w, l_ex, g_ex, scratch)
+        },
+    )
 }
 
 /// Evaluate the same-spin overlap directly when `m = 0`:

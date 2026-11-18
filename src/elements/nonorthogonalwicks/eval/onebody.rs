@@ -15,7 +15,8 @@ use super::super::view::SameSpinView;
 use super::batch::{Packet, SpinFactor};
 use super::dispatch::{dispatch_pair_ranks, dispatch_spin_ranks};
 use super::helpers::{
-    adjugate_transpose_generic, bit, column_replacement_correction, mix_dets_same,
+    MCombinations, adjugate_transpose_generic, bit, column_replacement_correction, mix_dets_same,
+    mix_dets_same_const,
 };
 use super::prepare::construct_determinant_indices;
 
@@ -125,6 +126,93 @@ impl SpinFactor<2> for OneBodyFactor {
             }
         )
     }
+
+    /// Evaluate one packet of fixed-rank same-spin overlap and generalised-Fock factors when
+    /// `m > 0`. Lane-wise, `S = {}^{xw}\tilde S\sum_{\sum_z m_z=m}\det\mathbf D_{\mathrm{ov}}` and
+    /// `F = {}^{xw}\tilde S\sum_{m_1+\sum_z m_z=m}[F_0^{(m_1)}\det\mathbf D_{\mathrm{ov}}`
+    /// `-\sum_{\eta z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}\mathcal F_{\eta z}^{(m_1,m_z)}]`,
+    /// where column z of `\mathbf D_{\mathrm{ov}}(\{m_z\})` comes from `X^{(m_z)}` and `Y^{(m_z)}`.
+    /// # Arguments:
+    /// - `w`: Same-spin reference-pair Wick intermediates with `m > 0`.
+    /// - `packet`: Contraction labels of every lane.
+    /// # Returns
+    /// - `[[T; LANES]; 2]`: Overlap and generalised-Fock factors of every lane, excluding the
+    ///   excitation phases.
+    /// # Safety
+    /// - Cached labels must match `RX` and `RW`, and the caller must establish CPU support for `V`.
+    #[inline(always)]
+    unsafe fn packed_m<
+        T: NOCIScalar,
+        V: Simd<LANES, Scalar = T>,
+        const LANES: usize,
+        const RX: usize,
+        const RW: usize,
+        const L: usize,
+        const D: usize,
+        const XFIX: bool,
+    >(
+        w: &SameSpinView<'_, T>,
+        packet: &Packet<'_, LANES>,
+    ) -> [[T; LANES]; 2] {
+        // No distribution satisfies `m_1+\sum_z m_z = m` when `m > L + 1`.
+        let mut values = [[T::from_real(0.0); LANES]; 2];
+        if w.m > L + 1 {
+            return values;
+        }
+
+        // Gather both packed endpoints, `D^{(m)}_{\eta z} = X^{(m)}_{r_\eta c_z}` for
+        // `\eta \geq z` and `D^{(m)}_{\eta z} = Y^{(m)}_{r_\eta c_z}` for `\eta < z`.
+        let (x0, y0) = (w.x_slice(0), w.y_slice(0));
+        let (x1, y1) = (w.x_slice(1), w.y_slice(1));
+        let mut d0 = [V::zero(); D];
+        let mut d1 = [V::zero(); D];
+        for eta in 0..L {
+            for z in 0..L {
+                let (zero, one) = if eta >= z { (x0, x1) } else { (y0, y1) };
+                d0[eta * L + z] = unsafe { packet.load::<T, V, RX, XFIX>(zero, eta, z, false) };
+                d1[eta * L + z] = unsafe { packet.load::<T, V, RX, XFIX>(one, eta, z, false) };
+            }
+        }
+
+        // Bit 0 is the operator assignment `m_1`; bits `1..=L` select the determinant columns.
+        let mut cof = [V::zero(); D];
+        let mut overlap = V::zero();
+        let mut fock = V::zero();
+        let (mut mixed, mut current) = (d0, 0u64);
+        for bits in MCombinations::new(L + 1, w.m) {
+            mix_dets_same_const::<V, L, D>(&mut mixed, &mut current, bits >> 1, (&d0, &d1));
+            let m1 = bit(bits, 0);
+            let determinant = adjugate_transpose_const::<V, LANES, L, D>(&mut cof, &mixed);
+
+            // Terms with `m_1 = 0` also satisfy the overlap constraint `\sum_z m_z = m`.
+            if m1 == 0 {
+                overlap = V::add(overlap, determinant);
+            }
+
+            // `R_F = \sum_{\eta z}C_{\eta z}\mathcal F_{\eta z}^{(m_1,m_z)}`; each column reads the
+            // transposed slab of its own assignment.
+            let mut replacement = V::zero();
+            for z in 0..L {
+                let fsl = w.ff_t_slice(m1, bit(bits, z + 1));
+                for eta in 0..L {
+                    let entry = unsafe { packet.load::<T, V, RX, XFIX>(fsl, eta, z, true) };
+                    replacement = V::madd(replacement, cof[eta * L + z], entry);
+                }
+            }
+
+            // `F_0^{(m_1)}\det\mathbf D - R_F` for this distribution.
+            let term = V::sub(V::mul(determinant, V::splat(w.f0f[m1])), replacement);
+            fock = V::add(fock, term);
+        }
+
+        // Restore `{}^{xw}\tilde S` to both matrix elements; the row writer later supplies the
+        // excitation phases.
+        let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
+        V::store(V::mul(pref, overlap), &mut values[0]);
+        V::store(V::mul(pref, fock), &mut values[1]);
+
+        values
+    }
 }
 
 /// Evaluate the prepared overlap and generalised-Fock matrix element.
@@ -164,7 +252,7 @@ pub(crate) fn xw_onebody_prepared<T: NOCIScalar>(
         if w.m == 0 {
             xw_onebody_m0_prepared(w, x_ex, w_ex, scratch, tol)
         } else {
-            xw_onebody_gen_prepared(w, x_ex, w_ex, scratch, tol)
+            xw_onebody_m_prepared(w, x_ex, w_ex, scratch, tol)
         }
     })
 }
@@ -310,6 +398,42 @@ fn xw_onebody_m0_gen_prepared<T: NOCIScalar>(
             (overlap, zero)
         }
     })
+}
+
+/// Evaluate the overlap and generalised-Fock matrix element together when `m > 0`.
+/// Generated ranks evaluate the packed constrained distribution sum with one lane; `L = 0` and
+/// ranks outside the generated table use the runtime distribution sum.
+/// # Arguments:
+/// - `w`: Same-spin reference-pair Wick intermediates with `m > 0`.
+/// - `x_ex`: Excitation defining the bra determinant.
+/// - `w_ex`: Excitation defining the ket determinant.
+/// - `scratch`: Scratch storage for the runtime distribution sum.
+/// - `tol`: Numerical tolerance used by the runtime determinant and adjugate evaluation.
+/// # Returns
+/// - `(T, T)`: Same-spin `(overlap, generalised-Fock matrix element)` for `m > 0`.
+#[inline(always)]
+fn xw_onebody_m_prepared<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    x_ex: &ExcitationSpin,
+    w_ex: &ExcitationSpin,
+    scratch: &mut WickScratch<T>,
+    tol: f64,
+) -> (T, T) {
+    // Fixed ranks evaluate the packed kernel with one lane, the ket as its varying determinant.
+    let rx = x_ex.holes.count_ones() as usize;
+    let rw = w_ex.holes.count_ones() as usize;
+    dispatch_spin_ranks!(
+        (rx, rw),
+        |RX, RW, L, D| {
+            let (fixed, varying) = (x_ex.cache(), [w_ex.cache()]);
+            let packet = Packet::new(w, &fixed, &varying);
+            let [[s], [f]] = unsafe {
+                OneBodyFactor::packed_m::<T, T::Packed1, 1, RX, RW, L, D, true>(w, &packet)
+            };
+            (s, f)
+        },
+        xw_onebody_gen_prepared(w, x_ex, w_ex, scratch, tol),
+    )
 }
 
 /// Prepare and evaluate the overlap and generalised-Fock matrix element when `m > 0` by summing

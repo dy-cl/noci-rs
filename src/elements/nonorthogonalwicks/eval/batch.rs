@@ -3,9 +3,9 @@
 //!
 //! A row pairs one target spin determinant with many source spin determinants. Every factor family,
 //! the overlap and the one-body factors, supplies only its scalar evaluator and its packed
-//! fixed-rank `m = 0` evaluator; this module sums near-zero branches, evaluates the groups of equal
-//! rank and holes of the sources through the shared lane batching and restores the excitation
-//! phases.
+//! fixed-rank evaluators for `m = 0` and `m > 0`; this module sums near-zero branches, evaluates
+//! the groups of equal rank and holes of the sources through the shared lane batching and restores
+//! the excitation phases.
 
 // Crate-root imports.
 use crate::ExcitationSpinCache;
@@ -13,9 +13,9 @@ use crate::NOCIScalar;
 #[cfg(target_arch = "x86_64")]
 use crate::config::MAXEXCIT;
 use crate::determinant::SpinStringData;
-#[cfg(target_arch = "x86_64")]
-use crate::elements::LaneKernel;
 use crate::elements::{LaneBatch, xw_lanes};
+#[cfg(target_arch = "x86_64")]
+use crate::elements::{LaneKernel, LanePacket, packet_x4, packet_x8};
 use crate::maths::Simd;
 
 // Parent/sibling imports.
@@ -37,9 +37,10 @@ use super::dispatch::{dispatch_pair_ranks, dispatch_spin_ranks};
 /// `[{}^xF_0^{(m_1)}\det\mathbf D_{\text{ov}}(m_2,\ldots,m_{L+1})`
 /// `-\sum_z\det\mathbf D_{\text{ov}}^{z\rightarrow\boldsymbol{\mathcal F}_z}]`, with `m_i\in\{0,1\}`.
 /// The lower triangle of `\mathbf D_{\text{ov}}` uses `X^{(m_i)}`, and its upper triangle uses
-/// `Y^{(m_i)}`. `packed` evaluates the single all-zero assignment when `m = 0`; `values` also
-/// handles the constrained distribution sum. Both include the reduced reference overlap, with
-/// its orbital-pairing phase; the row writer supplies the excitation phases `p_x p_w`.
+/// `Y^{(m_i)}`. `packed` evaluates the single all-zero assignment when `m = 0`, `packed_m` the
+/// constrained distribution sum when `m > 0`, and `values` either sum for any rank. All three
+/// include the reduced reference overlap, with its orbital-pairing phase; the row writer supplies
+/// the excitation phases `p_x p_w`.
 pub(crate) trait SpinFactor<const K: usize> {
     /// Evaluate the factors of one determinant pair through the scalar path, excluding the
     /// excitation phases.
@@ -67,6 +68,30 @@ pub(crate) trait SpinFactor<const K: usize> {
     /// # Safety
     /// - Cached labels must match `RX` and `RW`, and the caller must establish CPU support for `V`.
     unsafe fn packed<
+        T: NOCIScalar,
+        V: Simd<LANES, Scalar = T>,
+        const LANES: usize,
+        const RX: usize,
+        const RW: usize,
+        const L: usize,
+        const D: usize,
+        const XFIX: bool,
+    >(
+        w: &SameSpinView<'_, T>,
+        packet: &Packet<'_, LANES>,
+    ) -> [[T; LANES]; K];
+
+    /// Evaluate the `m > 0` factors of one packet of fixed excitation ranks, excluding the
+    /// excitation phases. Every lane sums the constrained distributions of the `m` zero-overlap
+    /// orbital pairs over the operator and determinant-column assignments.
+    /// # Arguments:
+    /// - `w`: Same-spin reference-pair Wick intermediates with `m > 0`.
+    /// - `packet`: Contraction labels of every lane.
+    /// # Returns
+    /// - `[[T; LANES]; K]`: Factors of every lane.
+    /// # Safety
+    /// - Cached labels must match `RX` and `RW`, and the caller must establish CPU support for `V`.
+    unsafe fn packed_m<
         T: NOCIScalar,
         V: Simd<LANES, Scalar = T>,
         const LANES: usize,
@@ -136,6 +161,17 @@ struct SpinFactorLanes<'a, 'r, F, T: NOCIScalar, const K: usize> {
     /// Reusable same-spin Wick workspace for scalar evaluation.
     scratch: &'a mut WickScratch<T>,
 }
+
+/// Fixed ranks `(R_x, R_w)` of a group of factor sources, with `L = R_x + R_w`, `D = L^2`, and
+/// whether the bra is the determinant shared by every lane.
+#[cfg(target_arch = "x86_64")]
+struct FactorRanks<
+    const RX: usize,
+    const RW: usize,
+    const L: usize,
+    const D: usize,
+    const XFIX: bool,
+>;
 
 impl SpinStringSources {
     /// Sort source spin determinants into packed evaluation order.
@@ -337,11 +373,12 @@ impl<F: SpinFactor<K>, T: NOCIScalar, const K: usize> LaneBatch
     ) -> Option<LaneKernel<Self, 4>> {
         let ranks = self.packed_ranks(source)?;
 
+        // The bra is the shared determinant when the target belongs to the left reference.
         if self.row.target_left {
             dispatch_spin_ranks!(
                 ranks,
                 |RX, RW, L, D| Some(
-                    packet_x4::<F, T, K, RX, RW, L, D, true> as LaneKernel<Self, 4>
+                    packet_x4::<Self, T, FactorRanks<RX, RW, L, D, true>> as LaneKernel<Self, 4>
                 ),
                 None,
             )
@@ -349,7 +386,7 @@ impl<F: SpinFactor<K>, T: NOCIScalar, const K: usize> LaneBatch
             dispatch_spin_ranks!(
                 ranks,
                 |RX, RW, L, D| Some(
-                    packet_x4::<F, T, K, RX, RW, L, D, false> as LaneKernel<Self, 4>
+                    packet_x4::<Self, T, FactorRanks<RX, RW, L, D, false>> as LaneKernel<Self, 4>
                 ),
                 None,
             )
@@ -369,11 +406,12 @@ impl<F: SpinFactor<K>, T: NOCIScalar, const K: usize> LaneBatch
     ) -> Option<LaneKernel<Self, 8>> {
         let ranks = self.packed_ranks(source)?;
 
+        // The bra is the shared determinant when the target belongs to the left reference.
         if self.row.target_left {
             dispatch_spin_ranks!(
                 ranks,
                 |RX, RW, L, D| Some(
-                    packet_x8::<F, T, K, RX, RW, L, D, true> as LaneKernel<Self, 8>
+                    packet_x8::<Self, T, FactorRanks<RX, RW, L, D, true>> as LaneKernel<Self, 8>
                 ),
                 None,
             )
@@ -381,7 +419,7 @@ impl<F: SpinFactor<K>, T: NOCIScalar, const K: usize> LaneBatch
             dispatch_spin_ranks!(
                 ranks,
                 |RX, RW, L, D| Some(
-                    packet_x8::<F, T, K, RX, RW, L, D, false> as LaneKernel<Self, 8>
+                    packet_x8::<Self, T, FactorRanks<RX, RW, L, D, false>> as LaneKernel<Self, 8>
                 ),
                 None,
             )
@@ -412,8 +450,8 @@ impl<F: SpinFactor<K>, T: NOCIScalar, const K: usize> LaneBatch
 }
 
 impl<F, T: NOCIScalar, const K: usize> SpinFactorLanes<'_, '_, F, T, K> {
-    /// Return the bra and ket excitation ranks of a group when it has a packed kernel: `m = 0`,
-    /// both ranks within the generated table and not both determinants unexcited.
+    /// Return the bra and ket excitation ranks of a group when it has a packed kernel: both ranks
+    /// within the generated table and not both determinants unexcited.
     /// # Arguments:
     /// - `self`: Row of same-spin factors.
     /// - `source`: First source of the group.
@@ -426,7 +464,7 @@ impl<F, T: NOCIScalar, const K: usize> SpinFactorLanes<'_, '_, F, T, K> {
     ) -> Option<(usize, usize)> {
         let target = usize::from(self.row.target.cache.rank);
         let source = usize::from(source.rank);
-        if self.w.m != 0 || target > MAXEXCIT || source > MAXEXCIT || target + source == 0 {
+        if target > MAXEXCIT || source > MAXEXCIT || target + source == 0 {
             return None;
         }
 
@@ -438,13 +476,65 @@ impl<F, T: NOCIScalar, const K: usize> SpinFactorLanes<'_, '_, F, T, K> {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+impl<
+    F: SpinFactor<K>,
+    T: NOCIScalar,
+    const K: usize,
+    const RX: usize,
+    const RW: usize,
+    const L: usize,
+    const D: usize,
+    const XFIX: bool,
+> LanePacket<SpinFactorLanes<'_, '_, F, T, K>, T> for FactorRanks<RX, RW, L, D, XFIX>
+{
+    /// Evaluate one packet of same-spin factors. Each lane forms
+    /// `\det\mathbf D_{\text{ov}}(0,\ldots,0)` for S when `m = 0`, and otherwise sums
+    /// `\det\mathbf D_{\text{ov}}(m_1,\ldots,m_L)` over the constrained distributions; the one-body
+    /// family also forms `{}^xF_0^{(m_1)}\det\mathbf D_{\text{ov}}`
+    /// `-\sum_z\det\mathbf D_{\text{ov}}^{z\rightarrow\boldsymbol{\mathcal F}_z}` for F. `F` includes
+    /// `{}^{xw}\tilde S`; the row writer applies `p_x p_w` afterwards.
+    /// # Arguments:
+    /// - `batch`: Row holding the target and the Wick intermediates.
+    /// - `varying`: Excitation cache of every lane.
+    /// # Returns
+    /// - `[[T; K]; N]`: Factors of every lane, excluding the excitation phases.
+    /// # Safety
+    /// - The caller must establish CPU support for `V`, and cached labels must match the fixed ranks.
+    #[inline(always)]
+    unsafe fn evaluate<V: Simd<N, Scalar = T>, const N: usize>(
+        batch: &SpinFactorLanes<'_, '_, F, T, K>,
+        varying: &[ExcitationSpinCache; N],
+    ) -> [[T; K]; N] {
+        // The kernel follows the nullity of the reference pair.
+        let packet = Packet::new(batch.w, &batch.row.target.cache, varying);
+        let values = unsafe {
+            if batch.w.m == 0 {
+                F::packed::<T, V, N, RX, RW, L, D, XFIX>(batch.w, &packet)
+            } else {
+                F::packed_m::<T, V, N, RX, RW, L, D, XFIX>(batch.w, &packet)
+            }
+        };
+
+        // Transpose `values[k][lane]` into `lanes[lane][k]` for LaneBatch::write. These are
+        // independent determinant pairs, each with its own S or (S,F) result.
+        let mut lanes = [[T::from_real(0.0); K]; N];
+        for (k, factor) in values.iter().enumerate() {
+            for (lane, &value) in factor.iter().enumerate() {
+                lanes[lane][k] = value;
+            }
+        }
+        lanes
+    }
+}
+
 /// Evaluate one row of same-spin factors for one ordered reference pair.
 /// For each source j, the overlap family writes `out[0][j] = p_x p_w S` and the one-body family
 /// also writes `out[1][j] = p_x p_w F`, using the constrained determinant expressions in
 /// `SpinFactor`. Thus the same row supplies both distinct factors of pair requests and the
 /// same-spin matrices used by factorised overlap and Fock applications.
-/// Groups with `m = 0` and generated ranks are evaluated in packets of the widest available SIMD
-/// kernel; every other source uses the scalar evaluator.
+/// Groups with generated ranks are evaluated in packets of the widest available SIMD kernel, the
+/// `m = 0` or the `m > 0` one; every other source uses the scalar evaluator.
 /// # Arguments:
 /// - `factor`: Factor family and its evaluation parameters.
 /// - `w`: Same-spin reference-pair Wick intermediates.
@@ -498,83 +588,4 @@ pub(crate) fn xw_spin_factor_row<F: SpinFactor<K>, T: NOCIScalar, const K: usize
     };
 
     xw_lanes(&mut batch, &sources.caches, &sources.groups);
-}
-
-/// Evaluate four independent same-spin Wick matrix elements with AVX2/FMA.
-/// Each lane forms `\det\mathbf D_{\text{ov}}(0,\ldots,0)` for S and, for the one-body family,
-/// `{}^xF_0^{(0)}\det\mathbf D_{\text{ov}}`
-/// `-\sum_z\det\mathbf D_{\text{ov}}^{z\rightarrow\boldsymbol{\mathcal F}_z}` for F.
-/// `F::packed` includes `{}^{xw}\tilde S`; the row writer applies `p_x p_w` afterwards.
-/// # Arguments:
-/// - `batch`: Row holding the target and the Wick intermediates with `m = 0`.
-/// - `varying`: Excitation cache of every lane.
-/// # Returns
-/// - `[[T; K]; 4]`: Factors of every lane, excluding the excitation phases.
-/// # Safety
-/// - The current CPU must support AVX2 and FMA, and cached labels must match the fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn packet_x4<
-    F: SpinFactor<K>,
-    T: NOCIScalar,
-    const K: usize,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const XFIX: bool,
->(
-    batch: &SpinFactorLanes<'_, '_, F, T, K>,
-    varying: &[ExcitationSpinCache; 4],
-) -> [[T; K]; 4] {
-    let packet = Packet::new(batch.w, &batch.row.target.cache, varying);
-    let values = unsafe { F::packed::<T, T::Packed4, 4, RX, RW, L, D, XFIX>(batch.w, &packet) };
-
-    // Transpose `values[k][lane]` into `lanes[lane][k]` for LaneBatch::write. These are
-    // independent determinant pairs, each with its own S or (S,F) result.
-    let mut lanes = [[T::from_real(0.0); K]; 4];
-    for (k, factor) in values.iter().enumerate() {
-        for (lane, &value) in factor.iter().enumerate() {
-            lanes[lane][k] = value;
-        }
-    }
-    lanes
-}
-
-/// Evaluate eight independent same-spin Wick matrix elements with AVX-512F.
-/// Each lane evaluates the same S or (S,F) determinant expressions as `packet_x4`, with the
-/// reduced reference overlap included and the excitation phases left to the row writer.
-/// # Arguments:
-/// - `batch`: Row holding the target and the Wick intermediates with `m = 0`.
-/// - `varying`: Excitation cache of every lane.
-/// # Returns
-/// - `[[T; K]; 8]`: Factors of every lane, excluding the excitation phases.
-/// # Safety
-/// - The current CPU must support AVX-512F, and cached labels must match the fixed ranks.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn packet_x8<
-    F: SpinFactor<K>,
-    T: NOCIScalar,
-    const K: usize,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
-    const XFIX: bool,
->(
-    batch: &SpinFactorLanes<'_, '_, F, T, K>,
-    varying: &[ExcitationSpinCache; 8],
-) -> [[T; K]; 8] {
-    let packet = Packet::new(batch.w, &batch.row.target.cache, varying);
-    let values = unsafe { F::packed::<T, T::Packed8, 8, RX, RW, L, D, XFIX>(batch.w, &packet) };
-
-    // Transpose `values[k][lane]` into `lanes[lane][k]` for LaneBatch::write.
-    let mut lanes = [[T::from_real(0.0); K]; 8];
-    for (k, factor) in values.iter().enumerate() {
-        for (lane, &value) in factor.iter().enumerate() {
-            lanes[lane][k] = value;
-        }
-    }
-    lanes
 }
