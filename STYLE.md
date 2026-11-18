@@ -18,7 +18,9 @@ Organise methods by family first and approach second, above three shared layers:
    evaluators. A Wick fixed-rank formula is written once over `V: Simd<N>`: a single element
    evaluates it with one lane (`T::Packed1`), so no family keeps a separate scalar copy. Every packed evaluator, orthogonal connections, same-spin factor rows, two-spin
    Wick pairs and RDMs, implements `LaneBatch` in `elements/batch.rs`, which owns the width
-   dispatch, the packets, their padding and the write of the genuine lanes.
+   dispatch, the packets, their padding and the write of the genuine lanes. Each family supplies
+   its packed kernel of a fixed-rank group as a `LanePacket`, a zero-size type carrying the
+   group's ranks, and the only target-feature boundaries are `packet_x4` and `packet_x8` there.
 3. `qmc/`: stochastic machinery independent of the population representation: seeded random
    streams, MPI ownership, exchange and annihilation of keyed updates, FRI compression, the
    population-control shift, stop requests, and excitation generators within one parent frame
