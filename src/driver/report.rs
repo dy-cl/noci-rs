@@ -613,15 +613,16 @@ pub fn print_report(
             );
         }
 
-        if let (Some(e_snoci), Some(ept2)) = (res.e_snoci, res.e_pt2.as_ref()) {
-            for &(imag_shift, ept2) in ept2 {
-                let e_noci_pt2 = e_snoci + ept2;
+        if let Some(e_pt2) = res.e_pt2.as_ref() {
+            for r in e_pt2 {
                 println!(
-                    "State(NOCI-PT2 i: {}): E: {}, [E - {}]: {}",
-                    imag_shift,
-                    e_noci_pt2,
+                    "State(NOCI-PT2: {} i: {}): E: {}, [E - {}]: {}, <S^2>: {}",
+                    r.root,
+                    r.imag_shift,
+                    r.e,
                     label,
-                    e_noci_pt2 - e0
+                    r.e - e0,
+                    r.s2
                 );
             }
         }
@@ -644,15 +645,16 @@ pub fn print_report(
         );
     }
 
-    if let (Some(e_snoci), Some(ept2)) = (res.e_snoci, res.e_pt2.as_ref()) {
-        for &(imag_shift, ept2) in ept2 {
-            let e_noci_pt2 = e_snoci + ept2;
+    if let Some(e_pt2) = res.e_pt2.as_ref() {
+        for r in e_pt2 {
             println!(
-                "State(NOCI-PT2: i: {}): E: {}, [E - {}]: {}",
-                imag_shift,
-                e_noci_pt2,
+                "State(NOCI-PT2: {} i: {}): E: {}, [E - {}]: {}, <S^2>: {}",
+                r.root,
+                r.imag_shift,
+                r.e,
                 label,
-                e_noci_pt2 - e0
+                r.e - e0,
+                r.s2
             );
         }
     }

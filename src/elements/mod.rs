@@ -53,6 +53,6 @@ pub(crate) use orthogonal::{
     calculate_f_pair_orthogonal, calculate_h_pairs_orthogonal_batched, calculate_s_pair_orthogonal,
 };
 pub(crate) use pairs::{calculate_pairs, calculate_pairs_dense, compare_pairs_wicks_naive};
-pub(crate) use rdm::noci_density;
+pub(crate) use rdm::{noci_density, noci_spin_square};
 #[cfg(feature = "gnocc")]
 pub(crate) use rdm::{rdm1, rdm2, rdm3, rdm4};

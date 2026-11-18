@@ -112,6 +112,8 @@ pub struct SNOCIOptions {
     pub tol: f64,
     /// Imaginary shifts for complex SNOCI.
     pub imag_shifts: Vec<f64>,
+    /// NOCI states to correct, counted from the lowest at zero. The first drives selection.
+    pub roots: Vec<usize>,
     /// Maximum SNOCI macro-iterations.
     pub max_iter: usize,
     /// Maximum determinants added per iteration.
@@ -137,6 +139,7 @@ impl Default for SNOCIOptions {
             sigma: 1e-6,
             tol: 1e-8,
             imag_shifts: vec![0.0],
+            roots: vec![0],
             max_iter: 100,
             max_add: 1,
             max_dim: 100,

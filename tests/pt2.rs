@@ -5,10 +5,11 @@ use noci_rs::basis::generate_reference_noci_basis;
 use noci_rs::determinant::NOCISpace;
 use noci_rs::elements::{build_mo_cache, build_wicks_shared};
 use noci_rs::noci::calculate_noci_energy;
-use noci_rs::noci::selected::snoci_step;
+use noci_rs::noci::selected::{SNOCIState, snoci_step};
 use noci_rs::{HSCFState, PostSCFData};
 use num_complex::Complex64;
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 use serial_test::serial;
 
 // Parent/sibling imports.
@@ -23,6 +24,19 @@ struct ExpectedPT2 {
     reference_noci_energy: f64,
     /// Expected total NOCI-PT2 energy.
     noci_pt2_energy: f64,
+}
+
+/// Expected exact energies for a NOCI-PT2 fixture correcting several NOCI states.
+#[derive(Deserialize)]
+struct ExpectedPT2States {
+    /// Expected SCF state energies.
+    scf_energies: Vec<f64>,
+    /// Expected reference NOCI energy of each corrected state.
+    noci_energies: Vec<f64>,
+    /// Expected total NOCI-PT2 energy of each corrected state.
+    noci_pt2_energies: Vec<f64>,
+    /// Expected `<S^2>` of each corrected NOCI state.
+    spin_squares: Vec<f64>,
 }
 
 /// Run SCF, reference NOCI and NOCI-PT2 and compare energies with known good energies.
@@ -81,14 +95,15 @@ fn run_pt2_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     (scf_energies, e_ref, e_pt2)
 }
 
-/// Run SCF, reference NOCI and NOCI-PT2 with Wick's intermediates and compare energies with known good energies.
+/// Run SCF, reference NOCI and NOCI-PT2 with Wick's intermediates.
 /// # Arguments:
 /// - `fixture`: Name of the test fixture to load.
 /// # Returns
-/// - `(Vec<f64>, f64, f64)`: Sorted SCF state energies, the reference NOCI energy and the
-///   total NOCI-PT2 energy.
-fn run_pt2_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
-    let (mut input, ao, _expected): (_, _, ExpectedPT2) = load_test(fixture);
+/// - `(Vec<f64>, f64, SNOCIState<f64>)`: Sorted SCF state energies, the reference NOCI energy and
+///   the SNOCI state holding the NOCI-PT2 result of every corrected state.
+fn solve_pt2_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, SNOCIState<f64>) {
+    // Callers compare against their own expected-value layout, so skip it here.
+    let (mut input, ao, _expected): (_, _, IgnoredAny) = load_test(fixture);
 
     let basis = generate_reference_noci_basis(&ao, &mut input, None, None);
     let states = basis.states;
@@ -131,6 +146,18 @@ fn run_pt2_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     } else {
         snoci_step::<f64, f64>(&post, &reference_space, &input, Some(&mut wicks), &world)
     };
+
+    (scf_energies, e_ref, result)
+}
+
+/// Run SCF, reference NOCI and NOCI-PT2 with Wick's intermediates and compare energies with known good energies.
+/// # Arguments:
+/// - `fixture`: Name of the test fixture to load.
+/// # Returns
+/// - `(Vec<f64>, f64, f64)`: Sorted SCF state energies, the reference NOCI energy and the
+///   total NOCI-PT2 energy.
+fn run_pt2_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
+    let (scf_energies, e_ref, result) = solve_pt2_fixture_wicks(fixture);
 
     let pt2 = result
         .pt2
@@ -448,6 +475,59 @@ fn pt2_h2_3_21g_1_5_ang_energies_wicks_factor_tables_none() {
         1e-8,
         "H2 NOCI-PT2 energy",
     );
+}
+
+/// Test that correcting the two lowest NOCI states of the H2 3-21G 1.5 Angstrom fixture reproduces
+/// each state's reference NOCI energy, total NOCI-PT2 energy and `<S^2>`. The two states are the
+/// singlet and the `M_S = 0` triplet of the UHF pair, so `<S^2>` is 0 and 2.
+/// # Panics
+/// - If the number of SCF states or corrected states differs from the stored reference.
+/// - If an SCF, reference NOCI or total NOCI-PT2 energy, or `<S^2>`, differs from the known good
+///   value outside tolerance.
+/// - If a NOCI-PT2 GMRES solve does not converge.
+#[test]
+#[serial]
+fn pt2_h2_3_21g_1_5_ang_energies_wicks_roots() {
+    let (_input, _ao, expected): (_, _, ExpectedPT2States) =
+        load_test("PT2_H2_3-21G_1_5_WICKS_ROOTS");
+    let (got_scf, _got_ref, result) = solve_pt2_fixture_wicks("PT2_H2_3-21G_1_5_WICKS_ROOTS");
+
+    let mut want_scf = expected.scf_energies;
+    want_scf.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    assert_eq!(got_scf.len(), want_scf.len());
+    for (i, (&x, &y)) in got_scf.iter().zip(want_scf.iter()).enumerate() {
+        assert_close(x, y, 1e-8, &format!("H2 SCF state {i}"));
+    }
+
+    // One unshifted NOCI-PT2 result per corrected state, in the listed order.
+    assert_eq!(result.pt2.len(), expected.noci_pt2_energies.len());
+    for (i, pt2) in result.pt2.iter().enumerate() {
+        assert!(
+            pt2.gmres_converged,
+            "NOCI-PT2 GMRES failed to converge for state {i}: residual {}",
+            pt2.gmres_residual,
+        );
+        assert_eq!(pt2.root, i);
+        assert_close(
+            pt2.e_noci,
+            expected.noci_energies[i],
+            1e-8,
+            &format!("H2 reference NOCI energy of state {i}"),
+        );
+        assert_close(
+            pt2.e_noci + pt2.ept2,
+            expected.noci_pt2_energies[i],
+            1e-8,
+            &format!("H2 NOCI-PT2 energy of state {i}"),
+        );
+        assert_close(
+            pt2.s2,
+            expected.spin_squares[i],
+            1e-8,
+            &format!("H2 <S^2> of state {i}"),
+        );
+    }
 }
 
 /// Test that the H6 STO-3G 1.5 Angstrom transient factor tables fixture reproduces the expected

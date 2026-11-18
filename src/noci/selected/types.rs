@@ -14,9 +14,9 @@ use crate::input::SNOCIPreconditioner;
 
 /// Storage for the result of a selected NOCI step.
 pub struct SNOCIState<T: NOCIScalar> {
-    /// Current selected-space NOCI energy.
+    /// Current selected-space NOCI energy of the first corrected state.
     pub ecurrent: f64,
-    /// Current selected-space ground-state eigenvector.
+    /// Current selected-space eigenvector of the first corrected state.
     pub coeffs: Array1<T>,
     /// Hamiltonian matrix in the current selected space.
     pub hcurrent: Array2<T>,
@@ -30,6 +30,12 @@ pub struct SNOCIState<T: NOCIScalar> {
 
 // Storage for result of a PT2 solve.
 pub struct SNOCIPT2Result {
+    /// Index of the corrected NOCI state, counted from the lowest at zero.
+    pub root: usize,
+    /// Current selected-space NOCI energy of the corrected state.
+    pub e_noci: f64,
+    /// `\langle S^2\rangle` of the corrected NOCI state.
+    pub s2: f64,
     /// Imaginary shift used in the NOCI-PT2 solve.
     pub imag_shift: f64,
     /// Second-order correction for this imaginary shift.
@@ -48,6 +54,18 @@ pub struct SNOCIPT2Result {
     pub gmres_iterations: usize,
     /// Whether GMRES converged for this shifted solve.
     pub gmres_converged: bool,
+}
+
+/// Total NOCI-PT2 energy of one corrected NOCI state at one imaginary shift.
+pub struct NOCIPT2Energy {
+    /// Index of the corrected NOCI state, counted from the lowest at zero.
+    pub root: usize,
+    /// Imaginary shift used in the NOCI-PT2 solve.
+    pub imag_shift: f64,
+    /// `E_{\text{NOCI}} + E^{(2)}` for the corrected state.
+    pub e: f64,
+    /// `\langle S^2\rangle` of the corrected NOCI state.
+    pub s2: f64,
 }
 
 /// Candidate-space overlap blocks required for projection out of the current selected space.
