@@ -1601,7 +1601,9 @@ impl<T: NOCIScalar> ContractionPoint<T> {
                 swap(twice.into_shape((o, o, v, v)).unwrap())
             });
 
-            // One-body sigma by the orthogonal rules:
+            // One-body sigma by the orthogonal rules: the one-body Slater-Condon rules of
+            // `elements::orthogonal`, contracted over whole amplitude arrays rather than evaluated
+            // per determinant pair, which would visit the `O(ov)` connections of every string.
             // `\sigma_0 = e_0 r_0 + \sum_{kc} f_{kc} r_{kc}`,
             // `\sigma_{ia} = f_{ai} r_0 + e_0 r_{ia} + \sum_c f_{ac} r_{ic} - \sum_k f_{ki} r_{ka}
             //  + \sum_{kc} f_{kc} r_{ikac}`.
