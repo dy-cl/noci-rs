@@ -51,10 +51,9 @@ pub(in crate::elements) fn calculate_s_pair_naive<T: NOCIScalar>(
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
-    // Undo the parent-relative orbital ordering of the occupied coefficients.
-    let parents = data.space.parents();
-    let det_phase = T::from_real(bra.data(parents).phase() * ket.data(parents).phase());
-    det_phase * pa.s * pb.s
+    // The occupied coefficients are in ascending orbital order, the determinant convention of
+    // every evaluator, so no excitation phase applies.
+    pa.s * pb.s
 }
 
 /// Calculate the Hamiltonian and overlap matrix elements between two determinants using
