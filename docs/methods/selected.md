@@ -93,7 +93,8 @@ biorthogonal in turn, and the operator then acts by the orthogonal Slater–Cond
 is a matrix product over orbital indices, so a product costs $O(o^2v^2(o+v))$ per reference pair
 and spin rather than the square of the number of spin strings. Near-zero occupied overlaps are
 deformed by $\epsilon$, which makes every factor a polynomial in $\epsilon$, and the factors at
-$\epsilon = 0$ follow exactly from a few well-conditioned values of $\epsilon$. Other pairs use
+$\epsilon = 0$ follow exactly from a few well-conditioned values of $\epsilon$. The contraction
+form needs no Wick intermediates, and the QMC overlap products use the same one. Other pairs use
 the spin-factorised tables and Wick intermediates (`factor_tables`). MPI
 distributes the products across ranks and Rayon parallelises the matrix elements within each rank.
 

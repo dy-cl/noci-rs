@@ -1,6 +1,7 @@
 // noci/factorise/mod.rs
 //! Spin-factorised determinant topology and factorised NOCI operators.
 
+mod contracted;
 mod onebody;
 mod overlap;
 mod storage;
