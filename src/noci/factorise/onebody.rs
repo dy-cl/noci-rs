@@ -8,25 +8,33 @@ use std::path::Path;
 use std::sync::Mutex;
 
 // External crate imports.
-use ndarray::Array1;
+use ndarray::{Array1, Array2, Array4, Axis, s};
+use ndarray_linalg::{Determinant, Inverse, SVD};
 use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::determinant::{NOCIIndex, NOCISpace, NOCISpinStringIndex, SpinStringData};
+use crate::determinant::{
+    NOCIIndex, NOCISpace, NOCISpinStringIndex, ParentDeterminant, SpinStringData,
+};
 use crate::elements::calculate_f_pair_orthogonal;
 use crate::elements::calculate_s_pair_orthogonal;
 use crate::elements::nonorthogonalwicks::{
-    OneBodyFactor, SpinFactorRow, SpinStringSources, WickScratchSpin, WicksPairView,
+    OneBodyFactor, SINGULARTOL, SpinFactorRow, SpinStringSources, WickScratchSpin, WicksPairView,
     xw_spin_factor_row,
 };
 use crate::elements::{FockData, FockMOCache, NOCIData};
 use crate::input::SNOCIStorage;
+use crate::maths::adjoint;
 
 // Parent/sibling imports.
 use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
-use super::{ParentSpinSpace, SpinFactorisation, ordered_parent_pair};
+use super::{FactorEntry, ParentSpinSpace, SpinFactorisation, ordered_parent_pair};
 
+/// Largest same-spin replacement rank applied in contraction form.
+const CONTRACTRANK: usize = 2;
+/// Extrapolation points `\epsilon` for deformed near-zero occupied overlaps.
+const EPSNODES: [f64; 6] = [1.0, -1.0, 2.0, -2.0, 3.0, -3.0];
 /// Number of output entries summed per Rayon task when combining per-thread products.
 const SUMCHUNK: usize = 4096;
 /// Minimum number of target determinants per Rayon task when one spin string's products are split.
@@ -40,6 +48,8 @@ enum OneBodyBlock<T: NOCIScalar> {
     Factorised(FactorisedOneBodyBlock<T>),
     /// Spin-factorised nonorthogonal one-body action with regenerated factor tables.
     Transient(TransientOneBodyBlock),
+    /// Nonorthogonal one-body action in contraction form.
+    Contracted(ContractedOneBodyBlock<T>),
 }
 
 /// Cached spin-factorised tables and dimensions for one ordered source-target parent pair `QP`.
@@ -73,6 +83,91 @@ struct TransientOneBodyBlock {
     source_parent: usize,
     /// Selected dense contraction order for this parent pair.
     contraction: OneBodyContraction,
+}
+
+/// Nonorthogonal parent pair `QP` applied in contraction form: every same-spin factor block is
+/// applied to whole amplitude vectors through orbital-indexed matrices, never element by element.
+struct ContractedOneBodyBlock<T: NOCIScalar> {
+    /// Target parent `Q`, the bra.
+    target_parent: usize,
+    /// Source parent `P`, the ket.
+    source_parent: usize,
+    /// Alpha factors `F^\alpha` and `S^\alpha`.
+    alpha: SpinContraction<T>,
+    /// Beta factors `F^\beta` and `S^\beta`.
+    beta: SpinContraction<T>,
+}
+
+/// Same-spin one-body and overlap factors of one ordered parent pair in contraction form.
+/// Near-zero occupied overlaps are deformed to `\tilde S_k + \epsilon`, every factor is then a
+/// polynomial of degree at most the number of deformed pairs in `\epsilon`, and the factors at
+/// `\epsilon = 0` follow exactly by Lagrange extrapolation from well-conditioned points.
+struct SpinContraction<T: NOCIScalar> {
+    /// Extrapolation points, a single undeformed point when no overlap is near zero.
+    nodes: Vec<ContractionNode<T>>,
+}
+
+/// Intermediates of one same-spin parent pair at one extrapolation point, with bra occupied
+/// orbitals `\phi_i`, biorthogonal ket occupied orbitals `\tilde\phi = C^x_o G`, bra virtual
+/// remainders `\tilde v_a` and biorthogonal ket virtual remainders `\hat q_c`.
+struct ContractionNode<T: NOCIScalar> {
+    /// Lagrange weight of this point in the extrapolation to `\epsilon = 0`.
+    weight: f64,
+    /// `d = \det M_0` with `M_0 = C^{w\dagger}_o S C^x_o`.
+    d: T,
+    /// `G = M_0^{-1}`.
+    g: Array2<T>,
+    /// `\alpha_{kb} = \phi_k^\dagger S u_b`, the ket virtual `u_b` along `\tilde\phi_k`.
+    alpha: Array2<T>,
+    /// `\beta_{ai} = v_a^\dagger S \tilde\phi_i`, the bra virtual `v_a` along `\phi_i`.
+    beta: Array2<T>,
+    /// `Q_{ab} = \tilde v_a^\dagger S q_b`, the overlap of the virtual remainders.
+    q: Array2<T>,
+    /// `f_{ik} = \phi_i^\dagger F \tilde\phi_k`.
+    f_oo: Array2<T>,
+    /// `f_{ac} = \tilde v_a^\dagger F \hat q_c`.
+    f_vv: Array2<T>,
+    /// `f_{ic} = \phi_i^\dagger F \hat q_c`.
+    f_ov: Array2<T>,
+    /// `f_{ak} = \tilde v_a^\dagger F \tilde\phi_k`.
+    f_vo: Array2<T>,
+    /// `e_0 = \sum_i f_{ii}`.
+    e0: T,
+}
+
+/// One spin of a parent in contraction form: its occupied-first orbitals and spin strings.
+struct ContractedFrame<T: NOCIScalar> {
+    /// Occupied-first molecular orbital coefficients.
+    c: Array2<T>,
+    /// Number of occupied orbitals.
+    nocc: usize,
+    /// Spin strings in parent-local ID order.
+    strings: Vec<ContractedString>,
+}
+
+/// One parent-local spin string as in-place replacements of its parent reference: occupied
+/// positions `i_1 < i_2` replaced by virtual positions `a_1 < a_2`.
+#[derive(Clone, Copy)]
+struct ContractedString {
+    /// Number of replacements.
+    rank: usize,
+    /// Replaced occupied positions.
+    holes: [usize; 2],
+    /// Replacing virtual positions.
+    parts: [usize; 2],
+    /// Sign of the in-place determinant relative to the ascending-order determinant.
+    sign: f64,
+}
+
+/// Same-spin amplitudes over the strings of one parent with at most two replacements:
+/// `c_0`, `c_{ia}` and the antisymmetric `c_{ijab}`, absent when every double is zero.
+struct StringAmplitudes<R: NOCIScalar> {
+    /// Reference amplitude `c_0`.
+    c0: R,
+    /// Single replacement amplitudes `c_{ia}`.
+    c1: Array2<R>,
+    /// Double replacement amplitudes `c_{ijab}`.
+    c2: Option<Array4<R>>,
 }
 
 /// Actual determinant target in one orthogonal occupation group.
@@ -123,6 +218,8 @@ pub(crate) struct OneBodyFactorisation<T: NOCIScalar> {
     spin: SpinFactorisation,
     /// Cached parent-pair factor blocks indexed as `Q * nparent + P`.
     blocks: Vec<OneBodyBlock<T>>,
+    /// Alpha and beta frames of every parent whose spin strings the contraction form covers.
+    frames: Vec<Option<[ContractedFrame<T>; 2]>>,
     /// Number of parent references.
     nparent: usize,
 }
@@ -152,10 +249,27 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let mut blocks = Vec::with_capacity(nparent * nparent);
         let mut storage_plan = OneBodyStoragePlan::new(cache, rank, iteration, storage);
 
-        // Choose a representation per ordered parent pair: exact orthogonal
-        // Slater-Condon blocks, transient evaluation, or persistent spin factors.
+        // Spin frames of the parents whose strings have at most `CONTRACTRANK` replacements.
+        let frames = data
+            .space
+            .parents()
+            .iter()
+            .zip(&spin.parents)
+            .map(|(parent, strings)| contracted_frames(parent, strings))
+            .collect::<Vec<_>>();
+
+        // Choose a representation per ordered parent pair: exact orthogonal Slater-Condon
+        // blocks, the contraction form, transient evaluation, or persistent spin factors.
         for target_parent in 0..nparent {
             for source_parent in 0..nparent {
+                let contracted = ContractedOneBodyBlock::new(
+                    (target_parent, source_parent),
+                    &spin,
+                    &frames,
+                    data,
+                    fock,
+                );
+
                 if target_parent == source_parent
                     && fock.fock_mocache[target_parent].orthogonal_slater_condon
                 {
@@ -163,6 +277,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &spin,
                         target_parent,
                     )));
+                } else if let Some(block) = contracted {
+                    blocks.push(OneBodyBlock::Contracted(block));
                 } else if matches!(storage, SNOCIStorage::None) {
                     let target = &spin.parents[target_parent];
                     let source = &spin.parents[source_parent];
@@ -195,6 +311,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         Self {
             spin,
             blocks,
+            frames,
             nparent,
         }
     }
@@ -224,15 +341,23 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     ) -> usize {
         let spin = SpinFactorisation::new(data);
         let nparent = spin.parents.len();
+        let frames = data
+            .space
+            .parents()
+            .iter()
+            .zip(&spin.parents)
+            .map(|(parent, strings)| contracted_frames(parent, strings))
+            .collect::<Vec<_>>();
 
-        // Each nonorthogonal parent pair stores `\alpha` and `\beta` `S` and `F`
-        // factors; same-parent orthogonal blocks need no dense factor table.
+        // Each nonorthogonal parent pair stores `\alpha` and `\beta` `S` and `F` factors;
+        // same-parent orthogonal blocks and contracted parent pairs need no factor table.
         let mut nentries = 0usize;
         for target_parent in 0..nparent {
             let target = &spin.parents[target_parent];
             for source_parent in 0..nparent {
-                if target_parent == source_parent
-                    && fock.fock_mocache[target_parent].orthogonal_slater_condon
+                if (target_parent == source_parent
+                    && fock.fock_mocache[target_parent].orthogonal_slater_condon)
+                    || contractible(&spin, &frames, (target_parent, source_parent))
                 {
                     continue;
                 }
@@ -320,6 +445,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     scratch,
                     (worker, nworker),
                 ),
+                // Contracted parent pairs are applied together below.
+                OneBodyBlock::Contracted(_) => {}
                 OneBodyBlock::Transient(block) => match block.contraction {
                     OneBodyContraction::AFirst => self.apply_one_body_transient_a_first(
                         block,
@@ -338,6 +465,26 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         (worker, nworker),
                     ),
                 },
+            }
+        }
+
+        // Contracted parent pairs run concurrently, each assigned whole to one worker.
+        let contracted = self
+            .blocks
+            .par_iter()
+            .filter_map(|block| match block {
+                OneBodyBlock::Contracted(block)
+                    if (block.target_parent * self.nparent + block.source_parent) % nworker
+                        == worker =>
+                {
+                    Some(block.updates(&self.spin, &self.frames, xs, lambda))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for updates in contracted {
+            for (det, value) in updates {
+                y[det] += value;
             }
         }
 
@@ -382,6 +529,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                 OneBodyBlock::Factorised(block) => {
                     fill_one_body_diagonal_block(parent, block, lambda, &mut m_diag, &mut s_diag);
                 }
+                // Contracted blocks join two different parents and carry no diagonal.
+                OneBodyBlock::Contracted(_) => {}
                 OneBodyBlock::Transient(block) => {
                     let mut storage_plan =
                         OneBodyStoragePlan::new(Path::new("."), 0, 0, SNOCIStorage::RAM);
@@ -1042,6 +1191,609 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     }
 }
 
+impl<T: NOCIScalar> ContractedOneBodyBlock<T> {
+    /// Prepare the contraction form of one ordered parent pair `QP`, when both parents have
+    /// frames, every determinant has at most `CONTRACTRANK` replacements in total, and
+    /// every near-zero occupied overlap can be extrapolated.
+    /// # Arguments:
+    /// - `parents`: Target parent `Q` and source parent `P`.
+    /// - `spin`: Shared determinant-space factorisation.
+    /// - `frames`: Contraction frames of every parent.
+    /// - `data`: Shared NOCI data holding the AO overlap and the zero-overlap tolerance.
+    /// - `fock`: Current generalised Fock matrices in the AO basis.
+    /// # Returns
+    /// - `Option<Self>`: The contracted block, or `None` when the pair keeps the factor rows.
+    fn new(
+        parents: (usize, usize),
+        spin: &SpinFactorisation,
+        frames: &[Option<[ContractedFrame<T>; 2]>],
+        data: &NOCIData<'_, T>,
+        fock: &FockData<'_, T>,
+    ) -> Option<Self> {
+        let (target_parent, source_parent) = parents;
+        if !contractible(spin, frames, parents) {
+            return None;
+        }
+        let [ta, tb] = frames[target_parent].as_ref()?;
+        let [sa, sb] = frames[source_parent].as_ref()?;
+
+        Some(Self {
+            target_parent,
+            source_parent,
+            alpha: SpinContraction::new((ta, sa), &data.ao.s, fock.fa, data.tol)?,
+            beta: SpinContraction::new((tb, sb), &data.ao.s, fock.fb, data.tol)?,
+        })
+    }
+
+    /// Contributions to `Y^Q = (F + \lambda S)^{QP} x^P` of this parent pair, with
+    /// `F^{QP} = F^\alpha D (S^\beta)^T + S^\alpha D (F^\beta)^T` and
+    /// `S^{QP} = S^\alpha D (S^\beta)^T` for the source amplitudes `D_{ab}` over alpha and beta
+    /// strings, whose determinants have at most two replacements in total. `D` is split by
+    /// excitation class and, by linearity, no string-by-string factor block is formed:
+    /// 1. the beta-reference column `D_{a0}`: one alpha apply, times the beta factors of the
+    ///    beta reference;
+    /// 2. the alpha-reference row `D_{0b}` over excited beta strings: one beta apply, times the
+    ///    alpha factors of the alpha reference;
+    /// 3. the alpha-single by beta-single block `D^{11}`, with columns `c` over beta singles.
+    ///    Targets with the beta reference receive the alpha applies of `D^{11} w` with
+    ///    `w_c = S^\beta_{0c}` or `F^\beta_{0c}`; targets with the alpha reference the beta
+    ///    applies of the reference rows `(F^\alpha D^{11})_{0c}` and `(S^\alpha D^{11})_{0c}`;
+    ///    single-single targets the product of the single rows of `F^\alpha D^{11}` and
+    ///    `S^\alpha D^{11}` with those of `S^\beta` and `F^\beta`.
+    /// # Arguments:
+    /// - `spin`: Shared determinant-space factorisation.
+    /// - `frames`: Contraction frames of every parent.
+    /// - `x`: Source determinant vector.
+    /// - `lambda`: Scalar overlap shift.
+    /// # Returns
+    /// - `Vec<(usize, R)>`: Target determinant and the value to add to it.
+    fn updates<R>(
+        &self,
+        spin: &SpinFactorisation,
+        frames: &[Option<[ContractedFrame<T>; 2]>],
+        x: &[R],
+        lambda: R,
+    ) -> Vec<(usize, R)>
+    where
+        R: NOCIScalar + From<T>,
+    {
+        let source = &spin.parents[self.source_parent];
+        let target = &spin.parents[self.target_parent];
+        let [sa, sb] = frames[self.source_parent]
+            .as_ref()
+            .expect("contracted source frame");
+        let [ta, tb] = frames[self.target_parent]
+            .as_ref()
+            .expect("contracted target frame");
+        let rank = |e: &FactorEntry| (sa.strings[e.a].rank, sb.strings[e.b].rank);
+
+        // Class 1: the beta-reference column.
+        let column = StringAmplitudes::gather(
+            sa,
+            source
+                .entries
+                .iter()
+                .filter(|e| rank(e).1 == 0)
+                .map(|e| (e.a, x[e.det])),
+            true,
+        );
+        let (fa1, sa1) = self.alpha.apply(&column, true);
+        let (fb0, sb0) = self.beta.apply(&StringAmplitudes::<R>::reference(sb), true);
+
+        // Class 2: the alpha-reference row over excited beta strings.
+        let row = StringAmplitudes::gather(
+            sb,
+            source
+                .entries
+                .iter()
+                .filter(|e| rank(e).0 == 0 && rank(e).1 > 0)
+                .map(|e| (e.b, x[e.det])),
+            true,
+        );
+        let (fb2, sb2) = self.beta.apply(&row, true);
+        let (fa0, sa0) = self
+            .alpha
+            .apply(&StringAmplitudes::<R>::reference(sa), true);
+
+        // Class 3: one column of `D^{11}` per beta single, with the single-replacement factors
+        // of its alpha apply and of the beta single.
+        let mut grouped: HashMap<usize, Vec<(usize, R)>> = HashMap::new();
+        for e in source.entries.iter().filter(|e| rank(e) == (1, 1)) {
+            grouped.entry(e.b).or_default().push((e.a, x[e.det]));
+        }
+        let grouped = grouped.into_iter().collect::<Vec<_>>();
+        let columns = grouped
+            .par_iter()
+            .map(|(b, column)| {
+                let alpha = StringAmplitudes::gather(sa, column.iter().copied(), false);
+                let beta = StringAmplitudes::gather(sb, [(*b, R::one())], false);
+                (
+                    self.alpha.apply(&alpha, false),
+                    self.beta.apply(&beta, false),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        // Beta-reference targets: alpha applies of `D^{11} w^S` and `D^{11} w^F`.
+        let weighted = |w: &dyn Fn(usize) -> R| {
+            StringAmplitudes::gather(
+                sa,
+                grouped.iter().enumerate().flat_map(|(c, (_, column))| {
+                    let wc = w(c);
+                    column.iter().map(move |&(a, value)| (a, value * wc))
+                }),
+                false,
+            )
+        };
+        let (fws, sws) = self.alpha.apply(&weighted(&|c| columns[c].1.1.c0), true);
+        let (_, swf) = self.alpha.apply(&weighted(&|c| columns[c].1.0.c0), true);
+
+        // Alpha-reference targets: beta applies of the reference rows of `F^\alpha D^{11}` and
+        // `S^\alpha D^{11}`.
+        let reference_row = |pick: &dyn Fn(usize) -> R| {
+            StringAmplitudes::gather(
+                sb,
+                grouped.iter().enumerate().map(|(c, (b, _))| (*b, pick(c))),
+                false,
+            )
+        };
+        let (_, suf) = self
+            .beta
+            .apply(&reference_row(&|c| columns[c].0.0.c0), true);
+        let (fus, sus) = self
+            .beta
+            .apply(&reference_row(&|c| columns[c].0.1.c0), true);
+
+        // Single-single targets: `Y^F = X^F (S^\beta)^T + X^S (F^\beta)^T` and
+        // `Y^S = X^S (S^\beta)^T` over the target singles.
+        let asingles = target_singles(ta);
+        let bsingles = target_singles(tb);
+        let gather_rows =
+            |rows: &[usize], frame: &ContractedFrame<T>, amps: Vec<&StringAmplitudes<R>>| {
+                Array2::from_shape_fn((rows.len(), amps.len()), |(r, c)| {
+                    amps[c].read(&frame.strings[rows[r]])
+                })
+            };
+        let xf = gather_rows(&asingles, ta, columns.iter().map(|c| &c.0.0).collect());
+        let xs = gather_rows(&asingles, ta, columns.iter().map(|c| &c.0.1).collect());
+        let bf = gather_rows(&bsingles, tb, columns.iter().map(|c| &c.1.0).collect());
+        let bs = gather_rows(&bsingles, tb, columns.iter().map(|c| &c.1.1).collect());
+        let yf = xf.dot(&bs.t()) + xs.dot(&bf.t());
+        let ys = xs.dot(&bs.t());
+        let arow = single_rows(ta, &asingles);
+        let brow = single_rows(tb, &bsingles);
+
+        // Every class at the target strings.
+        let (fa1, sa1, fa0, sa0) = (
+            fa1.read_all(ta),
+            sa1.read_all(ta),
+            fa0.read_all(ta),
+            sa0.read_all(ta),
+        );
+        let (fws, sws, swf) = (fws.read_all(ta), sws.read_all(ta), swf.read_all(ta));
+        let (fb0, sb0, fb2, sb2) = (
+            fb0.read_all(tb),
+            sb0.read_all(tb),
+            fb2.read_all(tb),
+            sb2.read_all(tb),
+        );
+        let (suf, fus, sus) = (suf.read_all(tb), fus.read_all(tb), sus.read_all(tb));
+
+        // `Y^Q_{\bar a\bar b} = F_{\bar a\bar b} + \lambda S_{\bar a\bar b}` at every target determinant.
+        target
+            .entries
+            .par_iter()
+            .with_min_len(DOTCHUNK)
+            .map(|e| {
+                let (i, j) = (e.a, e.b);
+                let mut f = fa1[i] * sb0[j] + sa1[i] * fb0[j] + fa0[i] * sb2[j] + sa0[i] * fb2[j];
+                let mut s = sa1[i] * sb0[j] + sa0[i] * sb2[j];
+                match (ta.strings[i].rank, tb.strings[j].rank) {
+                    (_, 0) => {
+                        f += fws[i] + swf[i];
+                        s += sws[i];
+                    }
+                    (0, _) => {
+                        f += suf[j] + fus[j];
+                        s += sus[j];
+                    }
+                    (1, 1) => {
+                        f += yf[(arow[i], brow[j])];
+                        s += ys[(arow[i], brow[j])];
+                    }
+                    _ => {}
+                }
+                (e.det, f + lambda * s)
+            })
+            .collect()
+    }
+}
+
+impl<T: NOCIScalar> SpinContraction<T> {
+    /// Prepare the same-spin factors between the strings of a bra parent `w` and a ket parent
+    /// `x`. With the singular value decomposition `M_0 = U \tilde S V^\dagger`, every pair with
+    /// `\tilde S_k < \mathtt{SINGULARTOL}` is deformed along `(C^w_o u_k) v_k^\dagger` to
+    /// `\hat S_k + \epsilon`, where `\hat S_k = 0` when `\tilde S_k \le \mathtt{tol}`, as in the
+    /// Wick kernels, and `\hat S_k = \tilde S_k` otherwise.
+    /// # Arguments:
+    /// - `frames`: Bra and ket frames of this spin.
+    /// - `s`: AO overlap matrix.
+    /// - `f`: One-body operator of this spin in the AO basis.
+    /// - `tol`: Singular values at or below this are exact zeros.
+    /// # Returns
+    /// - `Option<Self>`: The factors, or `None` when the pair cannot be extrapolated.
+    fn new(
+        frames: (&ContractedFrame<T>, &ContractedFrame<T>),
+        s: &Array2<f64>,
+        f: &Array2<T>,
+        tol: f64,
+    ) -> Option<Self> {
+        let (w, x) = frames;
+        let o = w.nocc;
+        if x.nocc != o {
+            return None;
+        }
+        let s = s.mapv(T::from_real);
+        let (wo, wv) = (w.c.slice(s![.., ..o]), w.c.slice(s![.., o..]));
+        let (xo, xv) = (x.c.slice(s![.., ..o]), x.c.slice(s![.., o..]));
+
+        // Löwdin pairing of the occupied overlap `M_0 = C^{w\dagger}_o S C^x_o`.
+        let m0 = adjoint(&wo.to_owned()).dot(&s).dot(&xo);
+        let (u, sv, vh) = m0.svd(true, true).ok()?;
+        let (u, vh) = (u?, vh?);
+        let small = (0..o).filter(|&k| sv[k] < SINGULARTOL).collect::<Vec<_>>();
+        if small.len() >= EPSNODES.len() {
+            return None;
+        }
+
+        // Occupied ket columns at `\epsilon`: `C^x_o + B + \epsilon E`, where `B` moves each
+        // deformed pair to `\hat S_k` and `E` lifts it by `\epsilon`.
+        let mut base = Array2::<T>::zeros(xo.raw_dim());
+        let mut lift = Array2::<T>::zeros(xo.raw_dim());
+        for &k in &small {
+            let a = wo.dot(&u.column(k));
+            let b = vh.row(k);
+            let outer = Array2::from_shape_fn(xo.raw_dim(), |(mu, j)| a[mu] * b[j]);
+            let target = if sv[k] <= tol { 0.0 } else { sv[k] };
+            base.scaled_add(T::from_real(target - sv[k]), &outer);
+            lift += &outer;
+        }
+
+        // Lagrange weights of the points for extrapolation to `\epsilon = 0`.
+        let points: &[f64] = if small.is_empty() {
+            &[0.0]
+        } else {
+            &EPSNODES[..=small.len()]
+        };
+        let nodes = points
+            .iter()
+            .map(|&e| {
+                let weight = points
+                    .iter()
+                    .filter(|&&p| p != e)
+                    .map(|&p| p / (p - e))
+                    .product::<f64>();
+                let xo = &xo + &base + &lift.mapv(|z| z * T::from_real(e));
+                ContractionNode::new(
+                    (&wo.to_owned(), &wv.to_owned()),
+                    (&xo, &xv.to_owned()),
+                    &s,
+                    f,
+                    weight,
+                )
+            })
+            .collect::<Option<Vec<_>>>()?;
+
+        Some(Self { nodes })
+    }
+
+    /// Apply the same-spin factors to amplitudes over the ket strings, returning
+    /// `\sigma^F = F c` and `\sigma^S = S c` over the bra strings with at most two replacements,
+    /// or at most one when `doubles` is false.
+    /// # Arguments:
+    /// - `c`: Ket string amplitudes.
+    /// - `doubles`: Whether double-replacement outputs are needed.
+    /// # Returns
+    /// - `(StringAmplitudes<R>, StringAmplitudes<R>)`: `F c` and `S c`.
+    fn apply<R>(
+        &self,
+        c: &StringAmplitudes<R>,
+        doubles: bool,
+    ) -> (StringAmplitudes<R>, StringAmplitudes<R>)
+    where
+        R: NOCIScalar + From<T>,
+    {
+        let mut total: Option<(StringAmplitudes<R>, StringAmplitudes<R>)> = None;
+        for node in &self.nodes {
+            let scale = <R as From<T>>::from(node.d) * R::from_real(node.weight);
+            let (f, s) = node.apply(c, doubles);
+            total = Some(match total {
+                None => (f.scaled(scale), s.scaled(scale)),
+                Some((tf, ts)) => (tf.add_scaled(&f, scale), ts.add_scaled(&s, scale)),
+            });
+        }
+        total.expect("a contraction has at least one point")
+    }
+}
+
+impl<T: NOCIScalar> ContractionNode<T> {
+    /// Form the intermediates of one point from the bra and ket orbitals, for invertible
+    /// `M_0` and `Q`. The ket occupied orbitals are made biorthogonal to the bra ones,
+    /// `\tilde\phi = C^x_o G`, the virtual orbitals keep only their remainders outside the
+    /// occupied spaces, `q_b = (1 - P) u_b` with `P = \tilde\phi C^{w\dagger}_o S` and
+    /// `\tilde v_a = v_a - C^w_o \beta_a^*`, and the ket remainders are made biorthogonal to the
+    /// bra ones, `\hat q = q Q^{-1}`.
+    /// # Arguments:
+    /// - `bra`: Bra occupied and virtual orbitals.
+    /// - `ket`: Ket occupied and virtual orbitals.
+    /// - `s`: AO overlap matrix.
+    /// - `f`: One-body operator in the AO basis.
+    /// - `weight`: Lagrange weight of this point.
+    /// # Returns
+    /// - `Option<Self>`: The intermediates, or `None` for a singular `M_0` or `Q`.
+    fn new(
+        bra: (&Array2<T>, &Array2<T>),
+        ket: (&Array2<T>, &Array2<T>),
+        s: &Array2<T>,
+        f: &Array2<T>,
+        weight: f64,
+    ) -> Option<Self> {
+        let ((wo, wv), (xo, xv)) = (bra, ket);
+        let woh_s = adjoint(wo).dot(s);
+
+        // Biorthogonal ket occupied orbitals.
+        let m0 = woh_s.dot(xo);
+        let d = m0.det().ok()?;
+        let g = m0.inv().ok()?;
+        let bt = xo.dot(&g);
+
+        // Occupied components and virtual remainders on both sides.
+        let alpha = woh_s.dot(xv);
+        let beta = adjoint(wv).dot(s).dot(&bt);
+        let q_orb = xv - &bt.dot(&alpha);
+        let vt = wv - &wo.dot(&adjoint(&beta));
+        let vth = adjoint(&vt);
+        let q = vth.dot(s).dot(&q_orb);
+        let qh = q_orb.dot(&q.inv().ok()?);
+
+        // One-body operator in the biorthogonal frame.
+        let f_oo = adjoint(wo).dot(f).dot(&bt);
+        let e0 = f_oo.diag().sum();
+        Some(Self {
+            weight,
+            d,
+            g,
+            alpha,
+            beta,
+            q,
+            f_vv: vth.dot(f).dot(&qh),
+            f_ov: adjoint(wo).dot(f).dot(&qh),
+            f_vo: vth.dot(f).dot(&bt),
+            f_oo,
+            e0,
+        })
+    }
+
+    /// Apply this point's factors without `d`. Ket amplitudes are carried into the biorthogonal
+    /// frame, `t_{kb} = \sum_j G_{jk} c_{jb}` and `t_{klab} = \sum_{ij} G_{ik} G_{jl} c_{ijab}`,
+    /// their virtual orbitals are split as `u_b = \tilde\phi\alpha_b + \sum_c \hat q_c Q_{cb}`,
+    /// the one-body operator acts by the orthogonal rules with `f`, and the bra virtual orbitals
+    /// are split as `v_a = \tilde v_a + \phi\beta_a^*`.
+    /// # Arguments:
+    /// - `c`: Ket string amplitudes.
+    /// - `doubles`: Whether double-replacement outputs are needed.
+    /// # Returns
+    /// - `(StringAmplitudes<R>, StringAmplitudes<R>)`: `F c / d` and `S c / d`.
+    fn apply<R>(
+        &self,
+        c: &StringAmplitudes<R>,
+        doubles: bool,
+    ) -> (StringAmplitudes<R>, StringAmplitudes<R>)
+    where
+        R: NOCIScalar + From<T>,
+    {
+        let cast = |a: &Array2<T>| a.mapv(<R as From<T>>::from);
+        let (g, alpha, beta, q) = (
+            cast(&self.g),
+            cast(&self.alpha),
+            cast(&self.beta),
+            cast(&self.q),
+        );
+        let (f_oo, f_vv, f_ov, f_vo) = (
+            cast(&self.f_oo),
+            cast(&self.f_vv),
+            cast(&self.f_ov),
+            cast(&self.f_vo),
+        );
+        let e0 = <R as From<T>>::from(self.e0);
+        let half = R::from_real(0.5);
+
+        // Ket: x frame to the biorthogonal frame, lowering the rank through `\alpha`.
+        let t1 = g.t().dot(&c.c1);
+        let t2 = c.c2.as_ref().map(|c2| occupied_transform(c2, &g));
+        let z = t2.as_ref().map(|t2| contract_pair(t2, &alpha));
+        let mut r0 = c.c0 + (&t1 * &alpha).sum();
+        if let Some(z) = &z {
+            r0 += half * (z * &alpha).sum();
+        }
+        let r1 = match &z {
+            Some(z) => (&t1 + z).dot(&q.t()),
+            None => t1.dot(&q.t()),
+        };
+        let r2 = t2.map(|t2| virtual_transform(&t2, &q));
+
+        // One-body sigma by the orthogonal rules:
+        // `\sigma_0 = e_0 r_0 + \sum_{kc} f_{kc} r_{kc}`,
+        // `\sigma_{ia} = f_{ai} r_0 + e_0 r_{ia} + \sum_c f_{ac} r_{ic} - \sum_k f_{ki} r_{ka}
+        //  + \sum_{kc} f_{kc} r_{ikac}`,
+        // `\sigma_{ijab} = e_0 r_{ijab} + P(ab)\sum_c f_{bc} r_{ijac} - P(ij)\sum_k f_{kj} r_{ikab}
+        //  + P(ij)P(ab) f_{bj} r_{ia}`.
+        let s0 = e0 * r0 + (&f_ov * &r1).sum();
+        let mut s1 =
+            f_vo.t().mapv(|z| z * r0) + r1.mapv(|z| z * e0) + r1.dot(&f_vv.t()) - f_oo.t().dot(&r1);
+        if let Some(r2) = &r2 {
+            s1 += &contract_pair(r2, &f_ov);
+        }
+        let s2 = doubles.then(|| {
+            let mut s2 = antisym_outer(&r1, &f_vo);
+            if let Some(r2) = &r2 {
+                let vv = virtual_one(r2, &f_vv);
+                let oo = occupied_one(r2, &f_oo);
+                s2 =
+                    s2 + r2.mapv(|z| z * e0) + &vv - &swap_virtual(&vv) - &oo + &swap_occupied(&oo);
+            }
+            s2
+        });
+
+        // Bra: biorthogonal frame to the w frame, raising the rank through `\beta`.
+        let bra = |s0: R, s1: &Array2<R>, s2: Option<&Array4<R>>| {
+            let w2 = doubles.then(|| {
+                let mut w2 = antisym_outer(s1, &beta) + pair_det(&beta).mapv(|z| z * s0);
+                if let Some(s2) = s2 {
+                    w2 += s2;
+                }
+                w2
+            });
+            StringAmplitudes {
+                c0: s0,
+                c1: s1 + &beta.t().mapv(|z| z * s0),
+                c2: w2,
+            }
+        };
+        (bra(s0, &s1, s2.as_ref()), bra(r0, &r1, r2.as_ref()))
+    }
+}
+
+impl<R: NOCIScalar> StringAmplitudes<R> {
+    /// Unit amplitude on the reference string of a frame.
+    /// # Arguments:
+    /// - `frame`: Frame of the parent and spin.
+    /// # Returns
+    /// - `Self`: `c_0 = 1` and no replacements.
+    fn reference(frame: &ContractedFrame<impl NOCIScalar>) -> Self {
+        let (o, v) = (frame.nocc, frame.c.ncols() - frame.nocc);
+        Self {
+            c0: R::one(),
+            c1: Array2::from_elem((o, v), R::from_real(0.0)),
+            c2: None,
+        }
+    }
+
+    /// Collect amplitudes given per parent-local string ID, converting the ascending-order
+    /// determinant convention to in-place replacements.
+    /// # Arguments:
+    /// - `frame`: Frame of the parent and spin the strings belong to.
+    /// - `values`: String IDs and amplitudes.
+    /// - `doubles`: Whether double replacements may be present.
+    /// # Returns
+    /// - `Self`: Amplitudes in tensor form.
+    fn gather(
+        frame: &ContractedFrame<impl NOCIScalar>,
+        values: impl IntoIterator<Item = (usize, R)>,
+        doubles: bool,
+    ) -> Self {
+        let (o, v) = (frame.nocc, frame.c.ncols() - frame.nocc);
+        let zero = R::from_real(0.0);
+        let mut out = Self {
+            c0: zero,
+            c1: Array2::from_elem((o, v), zero),
+            c2: doubles.then(|| Array4::from_elem((o, o, v, v), zero)),
+        };
+        for (id, value) in values {
+            let st = frame.strings[id];
+            let value = value * R::from_real(st.sign);
+            let ([i, j], [a, b]) = (st.holes, st.parts);
+            match st.rank {
+                0 => out.c0 += value,
+                1 => out.c1[(i, a)] += value,
+                _ => {
+                    let c2 = out
+                        .c2
+                        .as_mut()
+                        .expect("doubles requested for double replacements");
+                    c2[(i, j, a, b)] += value;
+                    c2[(j, i, a, b)] -= value;
+                    c2[(i, j, b, a)] -= value;
+                    c2[(j, i, b, a)] += value;
+                }
+            }
+        }
+        out
+    }
+
+    /// Read the amplitude of every string of a frame, in parent-local ID order and in the
+    /// ascending-order determinant convention.
+    /// # Arguments:
+    /// - `frame`: Frame of the parent and spin to read.
+    /// # Returns
+    /// - `Vec<R>`: One amplitude per string.
+    fn read_all(
+        &self,
+        frame: &ContractedFrame<impl NOCIScalar>,
+    ) -> Vec<R> {
+        frame.strings.iter().map(|st| self.read(st)).collect()
+    }
+
+    /// Read the amplitude of one string in the ascending-order determinant convention.
+    /// Double replacements read zero when no doubles are held.
+    /// # Arguments:
+    /// - `st`: String to read.
+    /// # Returns
+    /// - `R`: Its amplitude.
+    fn read(
+        &self,
+        st: &ContractedString,
+    ) -> R {
+        let ([i, j], [a, b]) = (st.holes, st.parts);
+        let value = match st.rank {
+            0 => self.c0,
+            1 => self.c1[(i, a)],
+            _ => self
+                .c2
+                .as_ref()
+                .map_or(R::from_real(0.0), |c2| c2[(i, j, a, b)]),
+        };
+        value * R::from_real(st.sign)
+    }
+
+    /// Scale every amplitude.
+    /// # Arguments:
+    /// - `scale`: Scalar factor.
+    /// # Returns
+    /// - `Self`: Scaled amplitudes.
+    fn scaled(
+        self,
+        scale: R,
+    ) -> Self {
+        Self {
+            c0: self.c0 * scale,
+            c1: self.c1.mapv(|z| z * scale),
+            c2: self.c2.map(|c2| c2.mapv(|z| z * scale)),
+        }
+    }
+
+    /// Add scaled amplitudes, `self + scale\,other`.
+    /// # Arguments:
+    /// - `other`: Amplitudes to add.
+    /// - `scale`: Scalar factor of `other`.
+    /// # Returns
+    /// - `Self`: Sum.
+    fn add_scaled(
+        mut self,
+        other: &Self,
+        scale: R,
+    ) -> Self {
+        self.c0 += other.c0 * scale;
+        self.c1.scaled_add(scale, &other.c1);
+        match (&mut self.c2, &other.c2) {
+            (Some(a), Some(b)) => a.scaled_add(scale, b),
+            (None, Some(b)) => self.c2 = Some(b.mapv(|z| z * scale)),
+            _ => {}
+        }
+        self
+    }
+}
+
 /// Build `S^alpha`, `F^alpha`, `S^beta` and `F^beta` tables for one parent pair `QP`.
 /// # Arguments:
 /// - `spin`: Shared determinant-space factorisation.
@@ -1475,4 +2227,308 @@ fn select_one_body_contraction(
     } else {
         OneBodyContraction::BFirst
     }
+}
+
+/// Build the alpha and beta contraction frames of one parent, when every spin string has at most
+/// `CONTRACTRANK` replacements and both spins have occupied and virtual orbitals.
+/// # Arguments:
+/// - `parent`: Parent orbitals and occupations.
+/// - `strings`: Parent-local spin strings.
+/// # Returns
+/// - `Option<[ContractedFrame<T>; 2]>`: Alpha and beta frames, or `None`.
+fn contracted_frames<T: NOCIScalar>(
+    parent: &ParentDeterminant<T>,
+    strings: &ParentSpinSpace,
+) -> Option<[ContractedFrame<T>; 2]> {
+    Some([
+        contracted_frame(&parent.ca, parent.oa, &strings.areps)?,
+        contracted_frame(&parent.cb, parent.ob, &strings.breps)?,
+    ])
+}
+
+/// Build the contraction frame of one spin: occupied-first orbitals, and each spin string as
+/// in-place replacements with the sign that converts from ascending orbital order.
+/// # Arguments:
+/// - `c`: Parent molecular orbital coefficients.
+/// - `occupation`: Parent occupation bitstring of this spin.
+/// - `strings`: Parent-local spin strings of this spin.
+/// # Returns
+/// - `Option<ContractedFrame<T>>`: The frame, or `None`.
+fn contracted_frame<T: NOCIScalar>(
+    c: &Array2<T>,
+    occupation: u128,
+    strings: &[SpinStringData],
+) -> Option<ContractedFrame<T>> {
+    let n = c.ncols();
+    let occ = (0..n)
+        .filter(|&k| occupation >> k & 1 == 1)
+        .collect::<Vec<_>>();
+    let vir = (0..n)
+        .filter(|&k| occupation >> k & 1 == 0)
+        .collect::<Vec<_>>();
+    if occ.is_empty() || vir.is_empty() {
+        return None;
+    }
+    let order = occ.iter().chain(&vir).copied().collect::<Vec<_>>();
+    let c = Array2::from_shape_fn(c.raw_dim(), |(mu, k)| c[(mu, order[k])]);
+
+    let bits = |mask: u128| (0..n).filter(|&k| mask >> k & 1 == 1).collect::<Vec<_>>();
+    let mut out = Vec::with_capacity(strings.len());
+    for string in strings {
+        let holes = bits(string.excitation.holes);
+        let parts = bits(string.excitation.parts);
+        let rank = holes.len();
+        if rank > CONTRACTRANK {
+            return None;
+        }
+
+        // Occupied positions of the holes and virtual positions of the particles.
+        let mut h = [0; 2];
+        let mut p = [0; 2];
+        for r in 0..rank {
+            h[r] = occ.binary_search(&holes[r]).ok()?;
+            p[r] = vir.binary_search(&parts[r]).ok()?;
+        }
+
+        // Sign of the in-place column order relative to ascending orbital order.
+        let mut columns = occ.clone();
+        for r in 0..rank {
+            columns[h[r]] = parts[r];
+        }
+        let inversions = (0..columns.len())
+            .map(|i| {
+                (i + 1..columns.len())
+                    .filter(|&j| columns[i] > columns[j])
+                    .count()
+            })
+            .sum::<usize>();
+        let sign = if inversions % 2 == 0 { 1.0 } else { -1.0 };
+
+        out.push(ContractedString {
+            rank,
+            holes: h,
+            parts: p,
+            sign,
+        });
+    }
+
+    Some(ContractedFrame {
+        c,
+        nocc: occ.len(),
+        strings: out,
+    })
+}
+
+/// Transform both occupied indices, `t_{klab} = \sum_{ij} G_{ik} G_{jl} c_{ijab}`.
+/// # Arguments:
+/// - `c2`: Amplitudes `c_{ijab}`.
+/// - `g`: Occupied transformation `G`.
+/// # Returns
+/// - `Array4<R>`: `t_{klab}`.
+fn occupied_transform<R: NOCIScalar>(
+    c2: &Array4<R>,
+    g: &Array2<R>,
+) -> Array4<R> {
+    let (o, _, v, _) = c2.dim();
+    // First index, `A_{kjab} = \sum_i G_{ik} c_{ijab}`.
+    let a = g.t().dot(&c2.view().into_shape((o, o * v * v)).unwrap());
+    let a = a.into_shape((o, o, v * v)).unwrap();
+    // Second index, `t_{klab} = \sum_j G_{jl} A_{kjab}`.
+    let mut t = Array4::from_elem((o, o, v, v), R::from_real(0.0));
+    for k in 0..o {
+        let tk = g.t().dot(&a.index_axis(Axis(0), k));
+        t.index_axis_mut(Axis(0), k)
+            .assign(&tk.into_shape((o, v, v)).unwrap());
+    }
+    t
+}
+
+/// Transform both virtual indices, `r_{klcd} = \sum_{ab} Q_{ca} Q_{db} t_{klab}`.
+/// # Arguments:
+/// - `t2`: Amplitudes `t_{klab}`.
+/// - `q`: Virtual transformation `Q`.
+/// # Returns
+/// - `Array4<R>`: `r_{klcd}`.
+fn virtual_transform<R: NOCIScalar>(
+    t2: &Array4<R>,
+    q: &Array2<R>,
+) -> Array4<R> {
+    let (o, _, v, _) = t2.dim();
+    // Last index, then the third after swapping the two virtual indices.
+    let b = t2.view().into_shape((o * o * v, v)).unwrap().dot(&q.t());
+    let b = b
+        .into_shape((o, o, v, v))
+        .unwrap()
+        .permuted_axes([0, 1, 3, 2]);
+    let b = b.as_standard_layout().into_owned();
+    let r = b.into_shape((o * o * v, v)).unwrap().dot(&q.t());
+    r.into_shape((o, o, v, v))
+        .unwrap()
+        .permuted_axes([0, 1, 3, 2])
+        .as_standard_layout()
+        .into_owned()
+}
+
+/// Contract the second occupied and virtual indices of a double, `z_{ka} = \sum_{lb} t_{klab} m_{lb}`.
+/// # Arguments:
+/// - `t2`: Amplitudes `t_{klab}`.
+/// - `m`: Occupied-virtual matrix `m_{lb}`.
+/// # Returns
+/// - `Array2<R>`: `z_{ka}`.
+fn contract_pair<R: NOCIScalar>(
+    t2: &Array4<R>,
+    m: &Array2<R>,
+) -> Array2<R> {
+    let (o, _, v, _) = t2.dim();
+    let t = t2.view().permuted_axes([0, 2, 1, 3]);
+    let t = t.as_standard_layout();
+    let z = t
+        .view()
+        .into_shape((o * v, o * v))
+        .unwrap()
+        .dot(&m.view().into_shape(o * v).unwrap());
+    z.into_shape((o, v)).unwrap()
+}
+
+/// Virtual one-body term of a double, `X_{ijab} = \sum_c f_{bc} r_{ijac}`.
+/// # Arguments:
+/// - `r2`: Amplitudes `r_{ijab}`.
+/// - `f`: Virtual-virtual block `f_{bc}`.
+/// # Returns
+/// - `Array4<R>`: `X_{ijab}`.
+fn virtual_one<R: NOCIScalar>(
+    r2: &Array4<R>,
+    f: &Array2<R>,
+) -> Array4<R> {
+    let (o, _, v, _) = r2.dim();
+    let x = r2.view().into_shape((o * o * v, v)).unwrap().dot(&f.t());
+    x.into_shape((o, o, v, v)).unwrap()
+}
+
+/// Occupied one-body term of a double, `Y_{ijab} = \sum_k f_{kj} r_{ikab}`.
+/// # Arguments:
+/// - `r2`: Amplitudes `r_{ijab}`.
+/// - `f`: Occupied-occupied block `f_{kj}`.
+/// # Returns
+/// - `Array4<R>`: `Y_{ijab}`.
+fn occupied_one<R: NOCIScalar>(
+    r2: &Array4<R>,
+    f: &Array2<R>,
+) -> Array4<R> {
+    let (o, _, v, _) = r2.dim();
+    let mut y = Array4::from_elem((o, o, v, v), R::from_real(0.0));
+    for i in 0..o {
+        let ri = r2.index_axis(Axis(0), i).into_shape((o, v * v)).unwrap();
+        let yi = f.t().dot(&ri);
+        y.index_axis_mut(Axis(0), i)
+            .assign(&yi.into_shape((o, v, v)).unwrap());
+    }
+    y
+}
+
+/// Exchange the two virtual indices, `X_{ijba}`.
+/// # Arguments:
+/// - `x`: Four-index tensor.
+/// # Returns
+/// - `Array4<R>`: Tensor with the virtual indices exchanged.
+fn swap_virtual<R: NOCIScalar>(x: &Array4<R>) -> Array4<R> {
+    x.view()
+        .permuted_axes([0, 1, 3, 2])
+        .as_standard_layout()
+        .into_owned()
+}
+
+/// Exchange the two occupied indices, `X_{jiab}`.
+/// # Arguments:
+/// - `x`: Four-index tensor.
+/// # Returns
+/// - `Array4<R>`: Tensor with the occupied indices exchanged.
+fn swap_occupied<R: NOCIScalar>(x: &Array4<R>) -> Array4<R> {
+    x.view()
+        .permuted_axes([1, 0, 2, 3])
+        .as_standard_layout()
+        .into_owned()
+}
+
+/// Antisymmetrised outer product
+/// `P(ij)P(ab)\, x_{ia} y_{bj} = x_{ia}y_{bj} - x_{ja}y_{bi} - x_{ib}y_{aj} + x_{jb}y_{ai}`.
+/// # Arguments:
+/// - `x`: Occupied-virtual matrix `x_{ia}`.
+/// - `y`: Virtual-occupied matrix `y_{bj}`.
+/// # Returns
+/// - `Array4<R>`: The antisymmetric double.
+fn antisym_outer<R: NOCIScalar>(
+    x: &Array2<R>,
+    y: &Array2<R>,
+) -> Array4<R> {
+    let (o, v) = x.dim();
+    Array4::from_shape_fn((o, o, v, v), |(i, j, a, b)| {
+        x[(i, a)] * y[(b, j)] - x[(j, a)] * y[(b, i)] - x[(i, b)] * y[(a, j)]
+            + x[(j, b)] * y[(a, i)]
+    })
+}
+
+/// Pair determinant of a virtual-occupied matrix, `\beta_{ai}\beta_{bj} - \beta_{aj}\beta_{bi}`.
+/// # Arguments:
+/// - `beta`: Virtual-occupied matrix `\beta_{ai}`.
+/// # Returns
+/// - `Array4<R>`: The antisymmetric double indexed `[i, j, a, b]`.
+fn pair_det<R: NOCIScalar>(beta: &Array2<R>) -> Array4<R> {
+    let (v, o) = beta.dim();
+    Array4::from_shape_fn((o, o, v, v), |(i, j, a, b)| {
+        beta[(a, i)] * beta[(b, j)] - beta[(a, j)] * beta[(b, i)]
+    })
+}
+
+/// Parent-local IDs of the single-replacement strings of a frame.
+/// # Arguments:
+/// - `frame`: Frame of one parent and spin.
+/// # Returns
+/// - `Vec<usize>`: String IDs with one replacement.
+fn target_singles<T: NOCIScalar>(frame: &ContractedFrame<T>) -> Vec<usize> {
+    (0..frame.strings.len())
+        .filter(|&k| frame.strings[k].rank == 1)
+        .collect()
+}
+
+/// Row of every single-replacement string among `singles`, `usize::MAX` for other strings.
+/// # Arguments:
+/// - `frame`: Frame of one parent and spin.
+/// - `singles`: String IDs with one replacement.
+/// # Returns
+/// - `Vec<usize>`: Row index per string ID.
+fn single_rows<T: NOCIScalar>(
+    frame: &ContractedFrame<T>,
+    singles: &[usize],
+) -> Vec<usize> {
+    let mut rows = vec![usize::MAX; frame.strings.len()];
+    for (r, &k) in singles.iter().enumerate() {
+        rows[k] = r;
+    }
+    rows
+}
+
+/// Whether an ordered parent pair `QP` can be applied in contraction form: two different parents
+/// with frames, whose determinants have at most `CONTRACTRANK` replacements in total.
+/// # Arguments:
+/// - `spin`: Shared determinant-space factorisation.
+/// - `frames`: Contraction frames of every parent.
+/// - `parents`: Target parent `Q` and source parent `P`.
+/// # Returns
+/// - `bool`: Whether the class decomposition of the contraction form covers the pair.
+fn contractible<T: NOCIScalar>(
+    spin: &SpinFactorisation,
+    frames: &[Option<[ContractedFrame<T>; 2]>],
+    parents: (usize, usize),
+) -> bool {
+    let (target_parent, source_parent) = parents;
+    let within = |parent: usize| {
+        frames[parent].as_ref().is_some_and(|[a, b]| {
+            spin.parents[parent]
+                .entries
+                .iter()
+                .all(|e| a.strings[e.a].rank + b.strings[e.b].rank <= CONTRACTRANK)
+        })
+    };
+    target_parent != source_parent && within(target_parent) && within(source_parent)
 }
