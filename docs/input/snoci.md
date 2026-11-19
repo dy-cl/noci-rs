@@ -45,7 +45,7 @@ snoci = {
 | `roots` | list of integers | `{0}` | NOCI states to correct, counted from the lowest at `0`. Each listed state receives its own state-specific NOCI-PT2 correction, with its own generalised Fock operator, projector and GMRES solve; the Wick intermediates, candidate pool, candidate overlaps and $H_{ai}$ are shared. The **first** drives selection and convergence. Results print as `State(NOCI-PT2: n i: ε)` together with each state's $\langle S^2\rangle$. |
 | `preconditioner` | string | `"woodbury"` | GMRES preconditioner: `"none"`, `"diag"` (inverse diagonal of the projected operator) or `"woodbury"` (diagonal plus a rank-2 correction for the projection). `"none"` skips building the diagonals. |
 | `full_m` | string | `"none"` | Store the full candidate–candidate operator ${}^{xJ,wI}M^{(k)}$: `"none"`, `"ram"` or `"disk"`. With `"none"`, products are formed on demand from the factorised tables. |
-| `factor_tables` | string | `"ram"` | Storage of the spin-factorised one-body tables used when `full_m = "none"`: `"none"`, `"ram"` or `"disk"`. |
+| `factor_tables` | string | `"ram"` | Storage of the spin-factorised one-body tables used when `full_m = "none"`: `"none"`, `"ram"` or `"disk"`. Pairs of different references whose candidates have at most two replacements are applied in contraction form and need no tables, so the tables matter only for higher excitation orders. |
 | `gmres.max_iter` | integer | `100` | Maximum GMRES iterations per solve. |
 | `gmres.restart` | integer | `200` | GMRES restart dimension. |
 | `gmres.res_tol` | number | `1e-8` | GMRES residual RMS tolerance. |
