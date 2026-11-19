@@ -50,6 +50,7 @@ pub fn run(mut input: Input) -> Result<()> {
 
     let t_total = Instant::now();
     let mut prev_states: Vec<SCFState> = Vec::new();
+    let mut prev_hstates: Vec<HSCFState> = Vec::new();
     let mut prev_htracks: Vec<HSCFState> = Vec::new();
     let mut prev_guess = PostGuess::default();
 
@@ -66,8 +67,8 @@ pub fn run(mut input: Input) -> Result<()> {
     let rlist = input.mol.r_list.clone();
     let geoms = input.mol.geoms.clone();
 
-    // Carry converged real states, holomorphic tracking states and post-reference solutions to
-    // the next geometry so the scan follows the same physical solutions.
+    // Carry converged real states, h-SCF states, holomorphic tracking states and post-reference
+    // solutions to the next geometry so the scan follows the same physical solutions.
     for (i, r) in rlist.iter().copied().enumerate() {
         println!("\n");
 
@@ -76,8 +77,7 @@ pub fn run(mut input: Input) -> Result<()> {
             r,
             atoms,
             &mut input,
-            &prev_states,
-            &prev_htracks,
+            (&prev_states, &prev_hstates, &prev_htracks),
             &prev_guess,
             &world,
         )?;
@@ -87,6 +87,7 @@ pub fn run(mut input: Input) -> Result<()> {
         }
 
         prev_states = res.states.clone();
+        prev_hstates = res.hstates.clone();
         prev_htracks = res.htracks.clone();
         prev_guess = res.guess.clone();
     }

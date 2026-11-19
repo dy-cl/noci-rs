@@ -19,7 +19,9 @@ use crate::time_call;
 use crate::{PostSCFData, input::Input};
 
 // Parent/sibling imports.
-use super::{CandidatePool, PT2ProjectedOperator, SNOCIOverlaps, SNOCIPT2Result, SNOCIState};
+use super::{
+    CandidatePool, PT2Guess, PT2ProjectedOperator, SNOCIOverlaps, SNOCIPT2Result, SNOCIState,
+};
 use super::{
     apply_factorised_shifted_omega_m, apply_factorised_shifted_omega_m_mpi, apply_shifted_omega_m,
     apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
@@ -59,6 +61,7 @@ fn empty_state<T: NOCIScalar>(
         scurrent,
         selected: Vec::new(),
         pt2: Vec::new(),
+        guess: PT2Guess::default(),
     }
 }
 
@@ -183,7 +186,8 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
 /// - `blocks`: Candidate-current overlaps and candidate-current Hamiltonian `H_ai`.
 /// - `target`: Index, NOCI energy and current-space eigenvector of the corrected NOCI state.
 /// - `wicks`: Mutable Wick's intermediates, whose Fock intermediates are rebuilt for this state.
-/// - `run`: MPI communicator and SNOCI iteration index.
+/// - `run`: MPI communicator, SNOCI iteration index and the converged amplitudes of the previous
+///   geometry, the GMRES initial guesses.
 /// # Returns:
 /// - `Vec<SNOCIPT2Result>`: NOCI-PT2 results for this state, one per imaginary shift.
 fn solve_pt2_state<T, R, C>(
@@ -193,7 +197,7 @@ fn solve_pt2_state<T, R, C>(
     blocks: (&SNOCIOverlaps<T>, &Array2<T>),
     target: (usize, f64, &Array1<T>),
     mut wicks: Option<&mut WicksShared<T>>,
-    run: (&C, usize),
+    run: (&C, usize, &PT2Guess),
 ) -> Vec<SNOCIPT2Result>
 where
     T: NOCIScalar + Into<Complex64>,
@@ -204,7 +208,7 @@ where
     let (space, selected_space, candidates, candidate_basis) = spaces;
     let (overlaps, h_ai) = blocks;
     let (root, e_noci, coeffs) = target;
-    let (world, it) = run;
+    let (world, it, previous) = run;
 
     // `\langle S^2\rangle` identifies the spin of the corrected state in the printed results.
     let s2 = noci_spin_square(post.ao, space, selected_space, coeffs, post.tol);
@@ -407,6 +411,9 @@ where
                 }
             };
 
+            // Start from the previous geometry's amplitudes of this state and shift.
+            let x0 = previous.continue_to(candidate_basis, root, imag_shift, &rhs);
+
             let g = &opts.gmres;
             let print = if world.rank() == 0 {
                 GMRESPrint::Hylleraas
@@ -418,7 +425,7 @@ where
                     gmres(
                         &mut apply,
                         |x| prec.apply(x),
-                        &rhs,
+                        (&rhs, x0.as_ref()),
                         g.restart,
                         g.max_iter,
                         g.res_tol,
@@ -428,7 +435,7 @@ where
                     gmres(
                         &mut apply,
                         |x| x.clone(),
-                        &rhs,
+                        (&rhs, x0.as_ref()),
                         g.restart,
                         g.max_iter,
                         g.res_tol,
@@ -500,6 +507,8 @@ where
             imag_shift,
             ept2,
             candidate_scores,
+            amplitudes: a.x.mapv(Into::into),
+            rhs: rhs.mapv(Into::into),
             max_abs_a,
             max_abs_v,
             max_abs_av,
@@ -521,6 +530,8 @@ where
 /// - `current_space`: Current selected nonorthogonal determinant space.
 /// - `input`: User-defined input options.
 /// - `wicks`: Mutable Wick's intermediates as we need to update Fock intermediates.
+/// - `previous`: Converged NOCI-PT2 amplitudes of the previous geometry, the GMRES initial
+///   guesses.
 /// - `world`: MPI communicator used to distribute NOCI-PT2 matrix-vector products.
 /// # Returns:
 /// - `SNOCIState`: Final SNOCI state from the last completed iteration.
@@ -529,6 +540,7 @@ pub fn snoci_step<T, R>(
     current_space: &NOCISpace<T>,
     input: &Input,
     mut wicks: Option<&mut WicksShared<T>>,
+    previous: &PT2Guess,
     world: &impl Communicator,
 ) -> SNOCIState<T>
 where
@@ -617,9 +629,10 @@ where
                     (&overlaps, &h_ai),
                     (root, evals[root], &state_coeffs),
                     wicks.as_deref_mut(),
-                    (world, it),
+                    (world, it, previous),
                 ));
             }
+            let guess = PT2Guess::new(&candidate_basis, &pt2);
 
             let remaining = opts.max_dim.saturating_sub(selected_space.len());
             if remaining == 0 && world.rank() == 0 {
@@ -634,6 +647,7 @@ where
                     scurrent,
                     selected: Vec::new(),
                     pt2,
+                    guess,
                 };
             }
 
@@ -656,6 +670,7 @@ where
                 scurrent,
                 selected,
                 pt2,
+                guess,
             };
 
             if world.rank() == 0 {

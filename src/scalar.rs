@@ -100,6 +100,13 @@ pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
     /// - `Self`: Purely imaginary scalar.
     fn from_imag(x: f64) -> Self;
 
+    /// Convert a complex number to this scalar, keeping only the real part of a real scalar.
+    /// # Arguments:
+    /// - `z`: Complex number.
+    /// # Returns
+    /// - `Self`: `\mathrm{Re}\,z` for a real scalar, `z` for a complex one.
+    fn from_complex(z: Complex64) -> Self;
+
     /// `Calculate Einstein summation of scalar matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`
     /// Assumes `g` and `h` are of identical shape.
     /// # Arguments
@@ -175,6 +182,15 @@ impl NOCIScalar for f64 {
         } else {
             panic!("non-zero SNOCI imaginary shift requires complex arithmetic")
         }
+    }
+
+    /// Keep the real part of a complex number.
+    /// # Arguments:
+    /// - `z`: Complex number.
+    /// # Returns
+    /// - `f64`: `\mathrm{Re}\,z`.
+    fn from_complex(z: Complex64) -> Self {
+        z.re
     }
 
     /// `Calculate Einstein summation of real matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`
@@ -254,6 +270,15 @@ impl NOCIScalar for Complex64 {
     /// - `Complex64`: Complex number with zero real part.
     fn from_imag(x: f64) -> Self {
         Complex64::new(0.0, x)
+    }
+
+    /// Return a complex number unchanged.
+    /// # Arguments:
+    /// - `z`: Complex number.
+    /// # Returns
+    /// - `Complex64`: `z`.
+    fn from_complex(z: Complex64) -> Self {
+        z
     }
 
     /// `Calculate Einstein summation of complex matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`

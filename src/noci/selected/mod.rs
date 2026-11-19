@@ -35,11 +35,13 @@
 //!   [doi:10.1021/acs.jctc.0c00468](https://doi.org/10.1021/acs.jctc.0c00468).
 
 mod candidate;
+mod guess;
 mod operators;
 mod step;
 mod types;
 
 // Public type re-exports.
+pub use guess::PT2Guess;
 pub use types::{NOCIPT2Energy, SNOCIPT2Result, SNOCIState};
 
 // Public function re-exports.

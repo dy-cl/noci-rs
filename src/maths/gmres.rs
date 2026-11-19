@@ -568,7 +568,7 @@ fn back_solve<T: NOCIScalar>(
 /// # Arguments:
 /// - `apply`: Matrix-vector product callback.
 /// - `precondition`: Right-preconditioner callback.
-/// - `b`: Right-hand side vector.
+/// - `system`: Right-hand side `b` and the initial guess `x_0`, zero when `None`.
 /// - `restart`: Krylov dimension of each restart cycle.
 /// - `max_iter`: Maximum total number of iterations.
 /// - `tol`: Residual RMS tolerance, accepted only on the true residual.
@@ -579,7 +579,7 @@ fn back_solve<T: NOCIScalar>(
 pub fn gmres<F, P, T>(
     mut apply: F,
     precondition: P,
-    b: &Array1<T>,
+    system: (&Array1<T>, Option<&Array1<T>>),
     restart: usize,
     max_iter: usize,
     tol: f64,
@@ -591,8 +591,12 @@ where
     T: NOCIScalar + Into<Complex64>,
 {
     let gmres_start = Instant::now();
+    let (b, x0) = system;
     let n = b.len();
-    let mut x = Array1::<T>::from_elem(n, T::from_real(0.0));
+    let mut x = match x0 {
+        Some(x0) => x0.clone(),
+        None => Array1::<T>::from_elem(n, T::from_real(0.0)),
+    };
 
     if print != GMRESPrint::Silent {
         print_gmres_header(print);
@@ -610,8 +614,11 @@ where
 
     let rms = (n as f64).sqrt();
 
-    // Start from the zero vector, whose true residual `b - A x` is `b` itself.
-    let mut rtrue = b.clone();
+    // The true residual of the initial guess is `b - A x_0`, which is `b` itself for `x_0 = 0`.
+    let mut rtrue = match x0 {
+        Some(_) => true_residual(&mut apply, b, &x),
+        None => b.clone(),
+    };
     let mut residual_rms = calculate_residual_rms(&rtrue, rms);
 
     if print != GMRESPrint::Silent {
@@ -624,7 +631,7 @@ where
         );
     }
 
-    // Accept the zero initial guess if it already satisfies the true residual tolerance.
+    // Accept the initial guess if it already satisfies the true residual tolerance.
     if residual_rms <= tol {
         return GMRESResult {
             x,

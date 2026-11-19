@@ -34,8 +34,8 @@ pub fn should_run_holomorphic(input: &Input) -> bool {
 /// - `r`: Current geometry.
 /// - `atoms`: Atom types.
 /// - `input`: User input specifications.
-/// - `prev_states`: Converged SCF states at previous r, used for seeding.
-/// - `prev_htracks`: Converged h-SCF states at previous r, used for complex branch tracking.
+/// - `previous`: Converged SCF states, h-SCF states and h-SCF tracking states at previous r,
+///   used for seeding, orbital alignment and complex branch tracking.
 /// - `prev_guess`: Post-reference solutions at previous r, used as starting guesses.
 /// - `world`: MPI communicator object.
 /// # Returns:
@@ -49,8 +49,7 @@ pub fn run_geometry(
     r: f64,
     atoms: &Atoms,
     input: &mut Input,
-    prev_states: &[SCFState],
-    prev_htracks: &[HSCFState],
+    previous: (&[SCFState], &[HSCFState], &[HSCFState]),
     prev_guess: &PostGuess,
     world: &impl Communicator,
 ) -> Result<GeometryResults> {
@@ -72,7 +71,7 @@ pub fn run_geometry(
     // Build and distribute either holomorphic-tracking or ordinary SCF references.
     if should_run_holomorphic(input) {
         let mut prep = if world.rank() == 0 {
-            generate_holomorphic_references(&ao, input, prev_states, prev_htracks)
+            generate_holomorphic_references(&ao, input, previous)
         } else {
             HolomorphicReferencePrep {
                 states: Vec::new(),
@@ -94,8 +93,15 @@ pub fn run_geometry(
             // Run the complex reference and post-reference paths, then snapshot global timings.
             let mut reference =
                 run_reference_space(&ao, input, prep.basis, tol, ReferenceKind::Complex, world);
-            let post =
-                run_holomorphic_post_reference(&ao, &mut reference, input, tol, holomorphic, world);
+            let post = run_holomorphic_post_reference(
+                &ao,
+                &mut reference,
+                input,
+                tol,
+                holomorphic,
+                prev_guess,
+                world,
+            );
             let timings = timers::snapshot_all_mpi(world);
             Ok(GeometryResults::from_holomorphic(
                 r,
@@ -132,7 +138,7 @@ pub fn run_geometry(
     } else {
         // Run the ordinary real-reference path when no holomorphic recipe is requested.
         let mut prep = if world.rank() == 0 {
-            generate_real_references(&ao, input, prev_states, tol)
+            generate_real_references(&ao, input, previous.0, tol)
         } else {
             RealReferencePrep {
                 states: Vec::new(),

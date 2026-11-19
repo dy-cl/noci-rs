@@ -141,3 +141,11 @@ NOCI, NOCI-PT2 and deterministic NOCIQMC {cite}`burton2019`.
 
 When `mol.r` is a list, converged states seed the SCF at the next geometry {cite}`burton2019`, so
 each recipe follows one continuous solution along the scan.
+
+The SCF fixes each molecular orbital only up to its sign, and orbitals of nearly equal energy may
+change order from one geometry to the next. After the SCF, the orbitals of every state are
+therefore aligned with those of the same-labelled state at the previous geometry: with the overlap
+$O = C^{\text{prev}\,T} S\, C$, each orbital takes the position of the previous orbital of the same
+occupancy it overlaps most, with the sign that makes that overlap positive. Determinants, densities
+and energies are unchanged, but an excitation $i \to a$ now names the same orbitals at neighbouring
+geometries, so post-reference amplitudes can be carried along the scan.

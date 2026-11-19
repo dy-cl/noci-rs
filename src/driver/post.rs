@@ -13,7 +13,7 @@ use crate::driver::reference::ReferenceRun;
 use crate::input::Input;
 #[cfg(feature = "gnocc")]
 use crate::nocc::AmplitudeGuess;
-use crate::noci::selected::NOCIPT2Energy;
+use crate::noci::selected::{NOCIPT2Energy, PT2Guess};
 use crate::{AoData, PostSCFData};
 
 /// Post-reference solutions of one geometry carried to the next as starting guesses.
@@ -22,6 +22,8 @@ pub struct PostGuess {
     /// Converged GNOCC amplitudes and their natural orbitals.
     #[cfg(feature = "gnocc")]
     pub nocc: Option<AmplitudeGuess>,
+    /// Converged NOCI-PT2 amplitudes of every corrected state and imaginary shift.
+    pub pt2: PT2Guess,
 }
 
 /// Results from optional post-reference calculations.
@@ -76,7 +78,7 @@ pub fn run_real_post_reference(
     reference: &mut ReferenceRun<f64>,
     input: &mut Input,
     tol: f64,
-    #[cfg_attr(not(feature = "gnocc"), allow(unused_variables))] previous: &PostGuess,
+    previous: &PostGuess,
     world: &impl Communicator,
 ) -> PostReferenceResults {
     // Assemble the immutable post-SCF view shared by all optional methods.
@@ -139,12 +141,13 @@ pub fn run_real_post_reference(
     if input.snoci.is_some() {
         let snoci = input.snoci.as_ref().unwrap();
 
-        let (e_snoci, e_pt2) = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
+        let (e_snoci, e_pt2, guess) = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
             run_snoci::<f64, Complex64>(
                 &post,
                 &reference.space,
                 input,
                 reference.wicks.as_mut(),
+                &previous.pt2,
                 world,
             )
         } else {
@@ -153,9 +156,11 @@ pub fn run_real_post_reference(
                 &reference.space,
                 input,
                 reference.wicks.as_mut(),
+                &previous.pt2,
                 world,
             )
         };
+        out.guess.pt2 = guess;
 
         // Only root publishes the replicated selected-NOCI results.
         if world.rank() == 0 {
@@ -187,6 +192,7 @@ pub fn run_real_post_reference(
 /// - `input`: User input specifications.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `warn_qmc`: Whether to print holomorphic QMC unsupported warning.
+/// - `previous`: Post-reference solutions of the previous geometry.
 /// - `world`: MPI communicator object.
 /// # Returns:
 /// - `PostReferenceResults`: Optional post-reference energies.
@@ -196,6 +202,7 @@ pub fn run_holomorphic_post_reference(
     input: &Input,
     tol: f64,
     warn_qmc: bool,
+    previous: &PostGuess,
     world: &impl Communicator,
 ) -> PostReferenceResults {
     // Holomorphic references currently support deterministic and selected post-reference paths.
@@ -229,13 +236,15 @@ pub fn run_holomorphic_post_reference(
 
     // Complex references and imaginary shifts require complex selected-NOCI arithmetic.
     if input.snoci.is_some() {
-        let (e_snoci, e_pt2) = run_snoci::<Complex64, Complex64>(
+        let (e_snoci, e_pt2, guess) = run_snoci::<Complex64, Complex64>(
             &post,
             &reference.space,
             input,
             reference.wicks.as_mut(),
+            &previous.pt2,
             world,
         );
+        out.guess.pt2 = guess;
 
         if world.rank() == 0 {
             out.e_snoci = Some(e_snoci);
