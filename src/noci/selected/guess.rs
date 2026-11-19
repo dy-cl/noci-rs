@@ -41,7 +41,11 @@ impl PT2Guess {
     ) -> Self {
         Self {
             candidates: (0..candidates.len())
-                .map(|i| (candidate_key(candidates, i), i))
+                .map(|i| {
+                    let (oa, ob) = candidates.occupations(NOCIIndex(i));
+                    let label = candidates.parent_determinant(NOCIIndex(i)).label.clone();
+                    ((label, oa, ob), i)
+                })
                 .collect(),
             solves: results
                 .iter()
@@ -80,7 +84,11 @@ impl PT2Guess {
 
         // Position of every new candidate among the previous candidates.
         let matched = (0..candidates.len())
-            .map(|i| self.candidates.get(&candidate_key(candidates, i)).copied())
+            .map(|i| {
+                let (oa, ob) = candidates.occupations(NOCIIndex(i));
+                let label = candidates.parent_determinant(NOCIIndex(i)).label.clone();
+                self.candidates.get(&(label, oa, ob)).copied()
+            })
             .collect::<Vec<_>>();
 
         // `\langle b_{\text{prev}}, b\rangle` over the shared candidates.
@@ -101,19 +109,4 @@ impl PT2Guess {
                 .collect(),
         )
     }
-}
-
-/// Identify a candidate by its parent label and its alpha and beta occupations.
-/// # Arguments:
-/// - `candidates`: Candidate determinants.
-/// - `i`: Candidate position.
-/// # Returns:
-/// - `(String, u128, u128)`: Parent label and alpha and beta occupations.
-fn candidate_key<T: StateScalar>(
-    candidates: &NOCISpace<T>,
-    i: usize,
-) -> (String, u128, u128) {
-    let (oa, ob) = candidates.occupations(NOCIIndex(i));
-    let label = candidates.parent_determinant(NOCIIndex(i)).label.clone();
-    (label, oa, ob)
 }
