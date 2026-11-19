@@ -4,7 +4,7 @@ mod common;
 use noci_rs::basis::generate_reference_noci_basis;
 use noci_rs::determinant::{NOCIIndex, NOCISpace};
 use noci_rs::elements::{NOCIData, build_mo_cache, build_wicks_shared};
-use noci_rs::noci::selected::snoci_step;
+use noci_rs::noci::selected::{PT2Guess, snoci_step};
 use noci_rs::noci::{build_noci_hs, calculate_noci_energy};
 use noci_rs::{HSCFState, PostSCFData};
 use num_complex::Complex64;
@@ -60,9 +60,23 @@ fn run_snoci_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
 
     let snoci = input.snoci.as_ref().unwrap();
     let result = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
-        snoci_step::<f64, Complex64>(&post, &reference_space, &input, None, &world)
+        snoci_step::<f64, Complex64>(
+            &post,
+            &reference_space,
+            &input,
+            None,
+            &PT2Guess::default(),
+            &world,
+        )
     } else {
-        snoci_step::<f64, f64>(&post, &reference_space, &input, None, &world)
+        snoci_step::<f64, f64>(
+            &post,
+            &reference_space,
+            &input,
+            None,
+            &PT2Guess::default(),
+            &world,
+        )
     };
 
     assert!(
@@ -126,9 +140,23 @@ fn run_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
 
     let snoci = input.snoci.as_ref().unwrap();
     let result = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
-        snoci_step::<f64, Complex64>(&post, &reference_space, &input, Some(&mut wicks), &world)
+        snoci_step::<f64, Complex64>(
+            &post,
+            &reference_space,
+            &input,
+            Some(&mut wicks),
+            &PT2Guess::default(),
+            &world,
+        )
     } else {
-        snoci_step::<f64, f64>(&post, &reference_space, &input, Some(&mut wicks), &world)
+        snoci_step::<f64, f64>(
+            &post,
+            &reference_space,
+            &input,
+            Some(&mut wicks),
+            &PT2Guess::default(),
+            &world,
+        )
     };
 
     assert!(
@@ -190,6 +218,7 @@ fn run_complex_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
         &reference_space,
         &input,
         Some(&mut wicks),
+        &PT2Guess::default(),
         &world,
     );
 

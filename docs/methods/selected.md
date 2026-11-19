@@ -74,6 +74,14 @@ available:
   {cite}`woodbury1950`, capturing the projection against $|\Psi^{(k)}\rangle$ that the diagonal
   misses.
 
+In a geometry scan, GMRES starts from the converged amplitudes of the previous geometry. The
+candidates are matched by parent reference and occupation, which the orbital alignment after the
+SCF ([SCF](scf.md)) keeps comparable, and candidates new to this geometry start from zero. The NOCI
+state is fixed only up to a phase, which carries into both $\mathbf V^{(k)}$ and
+$\mathbf a^{(k)}$, so the previous amplitudes are rescaled by the phase of
+$\langle \mathbf V^{(k)}_{\text{prev}}, \mathbf V^{(k)}\rangle$. The solution is unchanged to
+within the GMRES tolerance.
+
 Products of ${}^{xJ,wI}M^{(k)}$ with the amplitudes are either evaluated on demand from the
 factorised tables and Wick intermediates, or from a stored packed copy (`full_m`). MPI
 distributes the products across ranks and Rayon parallelises the matrix elements within each rank.

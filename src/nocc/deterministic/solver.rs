@@ -385,7 +385,7 @@ fn newton_step<T: NOCIScalar + Into<Complex64>>(
     let result = gmres(
         jacobian,
         precondition,
-        &b,
+        (&b, None),
         options.gmres.restart,
         options.gmres.max_iter,
         tol,

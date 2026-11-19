@@ -5,12 +5,16 @@
 
 // External crate imports.
 use ndarray::{Array1, Array2};
+use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::NOCIScalar;
 use crate::determinant::NOCIIndex;
 use crate::elements::{FockData, NOCIData};
 use crate::input::SNOCIPreconditioner;
+
+// Parent/sibling imports.
+use super::PT2Guess;
 
 /// Storage for the result of a selected NOCI step.
 pub struct SNOCIState<T: NOCIScalar> {
@@ -26,6 +30,8 @@ pub struct SNOCIState<T: NOCIScalar> {
     pub(crate) selected: Vec<NOCIIndex>,
     // Results of the NOCI-PT2 solve.
     pub pt2: Vec<SNOCIPT2Result>,
+    /// Converged NOCI-PT2 amplitudes, carried to the next geometry as initial guesses.
+    pub guess: PT2Guess,
 }
 
 // Storage for result of a PT2 solve.
@@ -42,6 +48,10 @@ pub struct SNOCIPT2Result {
     pub ept2: f64,
     /// Importance scores `|a_i v_i|` for this imaginary shift.
     pub candidate_scores: Vec<f64>,
+    /// Converged first-order amplitudes `a_i`.
+    pub amplitudes: Array1<Complex64>,
+    /// Right-hand side `b_i = -V_i` of the amplitude equation.
+    pub rhs: Array1<Complex64>,
     /// Largest first-order amplitude magnitude.
     pub max_abs_a: f64,
     /// Largest projected coupling magnitude.

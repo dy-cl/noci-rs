@@ -93,8 +93,15 @@ pub fn run_geometry(
             // Run the complex reference and post-reference paths, then snapshot global timings.
             let mut reference =
                 run_reference_space(&ao, input, prep.basis, tol, ReferenceKind::Complex, world);
-            let post =
-                run_holomorphic_post_reference(&ao, &mut reference, input, tol, holomorphic, world);
+            let post = run_holomorphic_post_reference(
+                &ao,
+                &mut reference,
+                input,
+                tol,
+                holomorphic,
+                prev_guess,
+                world,
+            );
             let timings = timers::snapshot_all_mpi(world);
             Ok(GeometryResults::from_holomorphic(
                 r,
