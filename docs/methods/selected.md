@@ -82,8 +82,19 @@ $\mathbf a^{(k)}$, so the previous amplitudes are rescaled by the phase of
 $\langle \mathbf V^{(k)}_{\text{prev}}, \mathbf V^{(k)}\rangle$. The solution is unchanged to
 within the GMRES tolerance.
 
-Products of ${}^{xJ,wI}M^{(k)}$ with the amplitudes are either evaluated on demand from the
-factorised tables and Wick intermediates, or from a stored packed copy (`full_m`). MPI
+Products of ${}^{xJ,wI}M^{(k)}$ with the amplitudes are either evaluated on demand, or from a
+stored packed copy (`full_m`). On demand, the one-body operator factorises over the spins of each
+pair of references, $F = F^\alpha \otimes S^\beta + S^\alpha \otimes F^\beta$. When the candidates
+of two different references have at most two replacements, each same-spin factor is applied in
+contraction form rather than element by element: the occupied orbitals of the ket reference are
+made biorthogonal to those of the bra, $\tilde\phi = C^x_o (C^{w\dagger}_o S C^x_o)^{-1}$, the
+virtual orbitals of both are reduced to their remainders outside the occupied spaces and made
+biorthogonal in turn, and the operator then acts by the orthogonal Slater–Condon rules. Every step
+is a matrix product over orbital indices, so a product costs $O(o^2v^2(o+v))$ per reference pair
+and spin rather than the square of the number of spin strings. Near-zero occupied overlaps are
+deformed by $\epsilon$, which makes every factor a polynomial in $\epsilon$, and the factors at
+$\epsilon = 0$ follow exactly from a few well-conditioned values of $\epsilon$. Other pairs use
+the spin-factorised tables and Wick intermediates (`factor_tables`). MPI
 distributes the products across ranks and Rayon parallelises the matrix elements within each rank.
 
 ### Imaginary shifts
