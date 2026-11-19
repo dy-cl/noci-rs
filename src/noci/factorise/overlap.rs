@@ -22,6 +22,7 @@ use crate::input::SNOCIStorage;
 use crate::maths::dot_f64;
 
 // Parent/sibling imports.
+use super::contracted::{CONTRACTRANK, ContractedPair};
 use super::storage::{OverlapFactorStorage, OverlapStoragePlan};
 use super::{SpinFactorisation, ordered_parent_pair};
 
@@ -264,10 +265,24 @@ pub(crate) struct OverlapFactorBlock {
     beta_columns: Vec<usize>,
 }
 
-/// Persistent cross-parent overlap factors indexed by ordered parent pair `QP`.
+/// Representation of one ordered parent pair `QP` in the overlap products, chosen as for the
+/// one-body operator.
+enum OverlapBlock {
+    /// Same-parent pair, evaluated by the orthogonal or direct rules.
+    Orthogonal,
+    /// Cross-parent pair whose factors are regenerated on demand.
+    Transient,
+    /// Cross-parent pair with persistent factor tables.
+    Factorised(OverlapFactorBlock),
+    /// Cross-parent pair in contraction form, with factor tables only when proposal CDFs or
+    /// auxiliary columns need them.
+    Contracted(ContractedPair<f64>, Option<OverlapFactorBlock>),
+}
+
+/// Cross-parent overlap factors indexed by ordered parent pair `QP`.
 pub(crate) struct OverlapFactors {
-    /// Cross-parent factor blocks indexed as `Q * nparent + P`.
-    blocks: Vec<Option<OverlapFactorBlock>>,
+    /// Parent-pair representations indexed as `Q * nparent + P`.
+    blocks: Vec<OverlapBlock>,
 }
 
 struct OverlapContractionScratch {
@@ -305,6 +320,11 @@ pub(crate) struct OverlapScratch {
 pub(crate) struct AuxiliaryOverlapScratch {
     /// Sparse auxiliary sources grouped by defining parent.
     updates: Vec<AuxiliaryParentUpdates>,
+    /// Sources outside the retained single and double replacements, grouped by parent.
+    remainder: Vec<AuxiliaryParentUpdates>,
+    /// Sources within the retained single and double replacements, as alpha and beta string IDs
+    /// with their amplitude, grouped by parent.
+    retained: Vec<Vec<(usize, usize, f64)>>,
     /// Source parents touched by the current auxiliary residual.
     active_parents: Vec<usize>,
     /// Shared target grouping and blocked-contraction workspace.
@@ -318,15 +338,15 @@ impl OverlapFactors {
     /// # Returns:
     /// - `(usize, usize)`: Used additional alpha and beta columns across factor blocks.
     pub(crate) fn added_components(&self) -> (usize, usize) {
-        self.blocks
-            .iter()
-            .flatten()
-            .fold((0, 0), |(alpha, beta), block| {
+        (0..self.blocks.len()).filter_map(|k| self.tables(k)).fold(
+            (0, 0),
+            |(alpha, beta), block| {
                 (
                     alpha + block.nsa - block.retained_nsa,
                     beta + block.nsb - block.retained_nsb,
                 )
-            })
+            },
+        )
     }
     /// Measure the actual overlap-factor and proposal-CDF backing.
     /// # Arguments:
@@ -334,16 +354,16 @@ impl OverlapFactors {
     /// # Returns:
     /// - `(usize, usize)`: Factor and CDF backing bytes, counting each block once.
     pub(crate) fn storage_bytes(&self) -> (usize, usize) {
-        self.blocks
-            .iter()
-            .flatten()
-            .fold((0, 0), |(tables, cdfs), block| {
+        (0..self.blocks.len()).filter_map(|k| self.tables(k)).fold(
+            (0, 0),
+            |(tables, cdfs), block| {
                 let (alpha, beta, acdf, bcdf) = block.factors.factors();
                 (
                     tables + (alpha.len() + beta.len()) * std::mem::size_of::<f64>(),
                     cdfs + (acdf.len() + bcdf.len()) * std::mem::size_of::<f64>(),
                 )
-            })
+            },
+        )
     }
 
     /// Return the persistent factor block for ordered parent pair `QP`.
@@ -360,7 +380,46 @@ impl OverlapFactors {
         target_parent: usize,
         source_parent: usize,
     ) -> Option<&OverlapFactorBlock> {
-        self.blocks[target_parent * nparent + source_parent].as_ref()
+        self.tables(target_parent * nparent + source_parent)
+    }
+
+    /// Return the contraction form of ordered parent pair `QP`.
+    /// # Arguments:
+    /// - `self`: Overlap factors.
+    /// - `nparent`: Number of parent references in the spin factorisation.
+    /// - `target_parent`: Target parent `Q`.
+    /// - `source_parent`: Source parent `P`.
+    /// # Returns
+    /// - `Option<&ContractedPair<f64>>`: The contracted pair when the pair is in contraction form.
+    fn contracted(
+        &self,
+        nparent: usize,
+        target_parent: usize,
+        source_parent: usize,
+    ) -> Option<&ContractedPair<f64>> {
+        match &self.blocks[target_parent * nparent + source_parent] {
+            OverlapBlock::Contracted(pair, _) => Some(pair),
+            _ => None,
+        }
+    }
+
+    /// Return the factor tables of one parent pair, whether held alone or beside its contraction
+    /// form.
+    /// # Arguments:
+    /// - `self`: Overlap factors.
+    /// - `pair`: Parent-pair index `Q * nparent + P`.
+    /// # Returns
+    /// - `Option<&OverlapFactorBlock>`: The factor tables when present.
+    fn tables(
+        &self,
+        pair: usize,
+    ) -> Option<&OverlapFactorBlock> {
+        match &self.blocks[pair] {
+            OverlapBlock::Factorised(tables) | OverlapBlock::Contracted(_, Some(tables)) => {
+                Some(tables)
+            }
+            _ => None,
+        }
     }
 
     /// Return the mutable persistent factor block for ordered parent pair `QP`.
@@ -377,7 +436,12 @@ impl OverlapFactors {
         target_parent: usize,
         source_parent: usize,
     ) -> Option<&mut OverlapFactorBlock> {
-        self.blocks[target_parent * nparent + source_parent].as_mut()
+        match &mut self.blocks[target_parent * nparent + source_parent] {
+            OverlapBlock::Factorised(tables) | OverlapBlock::Contracted(_, Some(tables)) => {
+                Some(tables)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -486,19 +550,29 @@ impl SpinFactorisation {
     /// - `cache`: Directory for persistent file-backed factor blocks.
     /// - `rank`: MPI rank used in factor-cache filenames.
     /// - `storage`: Requested persistent factor-table storage backend.
-    /// - `build_cdfs`: Whether to build overlap-weighted proposal CDFs.
+    /// - `uses`: Whether the tables also serve overlap-weighted proposal CDFs, which are then
+    ///   built, and BApply auxiliary columns. Pairs in contraction form need tables only for these.
     /// # Returns:
-    /// - `OverlapFactors`: Persistent cross-parent factor tables, or transient markers for `none`.
+    /// - `OverlapFactors`: Persistent cross-parent factor tables, or transient markers for `none`,
+    ///   and the pairs in contraction form.
     pub(crate) fn build_overlap_factors(
         &self,
         data: &NOCIData<'_, f64>,
         cache: &Path,
         rank: i32,
         storage: SNOCIStorage,
-        build_cdfs: bool,
+        uses: (bool, bool),
     ) -> OverlapFactors {
-        // Allocate one optional factor block per ordered parent pair and select its backend.
+        let (build_cdfs, auxiliary) = uses;
         let nparent = self.parents.len();
+
+        // Pairs of different parents within single and double replacements are applied in
+        // contraction form.
+        let contracted = (0..nparent * nparent)
+            .map(|k| ContractedPair::new((k / nparent, k % nparent), self, data, None))
+            .collect::<Vec<_>>();
+
+        // Allocate one optional factor block per ordered parent pair and select its backend.
         let mut factor_blocks = (0..nparent * nparent).map(|_| None).collect::<Vec<_>>();
         let mut storage_plan = OverlapStoragePlan::new(cache, rank, storage);
         // Persistent tables require enabled Wick intermediates and a RAM or disk backend.
@@ -514,8 +588,12 @@ impl SpinFactorisation {
                 }
 
                 for source_parent in 0..nparent {
-                    // Equal-parent overlaps use the orthogonal path and need no factor table.
-                    if target_parent == source_parent {
+                    // Equal-parent overlaps use the orthogonal path and need no factor table, nor
+                    // do contracted pairs unless the tables serve sampling or auxiliary columns.
+                    let pair = target_parent * nparent + source_parent;
+                    if target_parent == source_parent
+                        || (contracted[pair].is_some() && !build_cdfs && !auxiliary)
+                    {
                         continue;
                     }
 
@@ -607,10 +685,20 @@ impl SpinFactorisation {
             }
         }
 
-        // Missing blocks intentionally select transient or same-parent overlap evaluation.
-        OverlapFactors {
-            blocks: factor_blocks,
-        }
+        // Combine the contraction form and the tables into one representation per pair.
+        let blocks = contracted
+            .into_iter()
+            .zip(factor_blocks)
+            .enumerate()
+            .map(|(k, block)| match block {
+                _ if k / nparent == k % nparent => OverlapBlock::Orthogonal,
+                (Some(pair), tables) => OverlapBlock::Contracted(pair, tables),
+                (None, Some(tables)) => OverlapBlock::Factorised(tables),
+                (None, None) => OverlapBlock::Transient,
+            })
+            .collect();
+
+        OverlapFactors { blocks }
     }
 
     /// Materialise persistent factor columns for active auxiliary source spin strings.
@@ -815,6 +903,10 @@ impl SpinFactorisation {
 
         AuxiliaryOverlapScratch {
             updates,
+            remainder: (0..self.parents.len())
+                .map(AuxiliaryParentUpdates::new)
+                .collect(),
+            retained: vec![Vec::new(); self.parents.len()],
             active_parents: Vec::new(),
             contraction: self.overlap_contraction_scratch(),
         }
@@ -853,23 +945,37 @@ impl SpinFactorisation {
         // Clear only source-parent buckets that were active in the previous application.
         for &parent in &scratch.active_parents {
             scratch.updates[parent].clear();
+            scratch.remainder[parent].clear();
+            scratch.retained[parent].clear();
         }
         scratch.active_parents.clear();
 
-        // Group realised auxiliary residuals by parent and active spin strings.
+        // Group realised auxiliary residuals by parent and active spin strings. Retained strings
+        // are an exact prefix of the auxiliary ones, so sources within the retained single and
+        // double replacements are also kept apart for the contraction form.
         for (det, dn) in updates {
             if dn == 0.0 {
                 continue;
             }
 
             let state = auxiliary.spin_string_pair(det);
-            let source = &mut scratch.updates[state.parent];
-
-            if source.entries.is_empty() {
-                scratch.active_parents.push(state.parent);
+            let parent = state.parent;
+            if scratch.updates[parent].entries.is_empty() {
+                scratch.active_parents.push(parent);
             }
+            scratch.updates[parent].push(state, dn);
 
-            source.push(state, dn);
+            let strings = &self.parents[parent];
+            let (a, b) = (state.aid.0, state.bid.0);
+            let retained = a < strings.areps.len()
+                && b < strings.breps.len()
+                && (strings.areps[a].cache.rank + strings.breps[b].cache.rank) as usize
+                    <= CONTRACTRANK;
+            if retained {
+                scratch.retained[parent].push((a, b, dn));
+            } else {
+                scratch.remainder[parent].push(state, dn);
+            }
         }
 
         if scratch.active_parents.is_empty() {
@@ -884,16 +990,58 @@ impl SpinFactorisation {
         // `\delta N_w = \sum_{P,D}<\Phi_w|D^P>\chi_D^P = (B^\dagger\chi)_w`.
         // Hence every realised update obeys
         // `\delta N \in range(B^\dagger) = range(S)`.
+
+        // Retained single and double replacements of contracted parent pairs run concurrently in
+        // contraction form, as in the one-body operator.
+        let nparent = self.parents.len();
+        let contracted = active_parents
+            .iter()
+            .flat_map(|&p| target_blocks.iter().map(move |target| (p, target)))
+            .filter_map(|(p, target)| {
+                let pair = factors.contracted(nparent, target.parent, p)?;
+                Some((pair, &scratch.retained[p], target))
+            })
+            .collect::<Vec<_>>();
+        let updates = contracted
+            .par_iter()
+            .map(|&(pair, sources, target)| {
+                let targets = target
+                    .targets
+                    .iter()
+                    .map(|t| (t.local, t.a, t.b))
+                    .collect::<Vec<_>>();
+                pair.apply_pair(self, data, sources, &targets, 1.0)
+            })
+            .collect::<Vec<_>>();
+        for (local, value) in updates.into_iter().flatten() {
+            populations[local] += value;
+        }
+
+        // The remaining sources use the exact same-parent map or the factor tables.
         for &parent in &active_parents {
-            let mut source = std::mem::replace(
+            let mut all = std::mem::replace(
                 &mut scratch.updates[parent],
+                AuxiliaryParentUpdates::new(parent),
+            );
+            let mut remainder = std::mem::replace(
+                &mut scratch.remainder[parent],
                 AuxiliaryParentUpdates::new(parent),
             );
 
             for target in &target_blocks {
                 // Same-parent auxiliary occupations map exactly without Wick factorisation.
-                if target.parent == source.parent {
-                    Self::apply_auxiliary_source_exact(populations, target, &source, auxiliary);
+                if target.parent == all.parent {
+                    Self::apply_auxiliary_source_exact(populations, target, &all, auxiliary);
+                    continue;
+                }
+
+                // Contracted pairs leave only the sources outside the retained single and double
+                // replacements to the factor tables.
+                let source = match factors.contracted(nparent, target.parent, parent) {
+                    Some(_) => &remainder,
+                    None => &all,
+                };
+                if source.entries.is_empty() {
                     continue;
                 }
 
@@ -908,7 +1056,7 @@ impl SpinFactorisation {
                     factors,
                     auxiliary,
                     target.parent,
-                    &source,
+                    source,
                     (&pair, target_left),
                 );
                 if let Some(block) = persistent {
@@ -927,7 +1075,7 @@ impl SpinFactorisation {
                 let factorised = source.factorised_source();
                 self.build_auxiliary_overlap_factor_tables(
                     target,
-                    &source,
+                    source,
                     auxiliary,
                     (&pair, target_left),
                     &mut scratch.contraction,
@@ -959,8 +1107,11 @@ impl SpinFactorisation {
                     }
                 }
             }
-            source.clear();
-            scratch.updates[parent] = source;
+            all.clear();
+            remainder.clear();
+            scratch.updates[parent] = all;
+            scratch.remainder[parent] = remainder;
+            scratch.retained[parent].clear();
         }
 
         // Return all moved buffers to scratch while retaining their allocations.
@@ -1017,6 +1168,37 @@ impl SpinFactorisation {
             self.take_overlap_target_blocks(targets, data, &mut scratch.contraction);
         let mut active_parents = std::mem::take(&mut scratch.active_parents);
 
+        // Contracted parent pairs run concurrently, as in the one-body operator.
+        let nparent = self.parents.len();
+        let contracted = active_parents
+            .iter()
+            .flat_map(|&p| target_blocks.iter().map(move |target| (p, target)))
+            .filter_map(|(p, target)| {
+                let pair = factors.contracted(nparent, target.parent, p)?;
+                Some((pair, &scratch.updates[p], target))
+            })
+            .collect::<Vec<_>>();
+        let updates = contracted
+            .par_iter()
+            .map(|&(pair, source, target)| {
+                let sources = source
+                    .entries
+                    .iter()
+                    .map(|e| (source.aids[e.apos], source.bids[e.bpos], e.dn))
+                    .collect::<Vec<_>>();
+                let targets = target
+                    .targets
+                    .iter()
+                    .map(|t| (t.local, t.a, t.b))
+                    .collect::<Vec<_>>();
+                pair.apply_pair(self, data, &sources, &targets, 1.0)
+            })
+            .collect::<Vec<_>>();
+        for (local, value) in updates.into_iter().flatten() {
+            populations[local] += value;
+        }
+
+        // The remaining pairs use the orthogonal, factor-table or direct paths.
         for &source_parent in &active_parents {
             let mut source = std::mem::replace(
                 &mut scratch.updates[source_parent],
@@ -1027,6 +1209,12 @@ impl SpinFactorisation {
                 continue;
             }
             for target in &target_blocks {
+                if factors
+                    .contracted(nparent, target.parent, source_parent)
+                    .is_some()
+                {
+                    continue;
+                }
                 self.apply_overlap_parent_pair(
                     populations,
                     target,
@@ -1260,7 +1448,7 @@ impl SpinFactorisation {
         };
 
         // Apply a persistent parent-pair block when RAM or disk factors were materialised.
-        let factors = factors.blocks[target.parent * self.parents.len() + source.parent].as_ref();
+        let factors = factors.block(self.parents.len(), target.parent, source.parent);
         if let Some(factors) = factors {
             self.apply_persistent_overlap_parent_pair(
                 output,
