@@ -113,8 +113,15 @@ pub fn generate_holomorphic_references(
 /// With `O = C^{\text{prev}T} S C`, each new orbital `j` takes the position `i` of the previous
 /// orbital of the same occupancy with the largest `|O_{ij}|`, and its sign is chosen so that
 /// `\mathrm{Re}\,O_{ij} > 0`. When the largest overlaps do not define a permutation the order is
-/// kept and only the signs are chosen. The bilinear overlap is the holomorphic metric, so
-/// `C^T S C = I` holds after alignment. Determinants, densities and energies are unchanged.
+/// kept and only the signs are chosen. The alignment is `C \rightarrow C P`, with `P` a signed
+/// permutation that never exchanges an occupied orbital with a virtual one, so no physical
+/// quantity changes. The occupied space keeps the same orbitals, so the density
+/// `D = C_{\text{occ}} C_{\text{occ}}^T`, the Fock matrix and the SCF energy are unchanged. The
+/// determinant `\det(C_{\text{occ}})` changes by at most an overall sign, which the NOCI
+/// eigenvector absorbs, so NOCI energies are unchanged. As `P^T P = I`, the orthonormality
+/// `C^T S C = I` still holds, in the bilinear holomorphic metric too. Only the labels of the
+/// orbitals change, so that an excitation `i \to a` names the same orbitals at neighbouring
+/// geometries and amplitudes can be carried along a scan.
 /// # Arguments:
 /// - `states`: States of this geometry, aligned in place.
 /// - `previous`: States of the previous geometry.
@@ -129,6 +136,7 @@ fn align_orbitals<T: StateScalar>(
     let s = s.mapv(T::from_real);
     let occupied = |bits: u128, k: usize| bits >> k & 1 == 1;
 
+    // States new at this geometry have nothing to align with and are left as the SCF gave them.
     for state in states.iter_mut() {
         let Some(old) = previous.iter().find(|p| p.label == state.label) else {
             continue;
@@ -137,13 +145,19 @@ fn align_orbitals<T: StateScalar>(
             (&mut state.ca, &mut state.oa, &old.ca, old.oa),
             (&mut state.cb, &mut state.ob, &old.cb, old.ob),
         ] {
+            // A different basis size or electron count has no orbital correspondence.
             if c.dim() != cold.dim() || occ.count_ones() != occold.count_ones() {
                 continue;
             }
+
+            // `O_{ij} = C^{\text{prev}T}_i S C_j`, which is `\pm 1` for an orbital that only
+            // changed sign or position, and close to it for small geometry steps.
             let n = c.ncols();
             let o = cold.t().dot(&s.dot(&**c));
 
             // Previous orbital of the same occupancy with the largest overlap with each new one.
+            // Matching only within the occupied or the virtual orbitals keeps the occupied space,
+            // and therefore the determinant and its density, unchanged.
             let mut place = (0..n)
                 .map(|j| {
                     (0..n)
@@ -152,6 +166,9 @@ fn align_orbitals<T: StateScalar>(
                         .unwrap_or(j)
                 })
                 .collect::<Vec<_>>();
+
+            // Two new orbitals claiming one previous orbital means the overlaps do not identify a
+            // reordering, so keep the SCF order and only choose the signs.
             let mut claimed = vec![false; n];
             if place
                 .iter()
@@ -160,7 +177,9 @@ fn align_orbitals<T: StateScalar>(
                 place = (0..n).collect();
             }
 
-            // Move each orbital to its place with the sign giving `\mathrm{Re}\,O_{ij} > 0`.
+            // Move each orbital to its place with the sign giving `\mathrm{Re}\,O_{ij} > 0`. A
+            // sign flip changes the determinant by at most an overall sign, which the NOCI
+            // eigenvector absorbs.
             let mut aligned = Array2::<T>::zeros(c.raw_dim());
             for (j, &i) in place.iter().enumerate() {
                 let sign = if o[(i, j)].re() < 0.0 {
@@ -172,6 +191,8 @@ fn align_orbitals<T: StateScalar>(
                     .column_mut(i)
                     .assign(&c.column(j).mapv(|x| x * sign));
             }
+
+            // The occupation bits follow the occupied orbitals to their new positions.
             *occ = (0..n)
                 .filter(|&j| occupied(*occ, j))
                 .fold(0, |bits, j| bits | 1 << place[j]);
