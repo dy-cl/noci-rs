@@ -3,9 +3,10 @@
 // External crate imports.
 use ndarray::linalg::general_mat_mul;
 use ndarray::{
-    Array2, Array4, ArrayView2, ArrayView4, ArrayViewMut2, ArrayViewMut4, LinalgScalar, Zip,
+    Array2, Array4, ArrayView2, ArrayView4, ArrayViewMut2, ArrayViewMut4, Axis, LinalgScalar, Zip,
 };
 use num_complex::Complex64;
+use rayon::prelude::*;
 
 /// Reusable allocation boundary for AO-to-MO ERI transformations.
 pub struct ERIAO2MOScratch<T: ERIScalar> {
@@ -42,7 +43,7 @@ struct AO2MOScratch<'a, T: ERIScalar> {
 }
 
 /// Scalar type accepted by Hermitian ERI AO-to-MO transformation dispatch.
-pub trait ERIScalar: LinalgScalar + From<f64> {
+pub trait ERIScalar: LinalgScalar + From<f64> + Send + Sync {
     /// Construct reusable scratch storage for AO-to-MO ERI transformations.
     /// # Arguments:
     /// - `eri`: AO basis ERIs.
@@ -276,8 +277,6 @@ fn eri_ao2mo_into<T: ERIScalar>(
     let nmoq = coefficients.c_nu_q.ncols();
     let nmor = coefficients.c_lam_r.ncols();
     let nmos = coefficients.c_sig_s.ncols();
-    let alpha = T::from(1.0);
-    let beta = T::from(0.0);
     let worka = scratch.worka;
     let workb = scratch.workb;
 
@@ -288,41 +287,73 @@ fn eri_ao2mo_into<T: ERIScalar>(
 
     // Contract the last AO index first: `(\mu\nu|\lambda\sigma) \to (\mu\nu|\lambda s)`.
     let erirows = eri.into_shape((nbas * nbas * nbas, nbas)).unwrap();
-    let mut t1rows =
+    let t1rows =
         ArrayViewMut2::from_shape((nbas * nbas * nbas, nmos), &mut worka[..t1len]).unwrap();
-    general_mat_mul(alpha, &erirows, &coefficients.c_sig_s, beta, &mut t1rows);
+    par_mat_mul(erirows, &coefficients.c_sig_s, t1rows);
 
     // Move `\lambda` to the contiguous axis for the next matrix multiplication.
     let src = ArrayView4::from_shape((nbas, nbas, nbas, nmos), &worka[..t1len]).unwrap();
     let mut dst = ArrayViewMut4::from_shape((nbas, nbas, nmos, nbas), &mut workb[..t1len]).unwrap();
-    dst.assign(&src.permuted_axes([0, 1, 3, 2]));
+    Zip::from(&mut dst)
+        .and(&src.permuted_axes([0, 1, 3, 2]))
+        .par_for_each(|d, &x| *d = x);
 
     // Contract `\lambda \to r`, then rotate `\nu` into the contiguous axis.
     let t1rows = ArrayView2::from_shape((nbas * nbas * nmos, nbas), &workb[..t1len]).unwrap();
-    let mut t2rows =
+    let t2rows =
         ArrayViewMut2::from_shape((nbas * nbas * nmos, nmor), &mut worka[..t2len]).unwrap();
-    general_mat_mul(alpha, &t1rows, &coefficients.c_lam_r, beta, &mut t2rows);
+    par_mat_mul(t1rows, &coefficients.c_lam_r, t2rows);
 
     let src = ArrayView4::from_shape((nbas, nbas, nmos, nmor), &worka[..t2len]).unwrap();
     let mut dst = ArrayViewMut4::from_shape((nbas, nmos, nmor, nbas), &mut workb[..t2len]).unwrap();
-    dst.assign(&src.permuted_axes([0, 2, 3, 1]));
+    Zip::from(&mut dst)
+        .and(&src.permuted_axes([0, 2, 3, 1]))
+        .par_for_each(|d, &x| *d = x);
 
     // Contract `\nu \to q`, then expose `\mu` for the final contraction.
     let t2rows = ArrayView2::from_shape((nbas * nmos * nmor, nbas), &workb[..t2len]).unwrap();
-    let mut t3rows =
+    let t3rows =
         ArrayViewMut2::from_shape((nbas * nmos * nmor, nmoq), &mut worka[..t3len]).unwrap();
-    general_mat_mul(alpha, &t2rows, &coefficients.c_nu_q, beta, &mut t3rows);
+    par_mat_mul(t2rows, &coefficients.c_nu_q, t3rows);
 
     let src = ArrayView4::from_shape((nbas, nmos, nmor, nmoq), &worka[..t3len]).unwrap();
     let mut dst = ArrayViewMut4::from_shape((nmos, nmor, nmoq, nbas), &mut workb[..t3len]).unwrap();
-    dst.assign(&src.permuted_axes([1, 2, 3, 0]));
+    Zip::from(&mut dst)
+        .and(&src.permuted_axes([1, 2, 3, 0]))
+        .par_for_each(|d, &x| *d = x);
 
     // Contract `\mu \to p` and permute temporary `[s,r,q,p]` into `[p,q,r,s]`.
     let t3rows = ArrayView2::from_shape((nmos * nmor * nmoq, nbas), &workb[..t3len]).unwrap();
-    let mut t4rows =
+    let t4rows =
         ArrayViewMut2::from_shape((nmos * nmor * nmoq, nmop), &mut worka[..t4len]).unwrap();
-    general_mat_mul(alpha, &t3rows, &coefficients.c_mu_p, beta, &mut t4rows);
+    par_mat_mul(t3rows, &coefficients.c_mu_p, t4rows);
 
     let src = ArrayView4::from_shape((nmos, nmor, nmoq, nmop), &worka[..t4len]).unwrap();
-    out.assign(&src.permuted_axes([3, 2, 1, 0]));
+    Zip::from(&mut out)
+        .and(&src.permuted_axes([3, 2, 1, 0]))
+        .par_for_each(|d, &x| *d = x);
+}
+
+/// Multiply `out = a c`, splitting the rows of `a` across threads. Each row block is an
+/// independent matrix product, so the result is identical to a single product and the ERI
+/// transforms use every thread even when only one transform is running.
+/// # Arguments:
+/// - `a`: Left matrix.
+/// - `c`: Right matrix.
+/// - `out`: Output matrix with the rows of `a` and the columns of `c`.
+/// # Returns
+/// - `()`: Writes the product into `out`.
+fn par_mat_mul<T: ERIScalar>(
+    a: ArrayView2<'_, T>,
+    c: &ArrayView2<'_, T>,
+    mut out: ArrayViewMut2<'_, T>,
+) {
+    // Four blocks per thread balance the load when other work shares the pool.
+    let chunk = a.nrows().div_ceil(4 * rayon::current_num_threads()).max(1);
+    out.axis_chunks_iter_mut(Axis(0), chunk)
+        .into_par_iter()
+        .zip(a.axis_chunks_iter(Axis(0), chunk))
+        .for_each(|(mut block, rows)| {
+            general_mat_mul(T::from(1.0), &rows, c, T::from(0.0), &mut block);
+        });
 }

@@ -2,7 +2,7 @@
 //! Construction of Löwdin-paired nonorthogonal Wick intermediates.
 
 // External crate imports.
-use ndarray::{Array1, Array2, Array4, Axis, s};
+use ndarray::{Array1, Array2, Array4, Axis, Zip, s};
 use ndarray_linalg::{Determinant, SVD};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -379,16 +379,10 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
                         scratch,
                     );
                     // Antisymmetrise the transformed integrals to give the same-spin
-                    // direct-minus-exchange intermediate.
-                    for p in 0..nmo {
-                        for q in 0..nmo {
-                            for r in 0..nmo {
-                                for s in 0..nmo {
-                                    blk[(p, q, r, s)] -= exch[(p, r, q, s)];
-                                }
-                            }
-                        }
-                    }
+                    // direct-minus-exchange intermediate, `blk_{pqrs} -= exch_{prqs}`.
+                    Zip::from(&mut blk)
+                        .and(&exch.view().permuted_axes([0, 2, 1, 3]))
+                        .par_for_each(|b, &e| *b -= e);
                     (slot, blk)
                 },
             )
