@@ -1,12 +1,13 @@
 // maths/eri.rs
 
 // External crate imports.
-use ndarray::linalg::general_mat_mul;
 use ndarray::{
-    Array2, Array4, ArrayView2, ArrayView4, ArrayViewMut2, ArrayViewMut4, Axis, LinalgScalar, Zip,
+    Array2, Array4, ArrayView2, ArrayView4, ArrayViewMut2, ArrayViewMut4, LinalgScalar, Zip,
 };
 use num_complex::Complex64;
-use rayon::prelude::*;
+
+// Parent/sibling imports.
+use super::gemm::par_mat_mul;
 
 /// Reusable allocation boundary for AO-to-MO ERI transformations.
 pub struct ERIAO2MOScratch<T: ERIScalar> {
@@ -332,28 +333,4 @@ fn eri_ao2mo_into<T: ERIScalar>(
     Zip::from(&mut out)
         .and(&src.permuted_axes([3, 2, 1, 0]))
         .par_for_each(|d, &x| *d = x);
-}
-
-/// Multiply `out = a c`, splitting the rows of `a` across threads. Each row block is an
-/// independent matrix product, so the result is identical to a single product and the ERI
-/// transforms use every thread even when only one transform is running.
-/// # Arguments:
-/// - `a`: Left matrix.
-/// - `c`: Right matrix.
-/// - `out`: Output matrix with the rows of `a` and the columns of `c`.
-/// # Returns
-/// - `()`: Writes the product into `out`.
-fn par_mat_mul<T: ERIScalar>(
-    a: ArrayView2<'_, T>,
-    c: &ArrayView2<'_, T>,
-    mut out: ArrayViewMut2<'_, T>,
-) {
-    // Four blocks per thread balance the load when other work shares the pool.
-    let chunk = a.nrows().div_ceil(4 * rayon::current_num_threads()).max(1);
-    out.axis_chunks_iter_mut(Axis(0), chunk)
-        .into_par_iter()
-        .zip(a.axis_chunks_iter(Axis(0), chunk))
-        .for_each(|(mut block, rows)| {
-            general_mat_mul(T::from(1.0), &rows, c, T::from(0.0), &mut block);
-        });
 }

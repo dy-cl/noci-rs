@@ -14,6 +14,9 @@
 //! CPU supports is chosen at run time. Every tile keeps most of the vector registers as
 //! accumulators: wide products use few rows and many columns, and narrow ones trade columns for
 //! rows, and complex accumulators, which take two registers each, use half as many.
+//!
+//! `par_mat_mul` splits an ordinary contiguous product into row blocks across threads, for large
+//! products that would otherwise run on one core.
 
 // Standard library imports.
 #[cfg(target_arch = "x86_64")]
@@ -23,7 +26,10 @@ use std::cell::RefCell;
 use std::ops::{AddAssign, Mul};
 
 // External crate imports.
+use ndarray::linalg::general_mat_mul;
+use ndarray::{ArrayView2, ArrayViewMut2, Axis, LinalgScalar};
 use num_complex::Complex64;
+use rayon::prelude::*;
 
 // Parent/sibling imports.
 #[cfg(target_arch = "x86_64")]
@@ -575,4 +581,28 @@ pub fn strided_offsets(layout: &[(usize, usize)]) -> Vec<usize> {
             .collect();
     }
     out
+}
+
+/// Multiply `out = a c` with `ndarray`'s matrix product, splitting the rows of `a` across threads.
+/// Each row block is an independent product, so the result is identical to a single product, and
+/// a large product uses every thread even when it is the only work running.
+/// # Arguments:
+/// - `a`: Left matrix.
+/// - `c`: Right matrix.
+/// - `out`: Output matrix with the rows of `a` and the columns of `c`.
+/// # Returns
+/// - `()`: Writes the product into `out`.
+pub fn par_mat_mul<T: LinalgScalar + Send + Sync>(
+    a: ArrayView2<'_, T>,
+    c: &ArrayView2<'_, T>,
+    mut out: ArrayViewMut2<'_, T>,
+) {
+    // Four blocks per thread balance the load when other work shares the pool.
+    let chunk = a.nrows().div_ceil(4 * rayon::current_num_threads()).max(1);
+    out.axis_chunks_iter_mut(Axis(0), chunk)
+        .into_par_iter()
+        .zip(a.axis_chunks_iter(Axis(0), chunk))
+        .for_each(|(mut block, rows)| {
+            general_mat_mul(T::one(), &rows, c, T::zero(), &mut block);
+        });
 }
