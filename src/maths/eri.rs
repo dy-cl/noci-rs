@@ -1,13 +1,12 @@
 // maths/eri.rs
 
 // External crate imports.
+use ndarray::linalg::general_mat_mul;
 use ndarray::{
-    Array2, Array4, ArrayView2, ArrayView4, ArrayViewMut2, ArrayViewMut4, LinalgScalar, Zip,
+    Array2, Array4, ArrayView2, ArrayView4, ArrayViewMut2, ArrayViewMut4, Axis, LinalgScalar, Zip,
 };
 use num_complex::Complex64;
-
-// Parent/sibling imports.
-use super::gemm::par_mat_mul;
+use rayon::prelude::*;
 
 /// Reusable allocation boundary for AO-to-MO ERI transformations.
 pub struct ERIAO2MOScratch<T: ERIScalar> {
@@ -278,8 +277,14 @@ fn eri_ao2mo_into<T: ERIScalar>(
     let nmoq = coefficients.c_nu_q.ncols();
     let nmor = coefficients.c_lam_r.ncols();
     let nmos = coefficients.c_sig_s.ncols();
+    let alpha = T::from(1.0);
+    let beta = T::from(0.0);
     let worka = scratch.worka;
     let workb = scratch.workb;
+
+    // Each matrix product is split into row blocks, four per thread, which are independent
+    // products, so a transform uses every thread even when it is the only work running.
+    let blocks = 4 * rayon::current_num_threads();
 
     let t1len = nbas * nbas * nbas * nmos;
     let t2len = nbas * nbas * nmos * nmor;
@@ -288,9 +293,16 @@ fn eri_ao2mo_into<T: ERIScalar>(
 
     // Contract the last AO index first: `(\mu\nu|\lambda\sigma) \to (\mu\nu|\lambda s)`.
     let erirows = eri.into_shape((nbas * nbas * nbas, nbas)).unwrap();
-    let t1rows =
+    let mut t1rows =
         ArrayViewMut2::from_shape((nbas * nbas * nbas, nmos), &mut worka[..t1len]).unwrap();
-    par_mat_mul(erirows, &coefficients.c_sig_s, t1rows);
+    let chunk = erirows.nrows().div_ceil(blocks).max(1);
+    t1rows
+        .axis_chunks_iter_mut(Axis(0), chunk)
+        .into_par_iter()
+        .zip(erirows.axis_chunks_iter(Axis(0), chunk))
+        .for_each(|(mut block, rows)| {
+            general_mat_mul(alpha, &rows, &coefficients.c_sig_s, beta, &mut block);
+        });
 
     // Move `\lambda` to the contiguous axis for the next matrix multiplication.
     let src = ArrayView4::from_shape((nbas, nbas, nbas, nmos), &worka[..t1len]).unwrap();
@@ -301,9 +313,16 @@ fn eri_ao2mo_into<T: ERIScalar>(
 
     // Contract `\lambda \to r`, then rotate `\nu` into the contiguous axis.
     let t1rows = ArrayView2::from_shape((nbas * nbas * nmos, nbas), &workb[..t1len]).unwrap();
-    let t2rows =
+    let mut t2rows =
         ArrayViewMut2::from_shape((nbas * nbas * nmos, nmor), &mut worka[..t2len]).unwrap();
-    par_mat_mul(t1rows, &coefficients.c_lam_r, t2rows);
+    let chunk = t1rows.nrows().div_ceil(blocks).max(1);
+    t2rows
+        .axis_chunks_iter_mut(Axis(0), chunk)
+        .into_par_iter()
+        .zip(t1rows.axis_chunks_iter(Axis(0), chunk))
+        .for_each(|(mut block, rows)| {
+            general_mat_mul(alpha, &rows, &coefficients.c_lam_r, beta, &mut block);
+        });
 
     let src = ArrayView4::from_shape((nbas, nbas, nmos, nmor), &worka[..t2len]).unwrap();
     let mut dst = ArrayViewMut4::from_shape((nbas, nmos, nmor, nbas), &mut workb[..t2len]).unwrap();
@@ -313,9 +332,16 @@ fn eri_ao2mo_into<T: ERIScalar>(
 
     // Contract `\nu \to q`, then expose `\mu` for the final contraction.
     let t2rows = ArrayView2::from_shape((nbas * nmos * nmor, nbas), &workb[..t2len]).unwrap();
-    let t3rows =
+    let mut t3rows =
         ArrayViewMut2::from_shape((nbas * nmos * nmor, nmoq), &mut worka[..t3len]).unwrap();
-    par_mat_mul(t2rows, &coefficients.c_nu_q, t3rows);
+    let chunk = t2rows.nrows().div_ceil(blocks).max(1);
+    t3rows
+        .axis_chunks_iter_mut(Axis(0), chunk)
+        .into_par_iter()
+        .zip(t2rows.axis_chunks_iter(Axis(0), chunk))
+        .for_each(|(mut block, rows)| {
+            general_mat_mul(alpha, &rows, &coefficients.c_nu_q, beta, &mut block);
+        });
 
     let src = ArrayView4::from_shape((nbas, nmos, nmor, nmoq), &worka[..t3len]).unwrap();
     let mut dst = ArrayViewMut4::from_shape((nmos, nmor, nmoq, nbas), &mut workb[..t3len]).unwrap();
@@ -325,9 +351,16 @@ fn eri_ao2mo_into<T: ERIScalar>(
 
     // Contract `\mu \to p` and permute temporary `[s,r,q,p]` into `[p,q,r,s]`.
     let t3rows = ArrayView2::from_shape((nmos * nmor * nmoq, nbas), &workb[..t3len]).unwrap();
-    let t4rows =
+    let mut t4rows =
         ArrayViewMut2::from_shape((nmos * nmor * nmoq, nmop), &mut worka[..t4len]).unwrap();
-    par_mat_mul(t3rows, &coefficients.c_mu_p, t4rows);
+    let chunk = t3rows.nrows().div_ceil(blocks).max(1);
+    t4rows
+        .axis_chunks_iter_mut(Axis(0), chunk)
+        .into_par_iter()
+        .zip(t3rows.axis_chunks_iter(Axis(0), chunk))
+        .for_each(|(mut block, rows)| {
+            general_mat_mul(alpha, &rows, &coefficients.c_mu_p, beta, &mut block);
+        });
 
     let src = ArrayView4::from_shape((nmos, nmor, nmoq, nmop), &worka[..t4len]).unwrap();
     Zip::from(&mut out)
