@@ -283,19 +283,18 @@ where
         print_factor_table_storage(&operator_data, &fock);
     }
 
-    let one_body = if matches!(opts.full_m, SNOCIStorage::None)
-        && input.wicks.enabled
-        && operator_data.wicks.is_some()
-    {
+    // Without a stored operator, products go through the spin factorisation whenever every
+    // parent pair can be served, with or without Wick intermediates.
+    let one_body = if matches!(opts.full_m, SNOCIStorage::None) {
         let cache = input.wicks.cachedir.as_deref().unwrap_or(".");
-        Some(OneBodyFactorisation::new(
+        OneBodyFactorisation::new(
             &operator_data,
             &fock,
             std::path::Path::new(cache),
             world.rank(),
             it,
             opts.factor_tables,
-        ))
+        )
     } else {
         None
     };

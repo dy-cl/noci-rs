@@ -69,7 +69,7 @@ impl<C: Communicator> NOCIPropagator<C> for Unshifted {
                 Path::new(factor_cache),
                 world.rank(),
                 qmc.factor_tables,
-                true,
+                (true, false),
             );
             let generator = OverlapWeightedGenerator::new(data, &factorisation, &factors);
             (factors, generator)

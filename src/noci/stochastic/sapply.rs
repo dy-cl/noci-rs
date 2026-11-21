@@ -85,7 +85,7 @@ impl<C: Communicator> NOCIPropagator<C> for SApply {
             Path::new(factor_cache),
             world.rank(),
             qmc.sapply_factor_tables,
-            build_overlap_cdfs,
+            (build_overlap_cdfs, false),
         );
         if run.irank == 0 {
             let (tables, cdfs) = factors.storage_bytes();

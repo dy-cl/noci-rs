@@ -123,7 +123,7 @@ impl<C: Communicator> NOCIPropagator<C> for BApply {
             Path::new(factor_cache),
             world.rank(),
             qmc.bapply_factor_tables,
-            false,
+            (false, true),
         );
 
         // Give each Rayon worker independent RNG and auxiliary propagation scratch.

@@ -55,11 +55,9 @@ pub(crate) fn noci_density<T: NOCIScalar>(
                 let rhoa = pair_density(&pa, nao);
                 let rhob = pair_density(&pb, nao);
 
-                let det_phase = <T as From<f64>>::from(space.phase(ldet) * space.phase(gdet));
-
                 // The spectator-spin overlap multiplies each spin's
                 // transition density in the determinant product state.
-                let cij = c[i].conj() * c[j] * det_phase;
+                let cij = c[i].conj() * c[j];
                 da_loc.scaled_add(cij * pb.s, &rhoa);
                 db_loc.scaled_add(cij * pa.s, &rhob);
             }
@@ -137,8 +135,7 @@ pub(crate) fn noci_spin_square<T: NOCIScalar>(
                 let pair_s2 =
                     <T as From<f64>>::from(sz * (sz + 1.0)) * pa.s * pb.s + pa.s * nb - cross;
 
-                let det_phase = <T as From<f64>>::from(space.phase(ldet) * space.phase(gdet));
-                let cij = c[i].conj() * c[j] * det_phase;
+                let cij = c[i].conj() * c[j];
                 s2 += cij * pair_s2;
                 norm += cij * pa.s * pb.s;
             }
