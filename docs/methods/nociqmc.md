@@ -69,7 +69,10 @@ $$
 
 sampling the pre-overlap change $\Delta b_x = -\Delta\tau[H_{xy} - E_s^S(\tau)S_{xy}]N_y(\tau)$ and
 then adding $S_{wx}\Delta b_x$. Every change lies in $\operatorname{range}(S)$, so by induction the
-population never acquires a null-space component. The cost is the extra overlap action. On
+population never acquires a null-space component. The cost is the extra overlap action. For
+two different parents whose determinants have at most two replacements, $S_{wx}\Delta b_x$ is
+applied in the same contraction form as the NOCI-PT2 one-body operator
+([Selected NOCI](selected.md)), as whole-vector matrix products over orbital indices. On
 $\operatorname{range}(S)$ the $S$-apply propagation matrix is similar to
 
 $$
@@ -129,8 +132,9 @@ $$
 
 but they carry one factor of $\sigma_i$ fewer than in $S$-apply. A further advantage is that
 spawning needs only ordinary Slater–Condon elements within each parent: the coupling between
-parents enters only through the overlaps of the back-transformation. $B$-apply is usually the best
-choice for overcomplete spaces.
+parents enters only through the overlaps of the back-transformation, applied in contraction form
+to the components of $\chi$ within the retained single and double replacements and from factor
+tables otherwise. $B$-apply is usually the best choice for overcomplete spaces.
 
 Both range propagators have the same stationary points: since
 $\ker S \subseteq \ker H$, a stationary $S$-apply residual lies in both $\ker S$ and

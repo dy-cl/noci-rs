@@ -191,9 +191,7 @@ pub(in crate::elements) fn rdm1_pair_naive<T: NOCIScalar>(
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
-    let parents = data.space.parents();
-    let det_phase = T::from_real(pair.bra.data(parents).phase() * pair.ket.data(parents).phase());
-    let sxw = det_phase * pa.s * pb.s;
+    let sxw = pa.s * pb.s;
 
     // Transform spin transition densities to the AO basis and combine their spin complements.
     let da = pair_density(&pa, n);
@@ -206,7 +204,7 @@ pub(in crate::elements) fn rdm1_pair_naive<T: NOCIScalar>(
     for p in 0..n {
         for q in 0..n {
             let i = p * n + q;
-            gamma.data[i] = det_phase * (pb.s * da[(p, q)] + pa.s * db[(p, q)]);
+            gamma.data[i] = pb.s * da[(p, q)] + pa.s * db[(p, q)];
         }
     }
 
@@ -231,10 +229,8 @@ pub(in crate::elements) fn rdm2_pair_naive<T: NOCIScalar>(
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
-    let parents = data.space.parents();
-    let det_phase = T::from_real(pair.bra.data(parents).phase() * pair.ket.data(parents).phase());
     let half = <T as From<f64>>::from(0.5);
-    let sxw = det_phase * pa.s * pb.s;
+    let sxw = pa.s * pb.s;
 
     let da = pair_density(&pa, n);
     let db = pair_density(&pb, n);
@@ -247,7 +243,7 @@ pub(in crate::elements) fn rdm2_pair_naive<T: NOCIScalar>(
     // Zero, one, or two zero singular values select `W`, `P_i`, or `P_j`
     // transition co-densities in the generalised Slater-Condon expansion.
     for (spin_pair, other_s) in [(&pa, pb.s), (&pb, pa.s)] {
-        let fac = det_phase * other_s * spin_pair.phase * <T as From<f64>>::from(spin_pair.s_red);
+        let fac = other_s * spin_pair.phase * <T as From<f64>>::from(spin_pair.s_red);
 
         let (a, b) = match spin_pair.zeros.len() {
             0 => (spin_pair.w.as_ref().unwrap(), spin_pair.w.as_ref().unwrap()),
@@ -285,8 +281,7 @@ pub(in crate::elements) fn rdm2_pair_naive<T: NOCIScalar>(
             for r in 0..n {
                 for s in 0..n {
                     let i = (((p * n + q) * n + r) * n) + s;
-                    gamma.data[i] +=
-                        det_phase * (da[(p, r)] * db[(q, s)] + db[(p, r)] * da[(q, s)]);
+                    gamma.data[i] += da[(p, r)] * db[(q, s)] + db[(p, r)] * da[(q, s)];
                 }
             }
         }
@@ -315,9 +310,7 @@ pub(in crate::elements) fn rdm3_pair_naive<T: NOCIScalar>(
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
-    let parents = data.space.parents();
-    let det_phase = T::from_real(pair.bra.data(parents).phase() * pair.ket.data(parents).phase());
-    let sxw = det_phase * pa.s * pb.s;
+    let sxw = pa.s * pb.s;
     let mut gamma = RDM3 {
         n,
         data: vec![<T as From<f64>>::from(0.0); n.pow(6)],
@@ -346,7 +339,7 @@ pub(in crate::elements) fn rdm3_pair_naive<T: NOCIScalar>(
                             }
 
                             let i = (((((a * n + b) * n + c) * n + d) * n + e) * n) + f;
-                            gamma.data[i] = det_phase * val;
+                            gamma.data[i] = val;
                         }
                     }
                 }
@@ -377,9 +370,7 @@ pub(in crate::elements) fn rdm4_pair_naive<T: NOCIScalar>(
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
-    let parents = data.space.parents();
-    let det_phase = T::from_real(pair.bra.data(parents).phase() * pair.ket.data(parents).phase());
-    let sxw = det_phase * pa.s * pb.s;
+    let sxw = pa.s * pb.s;
     let mut gamma = RDM4 {
         n,
         data: vec![<T as From<f64>>::from(0.0); n.pow(8)],
@@ -414,7 +405,7 @@ pub(in crate::elements) fn rdm4_pair_naive<T: NOCIScalar>(
                                         + g)
                                         * n)
                                         + h;
-                                    gamma.data[i] = det_phase * val;
+                                    gamma.data[i] = val;
                                 }
                             }
                         }
