@@ -70,9 +70,10 @@ $$
 sampling the pre-overlap change $\Delta b_x = -\Delta\tau[H_{xy} - E_s^S(\tau)S_{xy}]N_y(\tau)$ and
 then adding $S_{wx}\Delta b_x$. Every change lies in $\operatorname{range}(S)$, so by induction the
 population never acquires a null-space component. The cost is the extra overlap action. For
-two different parents whose determinants have at most two replacements, $S_{wx}\Delta b_x$ is
+every pair of parents whose determinants have at most two replacements, $S_{wx}\Delta b_x$ is
 applied in the same contraction form as the NOCI-PT2 one-body operator
-([Selected NOCI](selected.md)), as whole-vector matrix products over orbital indices. On
+([Selected NOCI](selected.md)), as whole-vector matrix products over orbital indices; a parent
+paired with itself has the identity frame, where the overlap is occupation matching. On
 $\operatorname{range}(S)$ the $S$-apply propagation matrix is similar to
 
 $$

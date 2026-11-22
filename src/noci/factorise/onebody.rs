@@ -20,26 +20,27 @@ use crate::elements::nonorthogonalwicks::{
     OneBodyFactor, SpinFactorRow, SpinStringSources, WickScratchSpin, WicksPairView,
     xw_spin_factor_row,
 };
-use crate::elements::{FockData, FockMOCache, NOCIData};
+use crate::elements::{DetPair, Fock, FockData, FockMOCache, NOCIData, Overlap, calculate_pairs};
 use crate::input::SNOCIStorage;
 
 // Parent/sibling imports.
 use super::contracted::{ContractedPair, DOTCHUNK, contractible};
 use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
-use super::{ParentSpinSpace, SpinFactorisation, ordered_parent_pair};
+use super::{SpinFactorisation, ordered_parent_pair};
 
 /// Number of output entries summed per Rayon task when combining per-thread products.
 const SUMCHUNK: usize = 4096;
 
 /// Persistent one-body block for one ordered source-target parent pair `QP`.
 enum OneBodyBlock<T: NOCIScalar> {
-    /// Same-parent standard Slater-Condon sparse one-body action.
+    /// Same-parent standard Slater-Condon sparse one-body action, for pairs outside the
+    /// contraction form.
     Orthogonal(OrthogonalOneBodyBlock),
     /// Spin-factorised nonorthogonal one-body action.
     Factorised(FactorisedOneBodyBlock<T>),
     /// Spin-factorised nonorthogonal one-body action with regenerated factor tables.
     Transient(TransientOneBodyBlock),
-    /// Nonorthogonal one-body action in contraction form.
+    /// One-body action in contraction form, same-parent or not.
     Contracted(ContractedPair<T>),
 }
 
@@ -130,8 +131,8 @@ pub(crate) struct OneBodyFactorisation<T: NOCIScalar> {
 
 impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// Build `F^{QP}_{\bar a\bar b,ab}` spin factors for the current generalised Fock operator.
-    /// Same-parent orthonormal pairs and pairs in contraction form need no Wick intermediates;
-    /// every other pair uses Wick factor rows.
+    /// Pairs in contraction form, same-parent or not, and the remaining same-parent orthonormal
+    /// pairs need no Wick intermediates; every other pair uses Wick factor rows.
     /// # Arguments:
     /// - `data`: Shared NOCI data, with Wick intermediates when a pair needs factor rows.
     /// - `fock`: Current generalised-Fock data, already reflected in Wick intermediates.
@@ -157,22 +158,23 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let mut blocks = Vec::with_capacity(nparent * nparent);
         let mut storage_plan = OneBodyStoragePlan::new(cache, rank, iteration, storage);
 
-        // Choose a representation per ordered parent pair: exact orthogonal Slater-Condon
-        // blocks, the contraction form, transient evaluation, or persistent spin factors.
+        // Choose a representation per ordered parent pair: the contraction form for every pair it
+        // covers, same-parent or not; otherwise exact orthogonal Slater-Condon blocks for an
+        // orthonormal parent, transient evaluation, or persistent spin factors.
         for target_parent in 0..nparent {
             for source_parent in 0..nparent {
                 let contracted =
                     ContractedPair::new((target_parent, source_parent), &spin, data, Some(fock));
 
-                if target_parent == source_parent
+                if let Some(block) = contracted {
+                    blocks.push(OneBodyBlock::Contracted(block));
+                } else if target_parent == source_parent
                     && fock.fock_mocache[target_parent].orthogonal_slater_condon
                 {
                     blocks.push(OneBodyBlock::Orthogonal(build_orthogonal_one_body_block(
                         &spin,
                         target_parent,
                     )));
-                } else if let Some(block) = contracted {
-                    blocks.push(OneBodyBlock::Contracted(block));
                 } else if !wicks {
                     return None;
                 } else if matches!(storage, SNOCIStorage::None) {
@@ -237,8 +239,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let spin = SpinFactorisation::new(data);
         let nparent = spin.parents.len();
 
-        // Each nonorthogonal parent pair stores `\alpha` and `\beta` `S` and `F` factors;
-        // same-parent orthogonal blocks and contracted parent pairs need no factor table.
+        // Each pair with factor rows stores `\alpha` and `\beta` `S` and `F` factors; contracted
+        // pairs, same-parent or not, and same-parent orthogonal blocks need no factor table.
         let mut nentries = 0usize;
         for target_parent in 0..nparent {
             let target = &spin.parents[target_parent];
@@ -388,10 +390,13 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         Array1::from_vec(y)
     }
 
-    /// Build diagonal entries of `F + \lambda S` and `S` from cached same-spin factors.
+    /// Build diagonal entries of `F + \lambda S` and `S`, `F_{II} + \lambda S_{II}` and `S_{II}`.
+    /// Only same-parent pairs reach the diagonal, and every one is evaluated by the general pair
+    /// dispatch: orthogonal Slater-Condon rules for an orthonormal parent, Wick or generalised
+    /// Slater-Condon rules otherwise, whatever representation applies the pair.
     /// # Arguments:
-    /// - `data`: Shared NOCI data used by same-parent orthogonal blocks.
-    /// - `fock`: Current generalised-Fock data used by same-parent orthogonal blocks.
+    /// - `data`: Shared NOCI data, with Wick intermediates when available.
+    /// - `fock`: Current generalised-Fock data.
     /// - `lambda`: Scalar overlap shift in `F + \lambda S`.
     /// # Returns
     /// - `(Array1<T>, Array1<T>)`: Diagonal of `F + \lambda S` and diagonal of `S`.
@@ -406,58 +411,38 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let mut m_diag = vec![zero; ndet];
         let mut s_diag = vec![zero; ndet];
 
-        // Only same-parent blocks contribute to determinant diagonals.
-        // Dispatch through the representation chosen for each parent.
-        for (parent_id, parent) in self.spin.parents.iter().enumerate() {
-            if parent.entries.is_empty() {
-                continue;
-            }
-            match self.block(parent_id, parent_id) {
-                OneBodyBlock::Orthogonal(_) => {
-                    fill_orthogonal_one_body_diagonal_block(
-                        parent,
-                        data,
-                        &fock.fock_mocache[parent_id],
-                        lambda,
-                        &mut m_diag,
-                        &mut s_diag,
-                    );
-                }
-                OneBodyBlock::Factorised(block) => {
-                    fill_one_body_diagonal_block(parent, block, lambda, &mut m_diag, &mut s_diag);
-                }
-                // Contracted blocks join two different parents and carry no diagonal.
-                OneBodyBlock::Contracted(_) => {}
-                OneBodyBlock::Transient(block) => {
-                    let mut storage_plan =
-                        OneBodyStoragePlan::new(Path::new("."), 0, 0, SNOCIStorage::RAM);
-                    let block = build_one_body_factor_tables(
-                        &self.spin,
-                        data,
-                        &mut storage_plan,
-                        block.target_parent,
-                        block.source_parent,
-                    );
-                    fill_one_body_diagonal_block(parent, &block, lambda, &mut m_diag, &mut s_diag);
-                }
+        // Evaluate `F_{II}` and `S_{II}` in batches, one Wick scratch per Rayon worker.
+        let operator = Fock { fock, shift: 0.0 };
+        let dets = self
+            .spin
+            .parents
+            .iter()
+            .flat_map(|parent| parent.entries.iter().map(|e| e.det))
+            .collect::<Vec<_>>();
+        let values = dets
+            .par_chunks(DOTCHUNK)
+            .map_init(WickScratchSpin::new, |scratch, chunk| {
+                let pairs = chunk
+                    .iter()
+                    .map(|&det| DetPair::from_space(data.space, NOCIIndex(det), NOCIIndex(det)))
+                    .collect::<Vec<_>>();
+                let mut f = vec![zero; pairs.len()];
+                let mut s = vec![zero; pairs.len()];
+                calculate_pairs(data, &operator, &pairs, Some(&mut *scratch), &mut f);
+                calculate_pairs(data, &Overlap, &pairs, Some(&mut *scratch), &mut s);
+                (f, s)
+            })
+            .collect::<Vec<_>>();
+
+        // `M_{II} = F_{II} + \lambda S_{II}`.
+        for (chunk, (f, s)) in dets.chunks(DOTCHUNK).zip(values) {
+            for (k, &det) in chunk.iter().enumerate() {
+                s_diag[det] = s[k];
+                m_diag[det] = f[k] + lambda * s[k];
             }
         }
 
         (Array1::from_vec(m_diag), Array1::from_vec(s_diag))
-    }
-
-    /// Return cached factor block for target parent `Q` and source parent `P`.
-    /// # Arguments:
-    /// - `target_parent`: Target parent `Q`.
-    /// - `source_parent`: Source parent `P`.
-    /// # Returns
-    /// - `&OneBodyBlock<T>`: Cached parent-pair block.
-    fn block(
-        &self,
-        target_parent: usize,
-        source_parent: usize,
-    ) -> &OneBodyBlock<T> {
-        &self.blocks[target_parent * self.nparent + source_parent]
     }
 
     /// Apply one cached spin-factorised parent-pair block of `F + \lambda S`.
@@ -1221,63 +1206,6 @@ fn build_orthogonal_one_body_block(
         parent: parent_id,
         opos,
         groups,
-    }
-}
-
-/// Fill determinant diagonals from one same-parent factor block.
-/// # Arguments:
-/// - `parent`: Parent-local actual determinant entries.
-/// - `block`: Same-parent factor block.
-/// - `lambda`: Scalar overlap shift in `F + \lambda S`.
-/// - `m_diag`: Output diagonal of `F + \lambda S`.
-/// - `s_diag`: Output diagonal of `S`.
-/// # Returns
-/// - `()`: Writes diagonal values for actual determinants.
-fn fill_one_body_diagonal_block<T: NOCIScalar>(
-    parent: &ParentSpinSpace,
-    block: &FactorisedOneBodyBlock<T>,
-    lambda: T,
-    m_diag: &mut [T],
-    s_diag: &mut [T],
-) {
-    let (sa, fa, sb, fb) = block.factors.factors();
-    for entry in &parent.entries {
-        let saa = sa[entry.a * block.nsa + entry.a];
-        let faa = fa[entry.a * block.nsa + entry.a];
-
-        let sbb = sb[entry.b * block.nsb + entry.b];
-        let fbb = fb[entry.b * block.nsb + entry.b];
-
-        let s = saa * sbb;
-
-        s_diag[entry.det] = s;
-        m_diag[entry.det] = faa * sbb + saa * fbb + lambda * s;
-    }
-}
-
-/// Fill same-parent orthogonal diagonals from parent-local Slater-Condon rules.
-/// # Arguments:
-/// - `parent`: Parent-local actual determinant entries.
-/// - `data`: Shared NOCI determinant data.
-/// - `cache`: MO-basis Fock cache for the parent.
-/// - `lambda`: Scalar overlap shift in `F + \lambda S`.
-/// - `m_diag`: Output diagonal of `F + \lambda S`.
-/// - `s_diag`: Output diagonal of `S`.
-/// # Returns
-/// - `()`: Writes diagonal values for actual determinants.
-fn fill_orthogonal_one_body_diagonal_block<T: NOCIScalar>(
-    parent: &ParentSpinSpace,
-    data: &NOCIData<'_, T>,
-    cache: &FockMOCache<T>,
-    lambda: T,
-    m_diag: &mut [T],
-    s_diag: &mut [T],
-) {
-    for entry in &parent.entries {
-        let det = NOCIIndex(entry.det);
-        let s = calculate_s_pair_orthogonal(data.space, det, det);
-        s_diag[entry.det] = s;
-        m_diag[entry.det] = calculate_f_pair_orthogonal(cache, data.space, det, det) + lambda * s;
     }
 }
 

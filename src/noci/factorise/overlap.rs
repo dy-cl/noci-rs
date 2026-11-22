@@ -268,14 +268,15 @@ pub(crate) struct OverlapFactorBlock {
 /// Representation of one ordered parent pair `QP` in the overlap products, chosen as for the
 /// one-body operator.
 enum OverlapBlock {
-    /// Same-parent pair, evaluated by the orthogonal or direct rules.
+    /// Same-parent pair outside the contraction form, evaluated by the orthogonal or direct rules.
     Orthogonal,
     /// Cross-parent pair whose factors are regenerated on demand.
     Transient,
     /// Cross-parent pair with persistent factor tables.
     Factorised(OverlapFactorBlock),
-    /// Cross-parent pair in contraction form, with factor tables only when proposal CDFs or
-    /// auxiliary columns need them.
+    /// Pair in contraction form, same-parent or not, with factor tables only when proposal CDFs or
+    /// auxiliary columns need them. A same-parent pair of an orthonormal parent has the identity
+    /// frame and is applied by occupation matching.
     Contracted(ContractedPair<f64>, Option<OverlapFactorBlock>),
 }
 
@@ -566,7 +567,7 @@ impl SpinFactorisation {
         let (build_cdfs, auxiliary) = uses;
         let nparent = self.parents.len();
 
-        // Pairs of different parents within single and double replacements are applied in
+        // Pairs within single and double replacements, same-parent or not, are applied in
         // contraction form.
         let contracted = (0..nparent * nparent)
             .map(|k| ContractedPair::new((k / nparent, k % nparent), self, data, None))
@@ -588,8 +589,8 @@ impl SpinFactorisation {
                 }
 
                 for source_parent in 0..nparent {
-                    // Equal-parent overlaps use the orthogonal path and need no factor table, nor
-                    // do contracted pairs unless the tables serve sampling or auxiliary columns.
+                    // Equal-parent overlaps are occupation matches and need no factor table, nor do
+                    // contracted pairs unless the tables serve sampling or auxiliary columns.
                     let pair = target_parent * nparent + source_parent;
                     if target_parent == source_parent
                         || (contracted[pair].is_some() && !build_cdfs && !auxiliary)
@@ -691,8 +692,8 @@ impl SpinFactorisation {
             .zip(factor_blocks)
             .enumerate()
             .map(|(k, block)| match block {
-                _ if k / nparent == k % nparent => OverlapBlock::Orthogonal,
                 (Some(pair), tables) => OverlapBlock::Contracted(pair, tables),
+                _ if k / nparent == k % nparent => OverlapBlock::Orthogonal,
                 (None, Some(tables)) => OverlapBlock::Factorised(tables),
                 (None, None) => OverlapBlock::Transient,
             })
@@ -1029,19 +1030,19 @@ impl SpinFactorisation {
             );
 
             for target in &target_blocks {
-                // Same-parent auxiliary occupations map exactly without Wick factorisation.
-                if target.parent == all.parent {
-                    Self::apply_auxiliary_source_exact(populations, target, &all, auxiliary);
-                    continue;
-                }
-
-                // Contracted pairs leave only the sources outside the retained single and double
-                // replacements to the factor tables.
+                // Contracted pairs, same-parent or not, leave only the sources outside the
+                // retained single and double replacements to the exact map or the factor tables.
                 let source = match factors.contracted(nparent, target.parent, parent) {
                     Some(_) => &remainder,
                     None => &all,
                 };
                 if source.entries.is_empty() {
+                    continue;
+                }
+
+                // Same-parent auxiliary occupations map exactly without Wick factorisation.
+                if target.parent == source.parent {
+                    Self::apply_auxiliary_source_exact(populations, target, source, auxiliary);
                     continue;
                 }
 
@@ -1127,7 +1128,8 @@ impl SpinFactorisation {
     }
 
     /// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
-    /// Orthogonal same-parent blocks are applied directly, while cross-parent blocks use
+    /// Pairs in contraction form, same-parent pairs by occupation matching, run concurrently;
+    /// the remaining same-parent blocks are applied directly, while cross-parent blocks use
     /// `S_{w\Omega} = A^{QP}_{\bar a_w a_\Omega}B^{QP}_{\bar b_w b_\Omega}.`
     /// Cross-parent same-spin factors are cached for `ram` and `disk`, and regenerated from
     /// active spin strings for `none`.
