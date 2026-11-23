@@ -45,7 +45,8 @@ fn previous_mom_seed<'a>(
 /// - `prev_map`: Previous real SCF states keyed by label.
 /// - `i`: Recipe index used as the parent/state index.
 /// # Returns
-/// - `SCFState`: Converged real SCF state for this recipe.
+/// - `Option<SCFState>`: Converged real SCF state for this recipe, or `None` if the SCF does not
+///   converge.
 pub(crate) fn run_mom_scf_state(
     ao: &AoData,
     input: &Input,
@@ -53,7 +54,7 @@ pub(crate) fn run_mom_scf_state(
     prev: Option<&[SCFState]>,
     prev_map: &HashMap<&str, &SCFState>,
     i: usize,
-) -> SCFState {
+) -> Option<SCFState> {
     if input.write.verbose >= 1 {
         let left = "=".repeat(45);
         let right = "=".repeat(46);
@@ -81,7 +82,6 @@ pub(crate) fn run_mom_scf_state(
         recipe.noci,
         (recipe.mom, scfexcitation, None),
     )
-    .expect("SCF did not converge")
 }
 
 /// Generate the SCF states using the maximum orbital overlap procedure.
@@ -106,7 +106,8 @@ pub(crate) fn generate_states_mom(
             continue;
         }
 
-        let state = run_mom_scf_state(ao, input, recipe, prev, prev_map, i);
+        let state =
+            run_mom_scf_state(ao, input, recipe, prev, prev_map, i).expect("SCF did not converge");
         out.push(state);
     }
     mark_duplicate_noci_states(&mut out, &ao.s, input.scf.d_tol, input.write.verbose);
