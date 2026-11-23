@@ -411,25 +411,32 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let mut m_diag = vec![zero; ndet];
         let mut s_diag = vec![zero; ndet];
 
-        // Evaluate `F_{II}` and `S_{II}` in batches, one Wick scratch per Rayon worker.
-        let operator = Fock { fock, shift: 0.0 };
+        // Every determinant of every parent, in parent order.
         let dets = self
             .spin
             .parents
             .iter()
             .flat_map(|parent| parent.entries.iter().map(|e| e.det))
             .collect::<Vec<_>>();
+
+        // `F_{II}` and `S_{II}` in chunks of `DOTCHUNK` determinants, one Wick scratch per Rayon
+        // worker, each chunk returning its values in determinant order.
+        let operator = Fock { fock, shift: 0.0 };
         let values = dets
             .par_chunks(DOTCHUNK)
             .map_init(WickScratchSpin::new, |scratch, chunk| {
+                // The diagonal pair `(I, I)` of every determinant in the chunk.
                 let pairs = chunk
                     .iter()
                     .map(|&det| DetPair::from_space(data.space, NOCIIndex(det), NOCIIndex(det)))
                     .collect::<Vec<_>>();
+
+                // Both operators over the same pairs, sharing the scratch.
                 let mut f = vec![zero; pairs.len()];
                 let mut s = vec![zero; pairs.len()];
                 calculate_pairs(data, &operator, &pairs, Some(&mut *scratch), &mut f);
                 calculate_pairs(data, &Overlap, &pairs, Some(&mut *scratch), &mut s);
+
                 (f, s)
             })
             .collect::<Vec<_>>();
