@@ -5,6 +5,7 @@
 
 // External crate imports.
 use ndarray::Array2;
+use rayon::prelude::*;
 
 // Parent/sibling imports.
 use super::ci::ResHFExpansion;
@@ -41,7 +42,8 @@ fn resonating_term(
 /// Parker with the state sum taken inside the pair weights `D_{AB}` and `D^E_{AB}`:
 /// `F^{A,\omega} = D_{AA} F^{AA,\omega} + \sum_{B \ne A} (\bar K^{AB,\omega} + (\bar K^{AB,\omega})^T)`.
 /// `H_{AB}` and `E_I` may both include nuclear repulsion, since `H_{AB} - s_{AB} E_I` does not
-/// change. Each `F^{A,\omega}` is symmetric.
+/// change. Each `F^{A,\omega}` is symmetric. The determinants are independent and are built in
+/// parallel.
 /// # Arguments:
 /// - `s_ao`: AO overlap matrix `S`.
 /// - `pairs`: Cutoff-floored pair quantities of the determinants.
@@ -59,6 +61,7 @@ pub(super) fn reshf_fock(
     let de = &expansion.pair_energy_weights;
 
     (0..n)
+        .into_par_iter()
         .map(|a| {
             // Diagonal term `D_{AA} F^{AA,\omega}`, the Fock matrix of `A`'s own density.
             let aa = &pairs[(a, a)];

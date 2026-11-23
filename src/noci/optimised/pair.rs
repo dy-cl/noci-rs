@@ -6,6 +6,7 @@
 
 // External crate imports.
 use ndarray::Array2;
+use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::elements::{build_s_pair_floored, occ_coeffs};
@@ -118,8 +119,8 @@ fn reshf_pair(
 }
 
 /// Cutoff-floored ResHF quantities of every ordered pair of `dets`, indexed `[(a, b)]`. Pairs
-/// `(A, B)` with `B \le A` are built directly and `(B, A)` follows from them by
-/// [`ResHFPair::reversed`].
+/// `(A, B)` with `B \le A` are built directly, in parallel over `A`, and `(B, A)` follows from them
+/// by [`ResHFPair::reversed`].
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
 /// - `dets`: Determinants `A = 0, \ldots, n - 1`.
@@ -133,8 +134,10 @@ pub(super) fn reshf_pairs(
 ) -> Array2<ResHFPair> {
     let n = dets.len();
 
-    // Build the lower triangle and fill the upper triangle from the reversed pairs.
+    // Build the lower triangle, rows in parallel, and fill the upper triangle from the reversed
+    // pairs.
     let lower: Vec<Vec<ResHFPair>> = (0..n)
+        .into_par_iter()
         .map(|a| {
             (0..=a)
                 .map(|b| reshf_pair(ao, &dets[a], &dets[b], cutoff))
