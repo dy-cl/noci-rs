@@ -1,6 +1,6 @@
 // noci/factorise/contracted.rs
-//! Contraction form of the same-spin one-body and overlap factors between two references, for
-//! determinants with at most two replacements. The ket occupied orbitals are made biorthogonal
+//! Contraction form of the same-spin one-body and overlap factors between a pair of references,
+//! the same one or two different ones, for determinants with at most two replacements. The ket occupied orbitals are made biorthogonal
 //! to the bra ones, both virtual spaces are reduced to their remainders outside the occupied
 //! spaces, and the operator acts by the orthogonal one-body rules, so a whole amplitude vector
 //! is applied by matrix products over orbital indices rather than element by element. Near-zero
@@ -32,8 +32,8 @@ const EPSNODES: [f64; 6] = [1.0, -1.0, 2.0, -2.0, 3.0, -3.0];
 /// Minimum number of target determinants per Rayon task when one spin string's products are split.
 pub(super) const DOTCHUNK: usize = 64;
 
-/// Nonorthogonal parent pair `QP` applied in contraction form: every same-spin factor is applied
-/// to whole amplitude vectors through orbital-indexed matrices, never element by element.
+/// Parent pair `QP`, same-parent or not, applied in contraction form: every same-spin factor is
+/// applied to whole amplitude vectors through orbital-indexed matrices, never element by element.
 pub(super) struct ContractedPair<T: NOCIScalar> {
     /// Target parent `Q`, the bra.
     pub(super) target_parent: usize,
@@ -43,6 +43,10 @@ pub(super) struct ContractedPair<T: NOCIScalar> {
     alpha: Vec<ContractionPoint<T>>,
     /// Beta extrapolation points of `F^\beta` and `S^\beta`.
     beta: Vec<ContractionPoint<T>>,
+    /// Whether the pair is a same-parent pair of an orthonormal parent, whose biorthogonal frame
+    /// is the identity, `G = I`, `\alpha = \beta = 0` and `Q = I`, and whose overlap is
+    /// `S^{PP} = I` on the parent's strings.
+    identity: bool,
 }
 
 /// Same-spin intermediates of one parent pair at one extrapolation point `\epsilon`. Near-zero
@@ -109,29 +113,39 @@ impl<T: NOCIScalar> ContractedPair<T> {
             &data.space.parents()[source_parent],
         );
 
+        let alpha = ContractionPoint::build(
+            (&bra.ca, bra.oa),
+            (&ket.ca, ket.oa),
+            (&data.ao.s, fock.map(|f| f.fa)),
+            data.tol,
+        )?;
+        let beta = ContractionPoint::build(
+            (&bra.cb, bra.ob),
+            (&ket.cb, ket.ob),
+            (&data.ao.s, fock.map(|f| f.fb)),
+            data.tol,
+        )?;
+        let identity = target_parent == source_parent
+            && data
+                .mocache
+                .is_some_and(|mocache| mocache[target_parent].orthogonal_slater_condon);
+
         Some(Self {
             target_parent,
             source_parent,
-            alpha: ContractionPoint::build(
-                (&bra.ca, bra.oa),
-                (&ket.ca, ket.oa),
-                (&data.ao.s, fock.map(|f| f.fa)),
-                data.tol,
-            )?,
-            beta: ContractionPoint::build(
-                (&bra.cb, bra.ob),
-                (&ket.cb, ket.ob),
-                (&data.ao.s, fock.map(|f| f.fb)),
-                data.tol,
-            )?,
+            alpha,
+            beta,
+            identity,
         })
     }
 
     /// Contributions to `Y^Q = (F + \lambda S)^{QP} x^P` of this parent pair, with
     /// `F^{QP} = F^\alpha D (S^\beta)^T + S^\alpha D (F^\beta)^T` and
     /// `S^{QP} = S^\alpha D (S^\beta)^T` for the source amplitudes `D_{ab}` over alpha and beta
-    /// strings, whose determinants have at most two replacements in total. `D` is split by
-    /// excitation class and, by linearity, no string-by-string factor block is formed:
+    /// strings, whose determinants have at most two replacements in total. In the identity frame
+    /// an overlap-only product is `S^{PP} = I` on the parent's strings and reduces to occupation
+    /// matching. Otherwise `D` is split by excitation class and, by linearity, no string-by-string
+    /// factor block is formed:
     /// 1. the beta-reference column `D_{a0}`: one alpha apply, times the beta factors of the
     ///    beta reference;
     /// 2. the alpha-reference row `D_{0b}` over excited beta strings: one beta apply, times the
@@ -161,6 +175,21 @@ impl<T: NOCIScalar> ContractedPair<T> {
     where
         R: NOCIScalar + From<T>,
     {
+        // In the identity frame the overlap is `S^{PP} = I` on the parent's strings, so an
+        // overlap-only product reduces to occupation matching: every target receives the source
+        // amplitudes with the same alpha and beta strings. The string phases cancel in pairs.
+        if self.identity && self.alpha[0].f.is_none() {
+            let mut matched: HashMap<(usize, usize), R> = HashMap::new();
+            for &(a, b, value) in sources {
+                *matched.entry((a, b)).or_insert(R::from_real(0.0)) += value;
+            }
+            return targets
+                .par_iter()
+                .with_min_len(DOTCHUNK)
+                .filter_map(|&(out, a, b)| matched.get(&(a, b)).map(|&value| (out, lambda * value)))
+                .collect();
+        }
+
         let (source, target) = (
             &spin.parents[self.source_parent],
             &spin.parents[self.target_parent],
@@ -712,8 +741,10 @@ impl<R: NOCIScalar> StringAmplitudes<R> {
     }
 }
 
-/// Whether an ordered parent pair `QP` can be applied in contraction form: two different parents
-/// whose determinants have at most `CONTRACTRANK` replacements in total.
+/// Whether an ordered parent pair `QP` can be applied in contraction form: both parents' determinants
+/// have at most `CONTRACTRANK` replacements in total. A same-parent pair is the special case whose
+/// frame is the parent's own: for orthonormal orbitals `M_0 = I`, so `G = I`, `\alpha = \beta = 0`,
+/// `Q = I` and a single point, and the orthogonal one-body rules apply directly.
 /// # Arguments:
 /// - `spin`: Shared determinant-space factorisation.
 /// - `parents`: Target parent `Q` and source parent `P`.
@@ -730,7 +761,7 @@ pub(super) fn contractible(
             (parent.areps[e.a].cache.rank + parent.breps[e.b].cache.rank) as usize <= CONTRACTRANK
         })
     };
-    target_parent != source_parent && within(target_parent) && within(source_parent)
+    within(target_parent) && within(source_parent)
 }
 
 /// Positions of the replaced occupied orbitals among the occupied orbitals, and of the replacing

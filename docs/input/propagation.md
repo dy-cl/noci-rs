@@ -107,7 +107,7 @@ qmc = {
 | `overlap_weight` | number | `0.5` for `s-apply` with `overlap-weighted`, otherwise `0.0` | Probability $0 \le p < 1$ of the overlap branch of `overlap-weighted`; the rest is uniform. |
 | `optimise_overlap_weight` | boolean | `false` | Adapt `overlap_weight` between reports from the sampled second moment. Requires `overlap-weighted`. |
 | `factor_tables` | string | `"ram"` | Storage of the overlap-factor tables of the unshifted `overlap-weighted` generator: `"none"`, `"ram"` or `"disk"`. Also the default of the next two keys. |
-| `sapply_factor_tables` | string | `factor_tables` | $S$-apply overlap factors and proposal tables. Must be `"ram"` or `"disk"` with `overlap-weighted`. Pairs of different references whose determinants have at most two replacements are applied in contraction form and keep tables only for the `overlap-weighted` proposals. |
+| `sapply_factor_tables` | string | `factor_tables` | $S$-apply overlap factors and proposal tables. Must be `"ram"` or `"disk"` with `overlap-weighted`. Pairs of references, the same one or two different ones, whose determinants have at most two replacements are applied in contraction form and keep tables only for the `overlap-weighted` proposals. |
 | `bapply_factor_tables` | string | `factor_tables` | $B$-apply spin factors of the back-transformation $\mathcal B^*_{pw}$. The retained single and double replacements of contracted pairs use the contraction form; the tables serve the remaining auxiliary sources. |
 
 Disk-backed tables are written to [`wicks.cachedir`](wicks.md).

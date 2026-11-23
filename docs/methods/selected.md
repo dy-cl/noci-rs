@@ -85,16 +85,18 @@ within the GMRES tolerance.
 Products of ${}^{xJ,wI}M^{(k)}$ with the amplitudes are either evaluated on demand, or from a
 stored packed copy (`full_m`). On demand, the one-body operator factorises over the spins of each
 pair of references, $F = F^\alpha \otimes S^\beta + S^\alpha \otimes F^\beta$. When the candidates
-of two different references have at most two replacements, each same-spin factor is applied in
-contraction form rather than element by element: the occupied orbitals of the ket reference are
+of a pair of references, the same one or two different ones, have at most two replacements, each
+same-spin factor is applied in contraction form rather than element by element: the occupied orbitals of the ket reference are
 made biorthogonal to those of the bra, $\tilde\phi = C^x_o (C^{w\dagger}_o S C^x_o)^{-1}$, the
 virtual orbitals of both are reduced to their remainders outside the occupied spaces and made
 biorthogonal in turn, and the operator then acts by the orthogonal Slater–Condon rules. Every step
 is a matrix product over orbital indices, so a product costs $O(o^2v^2(o+v))$ per reference pair
 and spin rather than the square of the number of spin strings. Near-zero occupied overlaps are
 deformed by $\epsilon$, which makes every factor a polynomial in $\epsilon$, and the factors at
-$\epsilon = 0$ follow exactly from a few well-conditioned values of $\epsilon$. The contraction
-form needs no Wick intermediates, and the QMC overlap products use the same one. Other pairs use
+$\epsilon = 0$ follow exactly from a few well-conditioned values of $\epsilon$. For a reference
+paired with itself the frame is its own orthonormal one: the occupied overlap is the identity, no
+pair is deformed, and the operator acts by the ordinary Slater–Condon rules, now on whole vectors.
+The contraction form needs no Wick intermediates, and the QMC overlap products use the same one. Other pairs use
 the spin-factorised tables and Wick intermediates (`factor_tables`). MPI
 distributes the products across ranks and Rayon parallelises the matrix elements within each rank.
 
