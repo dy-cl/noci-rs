@@ -101,6 +101,7 @@ input/excit
 input/propagation
 input/snoci
 input/reshf
+input/replace
 input/write
 input/wicks
 input/nocc
