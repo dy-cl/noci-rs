@@ -25,6 +25,7 @@ mod nocc;
 mod parse;
 mod prop;
 mod qmc;
+mod replace;
 mod reshf;
 mod scf;
 mod selected;
@@ -41,6 +42,7 @@ pub use mol::MolOptions;
 pub use nocc::{GNOCCMCOptions, NOCCNewton, NOCCPreconditioner};
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, FriOptions, InitialShift, QMCOptions};
+pub use replace::ReplaceOptions;
 pub use reshf::ResHFOptions;
 pub use scf::{DiisOptions, SCFInfo};
 pub use selected::{SNOCIOptions, SNOCIPreconditioner, SNOCIStorage};
@@ -78,6 +80,9 @@ pub struct Input {
     pub wicks: WicksOptions,
     /// ResHF reference optimisation options; ResHF runs only when present.
     pub reshf: Option<ResHFOptions>,
+    /// Replacement of duplicate or unconverged SCF states by excited states; runs only when
+    /// present.
+    pub replace: Option<ReplaceOptions>,
 }
 
 impl Input {
@@ -129,6 +134,7 @@ impl Default for Input {
             prop: None,
             wicks: WicksOptions::default(),
             reshf: None,
+            replace: None,
         }
     }
 }

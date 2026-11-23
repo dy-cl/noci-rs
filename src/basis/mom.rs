@@ -17,6 +17,7 @@ use crate::{AoData, HSCFState, SCFState};
 // Parent/sibling imports.
 use super::bias::biased_density_guess;
 use super::duplicate::mark_duplicate_noci_states;
+use super::replace::generate_states_mom_replaced;
 use super::types::ReferenceBasis;
 
 /// Choose the previous-geometry real seed used for a MOM recipe.
@@ -209,7 +210,11 @@ pub(crate) fn generate_reference_basis_mom(
     prev_map: &HashMap<&str, &SCFState>,
     recipes: &[StateRecipe],
 ) -> ReferenceBasis {
-    let states = generate_states_mom(ao, input, prev, prev_map, recipes);
+    // Replacing duplicate or unconverged states by excited states runs only when requested.
+    let states = match &input.replace {
+        Some(options) => generate_states_mom_replaced(ao, input, prev, prev_map, recipes, options),
+        None => generate_states_mom(ao, input, prev, prev_map, recipes),
+    };
     let (hstates, htracks) = if recipes.iter().any(|recipe| recipe.holomorphic) {
         generate_hscf_states_mom(ao, input, recipes, &states, prev_htracks)
     } else {

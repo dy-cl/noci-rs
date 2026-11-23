@@ -23,6 +23,7 @@ mod generate;
 mod metadynamics;
 mod mom;
 mod normalise;
+mod replace;
 mod types;
 
 // Public type re-exports.
