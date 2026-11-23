@@ -96,6 +96,9 @@ deformed by $\epsilon$, which makes every factor a polynomial in $\epsilon$, and
 $\epsilon = 0$ follow exactly from a few well-conditioned values of $\epsilon$. For a reference
 paired with itself the frame is its own orthonormal one: the occupied overlap is the identity, no
 pair is deformed, and the operator acts by the ordinary Slater–Condon rules, now on whole vectors.
+Double replacements take two passes, all products over occupied orbitals and then all products over
+virtual orbitals, one pair of holes at a time, and are read directly at the bra strings, so no
+array of double replacements is ever stored in full.
 The contraction form needs no Wick intermediates, and the QMC overlap products use the same one. Other pairs use
 the spin-factorised tables and Wick intermediates (`factor_tables`). MPI
 distributes the products across ranks and Rayon parallelises the matrix elements within each rank.

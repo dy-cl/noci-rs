@@ -27,15 +27,35 @@ pub(crate) struct FactorEntry {
     pub(crate) b: usize,
 }
 
+/// One spin string as in-place replacements of its parent's reference string: the excitation
+/// rank, the positions of the replaced orbitals among the parent's occupied orbitals and of the
+/// replacing orbitals among its virtual orbitals, in ascending order, and the fermionic phase.
+/// Positions are kept only for strings with at most two replacements.
+#[derive(Clone, Copy, Default)]
+pub(super) struct StringSlot {
+    /// Excitation rank.
+    pub(super) rank: usize,
+    /// Positions of the replaced orbitals among the occupied orbitals.
+    pub(super) holes: [usize; 2],
+    /// Positions of the replacing orbitals among the virtual orbitals.
+    pub(super) particles: [usize; 2],
+    /// Fermionic phase relative to the reference string.
+    pub(super) phase: f64,
+}
+
 /// Parent-local determinant space in the shared spin factorisation.
 #[derive(Default)]
 pub(super) struct ParentSpinSpace {
     /// Payload of each parent-local alpha spin string.
     pub(super) areps: Vec<SpinStringData>,
+    /// Slot of each parent-local alpha spin string.
+    pub(super) aslots: Vec<StringSlot>,
     /// Alpha representatives in packed Wick evaluation order.
     pub(super) a_sources: SpinStringSources,
     /// Payload of each parent-local beta spin string.
     pub(super) breps: Vec<SpinStringData>,
+    /// Slot of each parent-local beta spin string.
+    pub(super) bslots: Vec<StringSlot>,
     /// Beta representatives in packed Wick evaluation order.
     pub(super) b_sources: SpinStringSources,
     /// Actual determinants belonging to this parent as `(I,a_I,b_I)`.
@@ -193,6 +213,34 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
         let strings = space.parent_spin_strings(parent_id);
         parent.areps = strings.alpha.iter().map(|string| string.data).collect();
         parent.breps = strings.beta.iter().map(|string| string.data).collect();
+
+        // Slots of every string relative to the parent's occupations, found once for every
+        // contraction-form apply. A hole or particle orbital `k` sits at position
+        // `k - |\{occupied < k\}|` among the virtual orbitals or `|\{occupied < k\}|` among the
+        // occupied ones.
+        let slots = |occupation: u128, strings: &[SpinStringData]| {
+            let below = |k: usize| (occupation & ((1u128 << k) - 1)).count_ones() as usize;
+            strings
+                .iter()
+                .map(|st| {
+                    let mut slot = StringSlot {
+                        rank: st.cache.rank as usize,
+                        phase: st.phase,
+                        ..StringSlot::default()
+                    };
+                    for r in 0..slot.rank.min(2) {
+                        slot.holes[r] = below(st.cache.holes[r] as usize);
+                        let k = st.cache.particles[r] as usize;
+                        slot.particles[r] = k - below(k);
+                    }
+
+                    slot
+                })
+                .collect::<Vec<_>>()
+        };
+        let reference = &space.parents[parent_id];
+        parent.aslots = slots(reference.oa, &parent.areps);
+        parent.bslots = slots(reference.ob, &parent.breps);
 
         // Build a separate evaluation order grouped by excitation rank and common holes.
         // SpinStringSources keeps the original columns so factor rows scatter back to ID order.

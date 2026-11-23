@@ -12,19 +12,18 @@ use std::collections::HashMap;
 
 // External crate imports.
 use ndarray::linalg::general_mat_mul;
-use ndarray::{Array1, Array2, Array3, Array4, ArrayView2, Axis, Zip, s};
+use ndarray::{Array1, Array2, Array3, ArrayView2, Axis, Zip, s};
 use ndarray_linalg::{Determinant, Inverse};
 use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::determinant::SpinStringData;
 use crate::elements::nonorthogonalwicks::{SINGULARTOL, SameSpinBuild};
 use crate::elements::{FockData, NOCIData};
 use crate::maths::adjoint;
 
 // Parent/sibling imports.
-use super::SpinFactorisation;
+use super::{SpinFactorisation, StringSlot};
 
 /// Largest same-spin replacement rank applied in contraction form.
 pub(super) const CONTRACTRANK: usize = 2;
@@ -54,6 +53,11 @@ pub(super) struct ContractedPair<T: NOCIScalar> {
     reference_alpha: (Vec<T>, Vec<T>),
     /// `F^\beta` and `S^\beta` applied to the ket beta reference, at every target beta string.
     reference_beta: (Vec<T>, Vec<T>),
+    /// Target alpha double replacements grouped by packed hole pair `p = j(j-1)/2 + i` of
+    /// `i < j`, each with its string index and particle positions `a < b`.
+    doubles_alpha: Vec<Vec<(usize, usize, usize)>>,
+    /// Target beta double replacements grouped as `doubles_alpha`.
+    doubles_beta: Vec<Vec<(usize, usize, usize)>>,
 }
 
 /// Same-spin intermediates of one parent pair at one extrapolation point `\epsilon`. Near-zero
@@ -85,15 +89,20 @@ struct ContractionPoint<T: NOCIScalar> {
 /// Same-spin amplitudes over the strings of one parent with at most two replacements, as
 /// in-place replacements of occupied positions by virtual positions, for a batch of `N` vectors
 /// applied together: `c_0`, `c_{ia}` and the antisymmetric `c_{ijab}`, held only for a single
-/// vector and absent when every double is zero.
+/// vector and absent when every double is zero. Applied amplitudes hold their doubles only at
+/// the target strings.
 struct StringAmplitudes<R: NOCIScalar> {
     /// Reference amplitudes `c^n_0`, one per vector.
     c0: Array1<R>,
     /// Single replacement amplitudes `c^n_{ia}`, indexed `[i, n, a]` so that products over the
     /// occupied or the virtual index act on the whole batch at once.
     c1: Array3<R>,
-    /// Double replacement amplitudes `c_{ijab}` of a single vector.
-    c2: Option<Array4<R>>,
+    /// Double replacement amplitudes `c_{ijab}` of a single vector, indexed `[a, b, p]` by the
+    /// virtual pair and the packed occupied pair `p = j(j-1)/2 + i` of `i < j`.
+    c2: Option<Array3<R>>,
+    /// Applied double replacement amplitudes of a single vector at every target string, by string
+    /// index, empty when not requested.
+    d2: Vec<R>,
 }
 
 impl<T: NOCIScalar> ContractedPair<T> {
@@ -144,31 +153,46 @@ impl<T: NOCIScalar> ContractedPair<T> {
         let n = ket.ca.ncols();
         let target = &spin.parents[target_parent];
 
+        // Target double replacements of each spin grouped by packed hole pair, so each occupied
+        // pair of an apply reads its own strings.
+        let doubles = |occupation: u128, slots: &[StringSlot]| {
+            let nocc = occupation.count_ones() as usize;
+            let mut grouped = vec![Vec::new(); nocc * nocc.saturating_sub(1) / 2];
+            for (k, slot) in slots.iter().enumerate().filter(|(_, slot)| slot.rank == 2) {
+                let ([i, j], [a, b]) = (slot.holes, slot.particles);
+                grouped[j * (j - 1) / 2 + i].push((k, a, b));
+            }
+
+            grouped
+        };
+        let doubles_alpha = doubles(bra.oa, &target.aslots);
+        let doubles_beta = doubles(bra.ob, &target.bslots);
+
         // The factors of each reference string do not depend on the amplitudes, so they are
         // applied once here and kept at every target string.
         let reference = |points: &[ContractionPoint<T>],
-                         strings: &[SpinStringData],
-                         occupations: (u128, u128)| {
-            let (source_occ, target_occ) = occupations;
-
+                         slots: &[StringSlot],
+                         grouped: &[Vec<(usize, usize, usize)>],
+                         source_occ: u128| {
             // The ket reference string alone, `c_0 = 1`, through every point.
             let nocc = source_occ.count_ones() as usize;
             let mut r = StringAmplitudes::zeros((nocc, n - nocc), 1, false);
             r.c0[0] = T::one();
-            let (f, s) = ContractionPoint::apply(points, &r, true, true);
+            let (f, s) = ContractionPoint::apply(points, &r, true, grouped);
 
             // `F c_0` and `S c_0` at every target string.
             let at = |amp: &StringAmplitudes<T>| {
-                strings
+                slots
                     .iter()
-                    .map(|st| amp.read(st, string_positions(target_occ, st), 0))
+                    .enumerate()
+                    .map(|(k, slot)| amp.read(slot, 0, k))
                     .collect::<Vec<_>>()
             };
             (at(&f), at(&s))
         };
 
-        let reference_alpha = reference(&alpha, &target.areps, (ket.oa, bra.oa));
-        let reference_beta = reference(&beta, &target.breps, (ket.ob, bra.ob));
+        let reference_alpha = reference(&alpha, &target.aslots, &doubles_alpha, ket.oa);
+        let reference_beta = reference(&beta, &target.bslots, &doubles_beta, ket.ob);
 
         Some(Self {
             target_parent,
@@ -178,6 +202,8 @@ impl<T: NOCIScalar> ContractedPair<T> {
             identity,
             reference_alpha,
             reference_beta,
+            doubles_alpha,
+            doubles_beta,
         })
     }
 
@@ -236,65 +262,65 @@ impl<T: NOCIScalar> ContractedPair<T> {
             &spin.parents[self.source_parent],
             &spin.parents[self.target_parent],
         );
-        let (bra, ket) = (
-            &data.space.parents()[self.target_parent],
-            &data.space.parents()[self.source_parent],
-        );
-        let n = ket.ca.ncols();
+        let ket = &data.space.parents()[self.source_parent];
 
-        // String ranks in small arrays, so each pass over the sources reads no string records.
-        let ranks =
-            |strings: &[SpinStringData]| strings.iter().map(|st| st.cache.rank).collect::<Vec<_>>();
-        let (sarank, sbrank) = (ranks(&source.areps), ranks(&source.breps));
-        let rank = |&(a, b, _): &(usize, usize, R)| (sarank[a], sbrank[b]);
+        // Occupied and virtual orbital counts of each spin.
+        let n = ket.ca.ncols();
+        let (na, nb) = (ket.oa.count_ones() as usize, ket.ob.count_ones() as usize);
+        let (adims, bdims) = ((na, n - na), (nb, n - nb));
+
+        // Doubles are applied only at the target strings of each spin.
+        let (alpha_targets, beta_targets) = (&self.doubles_alpha, &self.doubles_beta);
 
         // Amplitudes of a single vector over the source strings of one spin.
-        let amplitudes = |occupation: u128,
-                          strings: &[SpinStringData],
-                          values: Vec<(usize, R)>,
-                          doubles: bool| {
-            let values = values
-                .into_iter()
-                .map(|(id, value)| (0, id, value))
-                .collect();
-            StringAmplitudes::gather((n, occupation, strings), 1, values, doubles)
-        };
+        let amplitudes =
+            |dims: (usize, usize), slots: &[StringSlot], values: Vec<(usize, R)>, doubles: bool| {
+                let values = values
+                    .into_iter()
+                    .map(|(id, value)| (0, id, value))
+                    .collect();
+                StringAmplitudes::gather(dims, slots, 1, values, doubles)
+            };
+
+        // One pass over the sources splits them by class: the beta-reference column, the
+        // alpha-reference row over excited beta strings, and the single-single block grouped by
+        // beta single in string order, so every sum runs in the same order on every call.
+        let mut column = Vec::new();
+        let mut row = Vec::new();
+        let mut grouped: Vec<Vec<(usize, R)>> = vec![Vec::new(); source.bslots.len()];
+        for &(a, b, value) in sources {
+            match (source.aslots[a].rank, source.bslots[b].rank) {
+                (_, 0) => column.push((a, value)),
+                (0, _) => row.push((b, value)),
+                (1, 1) => grouped[b].push((a, value)),
+                _ => {}
+            }
+        }
+        let grouped = grouped
+            .into_iter()
+            .enumerate()
+            .filter(|(_, entries)| !entries.is_empty())
+            .collect::<Vec<_>>();
+        let ncol = grouped.len();
 
         // Class 1: the beta-reference column, with the beta factors of the beta reference, which
         // are kept from construction.
-        let column = sources
-            .iter()
-            .filter(|s| rank(s).1 == 0)
-            .map(|&(a, _, value)| (a, value))
-            .collect();
         let class1 = || {
-            let c = amplitudes(ket.oa, &source.areps, column, true);
-            ContractionPoint::apply(&self.alpha, &c, true, true)
+            let c = amplitudes(adims, &source.aslots, column, true);
+            ContractionPoint::apply(&self.alpha, &c, true, alpha_targets)
         };
 
         // Class 2: the alpha-reference row over excited beta strings, with the alpha factors of
         // the alpha reference.
-        let row = sources
-            .iter()
-            .filter(|s| rank(s).0 == 0 && rank(s).1 > 0)
-            .map(|&(_, b, value)| (b, value))
-            .collect();
         let class2 = || {
-            let c = amplitudes(ket.ob, &source.breps, row, true);
-            ContractionPoint::apply(&self.beta, &c, true, true)
+            let c = amplitudes(bdims, &source.bslots, row, true);
+            ContractionPoint::apply(&self.beta, &c, true, beta_targets)
         };
 
         // Class 3: one column of `D^{11}` per beta single. Each column needs only the reference and
         // single-replacement outputs of its alpha apply and of the beta factors of its single, so
-        // every column is applied in one batch per spin.
-        let mut grouped: HashMap<usize, Vec<(usize, R)>> = HashMap::new();
-        for &(a, b, value) in sources.iter().filter(|s| rank(s) == (1, 1)) {
-            grouped.entry(b).or_default().push((a, value));
-        }
-        let grouped = grouped.into_iter().collect::<Vec<_>>();
-        let ncol = grouped.len();
-
-        // Chunks of `COLCHUNK` columns run concurrently, column `c` of a chunk as its vector `c`.
+        // every column is applied in one batch per spin. Chunks of `COLCHUNK` columns run
+        // concurrently, column `c` of a chunk as its vector `c`.
         let chunks = if grouped.is_empty() {
             vec![&grouped[..]]
         } else {
@@ -312,8 +338,8 @@ impl<T: NOCIScalar> ContractedPair<T> {
                             column.iter().map(move |&(a, value)| (c, a, value))
                         })
                         .collect();
-                    let parent = (n, ket.oa, &source.areps[..]);
-                    let alpha = StringAmplitudes::gather(parent, chunk.len(), values, false);
+                    let alpha =
+                        StringAmplitudes::gather(adims, &source.aslots, chunk.len(), values, false);
 
                     // Beta amplitudes: the beta single of every column, with unit amplitude.
                     let values = chunk
@@ -321,12 +347,12 @@ impl<T: NOCIScalar> ContractedPair<T> {
                         .enumerate()
                         .map(|(c, (b, _))| (c, *b, R::one()))
                         .collect();
-                    let parent = (n, ket.ob, &source.breps[..]);
-                    let beta = StringAmplitudes::gather(parent, chunk.len(), values, false);
+                    let beta =
+                        StringAmplitudes::gather(bdims, &source.bslots, chunk.len(), values, false);
 
                     // One batched apply per spin, reference and single outputs only.
-                    let alpha = ContractionPoint::apply(&self.alpha, &alpha, true, false);
-                    let beta = ContractionPoint::apply(&self.beta, &beta, true, false);
+                    let alpha = ContractionPoint::apply(&self.alpha, &alpha, true, &[]);
+                    let beta = ContractionPoint::apply(&self.beta, &beta, true, &[]);
 
                     (alpha, beta)
                 })
@@ -365,7 +391,7 @@ impl<T: NOCIScalar> ContractedPair<T> {
                     column.iter().map(move |&(a, value)| (a, value * wc))
                 })
                 .collect();
-            amplitudes(ket.oa, &source.areps, values, false)
+            amplitudes(adims, &source.aslots, values, false)
         };
 
         // Alpha-reference targets: beta applies of the reference rows of `F^\alpha D^{11}` and
@@ -376,7 +402,7 @@ impl<T: NOCIScalar> ContractedPair<T> {
                 .enumerate()
                 .map(|(c, (b, _))| (*b, pick(c)))
                 .collect();
-            amplitudes(ket.ob, &source.breps, values, false)
+            amplitudes(bdims, &source.bslots, values, false)
         };
 
         // The four applies are independent and run concurrently.
@@ -385,11 +411,11 @@ impl<T: NOCIScalar> ContractedPair<T> {
                 rayon::join(
                     || {
                         let w = weighted(&|c| reference(&sb3, c));
-                        ContractionPoint::apply(&self.alpha, &w, true, true)
+                        ContractionPoint::apply(&self.alpha, &w, true, alpha_targets)
                     },
                     || {
                         let w = weighted(&|c| reference(&fb3, c));
-                        ContractionPoint::apply(&self.alpha, &w, false, true)
+                        ContractionPoint::apply(&self.alpha, &w, false, alpha_targets)
                     },
                 )
             },
@@ -397,36 +423,25 @@ impl<T: NOCIScalar> ContractedPair<T> {
                 rayon::join(
                     || {
                         let row = reference_row(&|c| reference(&fa3, c));
-                        ContractionPoint::apply(&self.beta, &row, false, true)
+                        ContractionPoint::apply(&self.beta, &row, false, beta_targets)
                     },
                     || {
                         let row = reference_row(&|c| reference(&sa3, c));
-                        ContractionPoint::apply(&self.beta, &row, true, true)
+                        ContractionPoint::apply(&self.beta, &row, true, beta_targets)
                     },
                 )
             },
         );
 
-        // Hole and particle positions of every target string, found once for every read.
-        let positions = |occupation: u128, strings: &[SpinStringData]| {
-            strings
-                .iter()
-                .map(|st| string_positions(occupation, st))
-                .collect::<Vec<_>>()
-        };
-        let apos = positions(bra.oa, &target.areps);
-        let bpos = positions(bra.ob, &target.breps);
-
         // Single-single targets: `Y^F = X^F (S^\beta)^T + X^S (F^\beta)^T` and
         // `Y^S = X^S (S^\beta)^T`, with one row per target single and one column per beta single.
-        // `rows` maps every target string to its row, `usize::MAX` for strings that are not singles.
-        let singles = |strings: &[SpinStringData],
-                       at: &[([usize; 2], [usize; 2])],
-                       chunks: &[StringAmplitudes<R>]| {
-            let ids = (0..strings.len())
-                .filter(|&k| strings[k].cache.rank == 1)
+        // `rows` maps every target string to its row, `usize::MAX` for strings that are not
+        // singles.
+        let singles = |slots: &[StringSlot], chunks: &[StringAmplitudes<R>]| {
+            let ids = (0..slots.len())
+                .filter(|&k| slots[k].rank == 1)
                 .collect::<Vec<_>>();
-            let mut rows = vec![usize::MAX; strings.len()];
+            let mut rows = vec![usize::MAX; slots.len()];
             for (r, &k) in ids.iter().enumerate() {
                 rows[k] = r;
             }
@@ -434,16 +449,16 @@ impl<T: NOCIScalar> ContractedPair<T> {
             // Each matrix is filled as its transpose, one column at a time, so the reads run along
             // the stored singles of one column.
             let mt = Array2::from_shape_fn((ncol, ids.len()), |(c, r)| {
-                chunks[c / COLCHUNK].read(&strings[ids[r]], at[ids[r]], c % COLCHUNK)
+                chunks[c / COLCHUNK].read(&slots[ids[r]], c % COLCHUNK, ids[r])
             });
             (mt, rows)
         };
 
         // The single rows of `F^\alpha D^{11}`, `S^\alpha D^{11}`, `F^\beta` and `S^\beta`.
-        let (xf, arows) = singles(&target.areps, &apos, &fa3);
-        let (xs, _) = singles(&target.areps, &apos, &sa3);
-        let (bf, brows) = singles(&target.breps, &bpos, &fb3);
-        let (bs, _) = singles(&target.breps, &bpos, &sb3);
+        let (xf, arows) = singles(&target.aslots, &fa3);
+        let (xs, _) = singles(&target.aslots, &sa3);
+        let (bf, brows) = singles(&target.bslots, &fb3);
+        let (bs, _) = singles(&target.bslots, &sb3);
 
         // Both products, side by side for each target pair so one read serves both.
         let yf = xf.t().dot(&bs) + xs.t().dot(&bf);
@@ -453,15 +468,11 @@ impl<T: NOCIScalar> ContractedPair<T> {
         // Every class at the target strings, packed per string so a target reads one record per
         // spin: alpha `[F_1, S_1, F_0, S_0, F_{ws}, S_{ws}, S_{wf}]` and beta
         // `[F_0, S_0, F_2, S_2, S_{uf}, F_{us}, S_{us}]`.
-        let at = |amp: &StringAmplitudes<R>,
-                  strings: &[SpinStringData],
-                  positions: &[([usize; 2], [usize; 2])],
-                  k: usize| { amp.read(&strings[k], positions[k], 0) };
         let cast = |x: T| <R as From<T>>::from(x);
 
-        let alpha = (0..target.areps.len())
+        let alpha = (0..target.aslots.len())
             .map(|k| {
-                let read = |amp| at(amp, &target.areps, &apos, k);
+                let read = |amp: &StringAmplitudes<R>| amp.read(&target.aslots[k], 0, k);
                 [
                     read(&fa1),
                     read(&sa1),
@@ -474,9 +485,9 @@ impl<T: NOCIScalar> ContractedPair<T> {
             })
             .collect::<Vec<_>>();
 
-        let beta = (0..target.breps.len())
+        let beta = (0..target.bslots.len())
             .map(|k| {
-                let read = |amp| at(amp, &target.breps, &bpos, k);
+                let read = |amp: &StringAmplitudes<R>| amp.read(&target.bslots[k], 0, k);
                 [
                     cast(self.reference_beta.0[k]),
                     cast(self.reference_beta.1[k]),
@@ -488,9 +499,6 @@ impl<T: NOCIScalar> ContractedPair<T> {
                 ]
             })
             .collect::<Vec<_>>();
-
-        // Target string ranks kept apart from the packed records.
-        let (arank, brank) = (ranks(&target.areps), ranks(&target.breps));
 
         // `Y^Q_{\bar a\bar b} = F_{\bar a\bar b} + \lambda S_{\bar a\bar b}` at every target
         // determinant: classes 1 and 2 everywhere, class 3 by target class.
@@ -506,7 +514,7 @@ impl<T: NOCIScalar> ContractedPair<T> {
                 let mut s = sa1 * sb0 + sa0 * sb2;
 
                 // Class 3 by target class.
-                match (arank[i], brank[j]) {
+                match (target.aslots[i].rank, target.bslots[j].rank) {
                     (_, 0) => {
                         f += fws + swf;
                         s += sws;
@@ -675,37 +683,61 @@ impl<T: NOCIScalar> ContractionPoint<T> {
     }
 
     /// Apply the same-spin factors of every point to a batch of amplitude vectors over the ket
-    /// strings, returning `F c` and `S c` over the bra strings with at most two replacements, or
-    /// one when `doubles` is false. `F c` stays zero for overlap-only points. At each point the ket
-    /// amplitudes are carried into the biorthogonal frame, `t_{kb} = \sum_j G_{jk} c_{jb}` and
-    /// `t_{klab} = \sum_{ij} G_{ik} G_{jl} c_{ijab}`; their virtual orbitals split as
-    /// `u_b = \tilde\phi\alpha_b + \sum_c \hat q_c Q_{cb}`; the operator acts by the orthogonal
-    /// one-body rules with `f`; and the bra virtual orbitals split as
+    /// strings, returning `F c` and `S c` with their reference and single replacements, and their
+    /// double replacements at the requested target strings. `F c` stays zero for overlap-only
+    /// points. At each point the ket amplitudes are carried into the biorthogonal frame,
+    /// `t_{kb} = \sum_j G_{jk} c_{jb}` and `t_{klab} = \sum_{ij} G_{ik} G_{jl} c_{ijab}`; their
+    /// virtual orbitals split as `u_b = \tilde\phi\alpha_b + \sum_c \hat q_c Q_{cb}`; the operator
+    /// acts by the orthogonal one-body rules with `f`; and the bra virtual orbitals split as
     /// `v_a = \tilde v_a + \phi\beta_a^*`. Every product over an occupied or a virtual index acts on
-    /// the whole batch at once; doubles are carried only for a single vector.
+    /// the whole batch at once; doubles are carried only for a single vector. The doubles take two
+    /// passes, because every product over occupied indices commutes with every product over
+    /// virtual indices. Pass A acts on the occupied pair of every virtual pair as one product over
+    /// the packed pairs `p = (k < l)`: `t = G \otimes G` on `c` and, for `F c`, the occupied part
+    /// of `\sigma`. Pass B takes one occupied pair at a time and applies `Q \otimes Q`, the
+    /// virtual part of `\sigma` and the rank raise in one `v \times v` tile, read at once at the
+    /// target strings with those holes, so no double-replacement output is stored whole.
     /// # Arguments:
     /// - `points`: Extrapolation points of one spin and parent pair.
     /// - `c`: Ket string amplitudes of every vector.
     /// - `fock`: Whether `F c` is needed; when false it stays zero.
-    /// - `doubles`: Whether double-replacement outputs are needed.
+    /// - `doubles`: Target double replacements grouped by packed hole pair, each with its string
+    ///   index and particle positions; empty when no double-replacement output is needed.
     /// # Returns
     /// - `(StringAmplitudes<R>, StringAmplitudes<R>)`: `F c` and `S c`.
     fn apply<R>(
         points: &[Self],
         c: &StringAmplitudes<R>,
         fock: bool,
-        doubles: bool,
+        doubles: &[Vec<(usize, usize, usize)>],
     ) -> (StringAmplitudes<R>, StringAmplitudes<R>)
     where
         R: NOCIScalar + From<T>,
     {
         let (o, nb, v) = c.c1.dim();
-        let half = R::from_real(0.5);
         let zero = R::from_real(0.0);
+        let one = R::one();
+        let half = R::from_real(0.5);
 
-        // The doubles outputs are created by the first point, so they need no zeroing.
+        // Occupied pairs `k < l` in packed order `p = l(l-1)/2 + k`.
+        let pairs = (0..o)
+            .flat_map(|l| (0..l).map(move |k| (k, l)))
+            .collect::<Vec<_>>();
+        let npair = pairs.len();
+
+        // Outputs, with their doubles indexed by target string up to the last double. Each group
+        // lists its strings in ascending order, so the last double ends one of the groups.
+        let ntarget = doubles
+            .iter()
+            .filter_map(|group| group.last())
+            .map(|&(k, _, _)| k + 1)
+            .max()
+            .unwrap_or(0);
+
         let mut sf = StringAmplitudes::zeros((o, v), nb, false);
         let mut ss = StringAmplitudes::zeros((o, v), nb, false);
+        sf.d2 = vec![zero; ntarget];
+        ss.d2 = vec![zero; ntarget];
 
         // `\sum_{kb} x_{knb} m_{kb}` for every vector `n`.
         let traced = |x: &Array3<R>, m: &Array2<R>| {
@@ -735,6 +767,27 @@ impl<T: NOCIScalar> ContractionPoint<T> {
                 .unwrap()
         };
 
+        // The unit antisymmetric occupied matrix `E_p` of pair `p = (k, l)`, `+1` at `(k, l)` and
+        // `-1` at `(l, k)`, so an antisymmetric `x = \sum_p x_p E_p`.
+        let unit = |p: usize| {
+            let (k, l) = pairs[p];
+            let mut e = Array2::from_elem((o, o), zero);
+            e[(k, l)] = one;
+            e[(l, k)] = -one;
+
+            e
+        };
+
+        // The packed coefficients `x_p = x_{kl}` of an antisymmetric occupied matrix.
+        let pack = |x: &Array2<R>| Array1::from_iter(pairs.iter().map(|&(k, l)| x[(k, l)]));
+
+        // `P(ij)P(ab)\, x_{ia} y_{bj} = x_{ia}y_{bj} - x_{ja}y_{bi} - x_{ib}y_{aj} + x_{jb}y_{ai}`.
+        let outer =
+            |x: ArrayView2<R>, y: &Array2<R>, (i, j): (usize, usize), (a, b): (usize, usize)| {
+                x[(i, a)] * y[(b, j)] - x[(j, a)] * y[(b, i)] - x[(i, b)] * y[(a, j)]
+                    + x[(j, b)] * y[(a, i)]
+            };
+
         for point in points {
             let cast = |a: ArrayView2<T>| a.mapv(<R as From<T>>::from);
             let (g, alpha, beta, q) = (
@@ -744,177 +797,182 @@ impl<T: NOCIScalar> ContractionPoint<T> {
                 cast(point.q.view()),
             );
 
-            // Ket: `G` on each occupied index, `t_{knb} = \sum_j G_{jk} c_{jnb}` and
-            // `t_{klab} = \sum_{ij} G_{ik} G_{jl} c_{ijab}` as one product per index.
-            let mut t1 = left(&g, &c.c1);
-
-            let t2 = c.c2.as_ref().map(|c2| {
-                let first = g.t().dot(&c2.view().into_shape((o, o * v * v)).unwrap());
-                let first = first.into_shape((o, o, v * v)).unwrap();
-                let mut t2 = Array4::from_elem((o, o, v, v), zero);
-                for k in 0..o {
-                    let tk = g.t().dot(&first.index_axis(Axis(0), k));
-                    t2.index_axis_mut(Axis(0), k)
-                        .assign(&tk.into_shape((o, v, v)).unwrap());
-                }
-                t2
-            });
-
-            // Ket: lower the rank through `\alpha`, then carry each virtual index through `Q`,
-            // `r_{knd} = \sum_b (t_{knb} + z_{kb}) Q_{db}` and `r_{klcd} = \sum_{ab} Q_{ca} Q_{db}
-            // t_{klab}`, with `z_{ka} = \sum_{lb} t_{klab}\alpha_{lb}` for the single vector.
-            let mut r0 = &c.c0 + &traced(&t1, &alpha);
-            if let Some(t2) = &t2 {
-                let z = contract_pair(t2, &alpha);
-                r0[0] += half * (&z * &alpha).sum();
-                t1.index_axis_mut(Axis(1), 0).scaled_add(R::one(), &z);
-            }
-            let r1 = right(&t1, &q);
-
-            // `Q` on the second virtual index as one product, then on the first as one product per
-            // occupied pair written in place, so no permuted copy of the doubles is made.
-            let r2 = t2.map(|t2| {
-                let once = t2.into_shape((o * o * v, v)).unwrap().dot(&q.t());
-                let once = once.into_shape((o * o, v, v)).unwrap();
-                let mut r2 = Array3::from_elem((o * o, v, v), zero);
-                for (mut r, x) in r2.outer_iter_mut().zip(once.outer_iter()) {
-                    general_mat_mul(R::one(), &q, &x, zero, &mut r);
-                }
-                r2.into_shape((o, o, v, v)).unwrap()
-            });
-
-            // One-body sigma by the orthogonal rules, for points with a one-body operator when
-            // `F c` is needed.
-            let sigma = point.f.as_ref().filter(|_| fock).map(|f| {
+            // Operator blocks, for points with a one-body operator when `F c` is needed.
+            let blocks = point.f.as_ref().filter(|_| fock).map(|f| {
                 let f_oo = cast(f.slice(s![..o, ..o]));
                 let f_ov = cast(f.slice(s![..o, o..]));
                 let f_vo = cast(f.slice(s![o.., ..o]));
                 let f_vv = cast(f.slice(s![o.., o..]));
                 let e0 = f_oo.diag().sum();
 
-                // One-body sigma by the orthogonal rules: the one-body Slater-Condon rules of
-                // `elements::orthogonal`, contracted over whole amplitude arrays rather than
-                // evaluated per determinant pair, which would visit the `O(ov)` connections of
-                // every string.
-                // `\sigma^n_0 = e_0 r^n_0 + \sum_{kc} f_{kc} r_{knc}`,
-                // `\sigma_{ina} = f_{ai} r^n_0 + e_0 r_{ina} + \sum_c f_{ac} r_{inc}
-                //  - \sum_k f_{ki} r_{kna} + \sum_{kc} f_{kc} r_{ikac}`.
-                let s0 = r0.mapv(|z| e0 * z) + traced(&r1, &f_ov);
-                let mut s1 = Array3::from_shape_fn((o, nb, v), |(i, n, a)| f_vo[(a, i)] * r0[n])
-                    + r1.mapv(|z| z * e0)
-                    + right(&r1, &f_vv)
-                    - left(&f_oo, &r1);
+                (f_oo, f_ov, f_vo, f_vv, e0)
+            });
 
-                if let Some(r2) = &r2 {
-                    s1.index_axis_mut(Axis(1), 0)
-                        .scaled_add(R::one(), &contract_pair(r2, &f_ov));
+            // Ket singles: `G` on the occupied index, `t_{knb} = \sum_j G_{jk} c_{jnb}`.
+            let mut t1 = left(&g, &c.c1);
+
+            // Pass A, as products over the packed occupied pair of every virtual pair `ab`. First
+            // `t_{ab} = c_{ab} D` with `D_{qp} = (G^T E_q G)_p`, which is
+            // `t_{klab} = \sum_{ij} G_{ik} G_{jl} c_{ijab}`.
+            let doubles_in = c.c2.as_ref().filter(|_| npair > 0);
+            let t2 = doubles_in.map(|c2| {
+                let mut d = Array2::from_elem((npair, npair), zero);
+                for p in 0..npair {
+                    d.row_mut(p).assign(&pack(&g.t().dot(&unit(p)).dot(&g)));
                 }
 
-                // `\sigma_{ijab} = e_0 r_{ijab} + P(ab)\sum_c f_{bc} r_{ijac}
-                //  - P(ij)\sum_k f_{kj} r_{ikab} + P(ij)P(ab) f_{bj} r_{ia}`, single vector only.
-                let s2 = doubles.then(|| {
-                    let r1 = r1.index_axis(Axis(1), 0);
-                    let mut s2 = Array4::from_shape_fn((o, o, v, v), |(i, j, a, b)| {
-                        r1[(i, a)] * f_vo[(b, j)]
-                            - r1[(j, a)] * f_vo[(b, i)]
-                            - r1[(i, b)] * f_vo[(a, j)]
-                            + r1[(j, b)] * f_vo[(a, i)]
-                    });
+                c2.view().into_shape((v * v, npair)).unwrap().dot(&d)
+            });
 
-                    if let Some(r2) = &r2 {
-                        // `e_0 r_{ijab} + (vv)_{ijab} - (vv)_{ijba}` with
-                        // `(vv)_{ijab} = \sum_c r_{ijac} f_{bc}`, one `v \times v` tile per
-                        // occupied pair, kept in cache.
-                        let mut tile = Array2::from_elem((v, v), zero);
-                        for i in 0..o {
-                            for j in 0..o {
-                                let rij = r2.slice(s![i, j, .., ..]);
-                                general_mat_mul(R::one(), &rij, &f_vv.t(), zero, &mut tile);
-                                Zip::from(s2.slice_mut(s![i, j, .., ..]))
-                                    .and(&rij)
-                                    .and(&tile)
-                                    .and(tile.t())
-                                    .for_each(|x, &r, &y, &yt| *x += e0 * r + y - yt);
-                            }
-                        }
-
-                        // `-(oo)_{ijab} + (oo)_{jiab}` with `(oo)_{ijab} = \sum_k f_{kj} r_{ikab}`,
-                        // one slab per occupied `i`, kept in cache and added to both `s_{ij}` and
-                        // `s_{ji}`.
-                        let mut slab = Array2::from_elem((o, v * v), zero);
-                        for i in 0..o {
-                            let ri = r2.index_axis(Axis(0), i).into_shape((o, v * v)).unwrap();
-                            general_mat_mul(R::one(), &f_oo.t(), &ri, zero, &mut slab);
-                            for (j, row) in slab.outer_iter().enumerate() {
-                                let x = row.into_shape((v, v)).unwrap();
-                                s2.slice_mut(s![i, j, .., ..]).scaled_add(-R::one(), &x);
-                                s2.slice_mut(s![j, i, .., ..]).scaled_add(R::one(), &x);
-                            }
-                        }
+            // Then, for `F c`, `m_{ab} = t_{ab} M` with
+            // `M_{qp} = (e_0 E_q - E_q f_{oo} + (E_q f_{oo})^T)_p`, the
+            // `e_0 r_{ijab} - P(ij) \sum_k f_{kj} r_{ikab}` part of `\sigma`, which commutes with
+            // `Q`.
+            let m2 = t2
+                .as_ref()
+                .zip(blocks.as_ref())
+                .map(|(t2, (f_oo, _, _, _, e0))| {
+                    let mut m = Array2::from_elem((npair, npair), zero);
+                    for p in 0..npair {
+                        let ef = unit(p).dot(f_oo);
+                        m.row_mut(p)
+                            .assign(&pack(&(unit(p).mapv(|x| x * *e0) - &ef + ef.t())));
                     }
 
-                    s2
+                    t2.dot(&m).into_shape((v, v, npair)).unwrap()
                 });
 
-                (s0, s1, s2)
+            // Both indexed `[a, b, p]`, so pass B reads one `v \times v` tile per pair.
+            let t2 = t2.map(|t2| t2.into_shape((v, v, npair)).unwrap());
+
+            // `z_{ka} = \sum_{lb} t_{klab}\alpha_{lb}` and, for `F c`, the contraction of
+            // `r_{klcd}` with `f_{ov}` through `\tilde f = f_{ov} Q`, as one product
+            // `\sum_{bp} t_{abp} (E_p x_b)_k` with `x = \alpha` and `x = \tilde f`.
+            let contracted = t2.as_ref().map(|t2| {
+                let f_tilde = blocks.as_ref().map(|(_, f_ov, _, _, _)| f_ov.dot(&q));
+                let width = if f_tilde.is_some() { 2 * o } else { o };
+
+                // Row `(b, p)` holds `E_p x_b`: `x_{lb}` at `k` and `-x_{kb}` at `l`.
+                let mut e = Array2::from_elem((v * npair, width), zero);
+                for b in 0..v {
+                    for (p, &(k, l)) in pairs.iter().enumerate() {
+                        let mut row = e.row_mut(b * npair + p);
+                        row[k] = alpha[(l, b)];
+                        row[l] = -alpha[(k, b)];
+                        if let Some(ft) = &f_tilde {
+                            row[o + k] = ft[(l, b)];
+                            row[o + l] = -ft[(k, b)];
+                        }
+                    }
+                }
+
+                t2.view().into_shape((v, v * npair)).unwrap().dot(&e)
+            });
+
+            // Ket: lower the rank through `\alpha`, then carry the virtual index through `Q`,
+            // `r_{knd} = \sum_b (t_{knb} + z_{kb}) Q_{db}`, with `z` for the single vector.
+            let mut r0 = &c.c0 + &traced(&t1, &alpha);
+            if let Some(zy) = &contracted {
+                let z = zy.slice(s![.., ..o]).t().to_owned();
+                r0[0] += half * (&z * &alpha).sum();
+                t1.index_axis_mut(Axis(1), 0).scaled_add(one, &z);
+            }
+
+            let r1 = right(&t1, &q);
+
+            // One-body sigma by the orthogonal rules: the one-body Slater-Condon rules of
+            // `elements::orthogonal`, contracted over whole amplitude arrays rather than evaluated
+            // per determinant pair, which would visit the `O(ov)` connections of every string.
+            // `\sigma^n_0 = e_0 r^n_0 + \sum_{kc} f_{kc} r_{knc}`,
+            // `\sigma_{ina} = f_{ai} r^n_0 + e_0 r_{ina} + \sum_c f_{ac} r_{inc}
+            //  - \sum_k f_{ki} r_{kna} + \sum_{kc} f_{kc} r_{ikac}`, the last term from pass A as
+            // `\sum_{a'} Q_{aa'} \sum_{kb} t_{ika'b} \tilde f_{kb}`.
+            let sigma = blocks.as_ref().map(|(f_oo, f_ov, f_vo, f_vv, e0)| {
+                let s0 = r0.mapv(|z| *e0 * z) + traced(&r1, f_ov);
+                let mut s1 = Array3::from_shape_fn((o, nb, v), |(i, n, a)| f_vo[(a, i)] * r0[n])
+                    + r1.mapv(|z| z * *e0)
+                    + right(&r1, f_vv)
+                    - left(f_oo, &r1);
+
+                if let Some(zy) = &contracted {
+                    let y = zy.slice(s![.., o..]).t().dot(&q.t());
+                    s1.index_axis_mut(Axis(1), 0).scaled_add(one, &y);
+                }
+
+                (s0, s1)
             });
 
             // Bra: raise the rank through `\beta`, for `F c` from `\sigma` and for `S c` from `r`,
-            // `w_{ina} = s_{ina} + \beta_{ai} s^n_0` and, for the single vector,
-            // `w_{ijab} = s_{ijab} + P(ij)P(ab) \beta_{bj} s_{ia}
-            //  + s_0 (\beta_{ai}\beta_{bj} - \beta_{aj}\beta_{bi})`, weighted by the point's
+            // `w^n_0 = s^n_0` and `w_{ina} = s_{ina} + \beta_{ai} s^n_0`, weighted by the point's
             // Lagrange weight.
             let scale = <R as From<T>>::from(point.scale);
-
-            let raise = |out: &mut StringAmplitudes<R>,
-                         x0: &Array1<R>,
-                         x1: &Array3<R>,
-                         x2: Option<Array4<R>>| {
+            let raise = |out: &mut StringAmplitudes<R>, x0: &Array1<R>, x1: &Array3<R>| {
                 out.c0.scaled_add(scale, x0);
                 Zip::indexed(&mut out.c1)
                     .and(x1)
                     .for_each(|(i, n, a), c, &x| *c += scale * (x + beta[(a, i)] * x0[n]));
-
-                if !doubles {
-                    return;
-                }
-
-                // The doubles are raised in one pass, without forming the antisymmetric products:
-                // in place in `x_{ijab}` at the first point, which then becomes the output, and
-                // added to the output at the others.
-                let (y0, x1) = (x0[0], x1.index_axis(Axis(1), 0));
-                let raised = |i: usize, j: usize, a: usize, b: usize| {
-                    x1[(i, a)] * beta[(b, j)]
-                        - x1[(j, a)] * beta[(b, i)]
-                        - x1[(i, b)] * beta[(a, j)]
-                        + x1[(j, b)] * beta[(a, i)]
-                        + y0 * (beta[(a, i)] * beta[(b, j)] - beta[(a, j)] * beta[(b, i)])
-                };
-
-                if let Some(out2) = out.c2.as_mut() {
-                    if let Some(x2) = x2 {
-                        out2.scaled_add(scale, &x2);
-                    }
-                    Zip::indexed(out2).for_each(|(i, j, a, b), c| *c += scale * raised(i, j, a, b));
-                } else {
-                    let w = match x2 {
-                        Some(mut x2) => {
-                            Zip::indexed(&mut x2)
-                                .for_each(|(i, j, a, b), c| *c = scale * (*c + raised(i, j, a, b)));
-                            x2
-                        }
-                        None => Array4::from_shape_fn((o, o, v, v), |(i, j, a, b)| {
-                            scale * raised(i, j, a, b)
-                        }),
-                    };
-                    out.c2 = Some(w);
-                }
             };
 
-            if let Some((s0, s1, s2)) = sigma {
-                raise(&mut sf, &s0, &s1, s2);
+            if let Some((s0, s1)) = &sigma {
+                raise(&mut sf, s0, s1);
             }
-            raise(&mut ss, &r0, &r1, r2);
+            raise(&mut ss, &r0, &r1);
+
+            if doubles.is_empty() {
+                continue;
+            }
+
+            // Pass B, one hole pair `ij` at a time: `r_{ij} = Q t_{ij} Q^T`, and for `F c`
+            // `\sigma_{ij} = Q m_{ij} Q^T + V - V^T + P(ij)P(ab) r_{ia} f_{bj}` with
+            // `V = r_{ij} f_{vv}^T`. Each tile is raised,
+            // `w_{ijab} = x_{ijab} + P(ij)P(ab) x_{ia}\beta_{bj}
+            //  + x_0 (\beta_{ai}\beta_{bj} - \beta_{aj}\beta_{bi})`,
+            // and read at the target strings with holes `ij`.
+            let r1 = r1.index_axis(Axis(1), 0);
+            let s01 = sigma
+                .as_ref()
+                .map(|(s0, s1)| (s0[0], s1.index_axis(Axis(1), 0)));
+
+            // Tiles reused for every pair.
+            let mut half_tile = Array2::from_elem((v, v), zero);
+            let mut r = Array2::from_elem((v, v), zero);
+            let mut qm = Array2::from_elem((v, v), zero);
+            let mut vv = Array2::from_elem((v, v), zero);
+            for (p, group) in doubles.iter().enumerate() {
+                if group.is_empty() {
+                    continue;
+                }
+
+                let (i, j) = pairs[p];
+
+                // The tiles, zero when the ket has no doubles.
+                if let Some(t2) = &t2 {
+                    let tp = t2.slice(s![.., .., p]);
+                    general_mat_mul(one, &q, &tp, zero, &mut half_tile);
+                    general_mat_mul(one, &half_tile, &q.t(), zero, &mut r);
+                }
+                if let (Some(m2), Some((_, _, _, f_vv, _))) = (&m2, &blocks) {
+                    let mp = m2.slice(s![.., .., p]);
+                    general_mat_mul(one, &q, &mp, zero, &mut half_tile);
+                    general_mat_mul(one, &half_tile, &q.t(), zero, &mut qm);
+                    general_mat_mul(one, &r, &f_vv.t(), zero, &mut vv);
+                }
+
+                // Raised tiles at the target strings.
+                for &(k, a, b) in group {
+                    let pair = beta[(a, i)] * beta[(b, j)] - beta[(a, j)] * beta[(b, i)];
+                    let ws = r[(a, b)] + outer(r1, &beta, (i, j), (a, b)) + r0[0] * pair;
+                    ss.d2[k] += scale * ws;
+
+                    if let (Some((s0, s1)), Some((_, _, f_vo, _, _))) = (&s01, &blocks) {
+                        let wf = qm[(a, b)] + vv[(a, b)] - vv[(b, a)]
+                            + outer(r1, f_vo, (i, j), (a, b))
+                            + outer(s1.view(), &beta, (i, j), (a, b))
+                            + *s0 * pair;
+                        sf.d2[k] += scale * wf;
+                    }
+                }
+            }
         }
 
         (sf, ss)
@@ -936,37 +994,40 @@ impl<R: NOCIScalar> StringAmplitudes<R> {
     ) -> Self {
         let (o, v) = dims;
         let zero = R::from_real(0.0);
+        let npair = o * o.saturating_sub(1) / 2;
+
         Self {
             c0: Array1::from_elem(batch, zero),
             c1: Array3::from_elem((o, batch, v), zero),
-            c2: doubles.then(|| Array4::from_elem((o, o, v, v), zero)),
+            c2: doubles.then(|| Array3::from_elem((v, v, npair), zero)),
+            d2: Vec::new(),
         }
     }
 
     /// Collect amplitudes given per vector and parent-local string ID. The determinant of a string
     /// differs from the in-place replacements of its parent reference by the string's phase.
     /// # Arguments:
-    /// - `parent`: Number of orbitals, parent occupation and its spin strings.
+    /// - `dims`: Numbers of occupied and virtual orbitals.
+    /// - `slots`: Slots of the parent's spin strings.
     /// - `batch`: Number of vectors `N`.
     /// - `values`: Vector index, string ID and amplitude.
     /// - `doubles`: Whether double replacements may be present, for a single vector only.
     /// # Returns
     /// - `Self`: Amplitudes in tensor form.
     fn gather(
-        parent: (usize, u128, &[SpinStringData]),
+        dims: (usize, usize),
+        slots: &[StringSlot],
         batch: usize,
         values: Vec<(usize, usize, R)>,
         doubles: bool,
     ) -> Self {
-        let (n, occupation, strings) = parent;
-        let nocc = occupation.count_ones() as usize;
-        let mut out = Self::zeros((nocc, n - nocc), batch, doubles);
+        let mut out = Self::zeros(dims, batch, doubles);
 
         for (k, id, value) in values {
-            let st = &strings[id];
-            let value = value * R::from_real(st.phase);
-            let ([i, j], [a, b]) = string_positions(occupation, st);
-            match st.cache.rank {
+            let slot = &slots[id];
+            let value = value * R::from_real(slot.phase);
+            let ([i, j], [a, b]) = (slot.holes, slot.particles);
+            match slot.rank {
                 0 => out.c0[k] += value,
                 1 => out.c1[(i, k, a)] += value,
                 _ => {
@@ -974,10 +1035,9 @@ impl<R: NOCIScalar> StringAmplitudes<R> {
                         .c2
                         .as_mut()
                         .expect("doubles requested for double replacements");
-                    c2[(i, j, a, b)] += value;
-                    c2[(j, i, a, b)] -= value;
-                    c2[(i, j, b, a)] -= value;
-                    c2[(j, i, b, a)] += value;
+                    let p = j * (j - 1) / 2 + i;
+                    c2[(a, b, p)] += value;
+                    c2[(b, a, p)] -= value;
                 }
             }
         }
@@ -985,30 +1045,28 @@ impl<R: NOCIScalar> StringAmplitudes<R> {
         out
     }
 
-    /// Read the amplitude of one string of one vector in the determinant convention of the spin
-    /// strings. Double replacements read zero when no doubles are held.
+    /// Read the applied amplitude of one target string of one vector in the determinant convention
+    /// of the spin strings. Double replacements are read from the target-string doubles.
     /// # Arguments:
-    /// - `st`: String to read.
-    /// - `positions`: Its hole and particle positions, from `string_positions`.
+    /// - `slot`: Slot of the string to read.
     /// - `k`: Vector in the batch.
+    /// - `id`: Its index among the target strings.
     /// # Returns
     /// - `R`: Its amplitude.
     fn read(
         &self,
-        st: &SpinStringData,
-        positions: ([usize; 2], [usize; 2]),
+        slot: &StringSlot,
         k: usize,
+        id: usize,
     ) -> R {
-        let ([i, j], [a, b]) = positions;
-        let value = match st.cache.rank {
+        let (i, a) = (slot.holes[0], slot.particles[0]);
+        let value = match slot.rank {
             0 => self.c0[k],
             1 => self.c1[(i, k, a)],
-            _ => self
-                .c2
-                .as_ref()
-                .map_or(R::from_real(0.0), |c2| c2[(i, j, a, b)]),
+            _ => self.d2[id],
         };
-        value * R::from_real(st.phase)
+
+        value * R::from_real(slot.phase)
     }
 }
 
@@ -1028,62 +1086,10 @@ pub(super) fn contractible(
     let (target_parent, source_parent) = parents;
     let within = |p: usize| {
         let parent = &spin.parents[p];
-        parent.entries.iter().all(|e| {
-            (parent.areps[e.a].cache.rank + parent.breps[e.b].cache.rank) as usize <= CONTRACTRANK
-        })
+        parent
+            .entries
+            .iter()
+            .all(|e| parent.aslots[e.a].rank + parent.bslots[e.b].rank <= CONTRACTRANK)
     };
     within(target_parent) && within(source_parent)
-}
-
-/// Positions of the replaced occupied orbitals among the occupied orbitals, and of the replacing
-/// virtual orbitals among the virtual orbitals, of a string with at most two replacements.
-/// # Arguments:
-/// - `occupation`: Parent occupation.
-/// - `st`: Spin string.
-/// # Returns
-/// - `([usize; 2], [usize; 2])`: Hole and particle positions in ascending order.
-fn string_positions(
-    occupation: u128,
-    st: &SpinStringData,
-) -> ([usize; 2], [usize; 2]) {
-    let below = |k: usize| (occupation & ((1u128 << k) - 1)).count_ones() as usize;
-    let mut holes = [0; 2];
-    let mut parts = [0; 2];
-    for r in 0..st.cache.rank as usize {
-        holes[r] = below(st.cache.holes[r] as usize);
-        let p = st.cache.particles[r] as usize;
-        parts[r] = p - below(p);
-    }
-    (holes, parts)
-}
-
-/// Contract the second occupied and virtual indices of a double, `z_{ka} = \sum_{lb} t_{klab} m_{lb}`,
-/// in one pass over `t` in its storage order, so no permuted copy is made.
-/// # Arguments:
-/// - `t2`: Amplitudes `t_{klab}`.
-/// - `m`: Occupied-virtual matrix `m_{lb}`.
-/// # Returns
-/// - `Array2<R>`: `z_{ka}`.
-fn contract_pair<R: NOCIScalar>(
-    t2: &Array4<R>,
-    m: &Array2<R>,
-) -> Array2<R> {
-    let (o, _, v, _) = t2.dim();
-    let zero = R::from_real(0.0);
-    let mut z = Array2::from_elem((o, v), zero);
-
-    // `z_{ka} \mathrel{+}= \sum_b t_{klab} m_{lb}` for every `(k, l, a)`, each row of `t` read once.
-    for (k, tk) in t2.outer_iter().enumerate() {
-        for (l, tkl) in tk.outer_iter().enumerate() {
-            let ml = m.row(l);
-            for (a, row) in tkl.outer_iter().enumerate() {
-                z[(k, a)] += row
-                    .iter()
-                    .zip(ml.iter())
-                    .fold(zero, |acc, (&t, &x)| acc + t * x);
-            }
-        }
-    }
-
-    z
 }

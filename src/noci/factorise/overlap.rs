@@ -277,7 +277,7 @@ enum OverlapBlock {
     /// Pair in contraction form, same-parent or not, with factor tables only when proposal CDFs or
     /// auxiliary columns need them. A same-parent pair of an orthonormal parent has the identity
     /// frame and is applied by occupation matching.
-    Contracted(ContractedPair<f64>, Option<OverlapFactorBlock>),
+    Contracted(Box<ContractedPair<f64>>, Option<OverlapFactorBlock>),
 }
 
 /// Cross-parent overlap factors indexed by ordered parent pair `QP`.
@@ -692,7 +692,7 @@ impl SpinFactorisation {
             .zip(factor_blocks)
             .enumerate()
             .map(|(k, block)| match block {
-                (Some(pair), tables) => OverlapBlock::Contracted(pair, tables),
+                (Some(pair), tables) => OverlapBlock::Contracted(Box::new(pair), tables),
                 _ if k / nparent == k % nparent => OverlapBlock::Orthogonal,
                 (None, Some(tables)) => OverlapBlock::Factorised(tables),
                 (None, None) => OverlapBlock::Transient,
