@@ -133,6 +133,27 @@ fn read_initial_shift(
     shift
 }
 
+/// Read SCF excitation from Lua table.
+/// # Arguments:
+/// - `ex`: Lua table containing the excitation spin and occupied and virtual offsets.
+/// # Returns:
+/// - `SCFExcitation`: Parsed SCF excitation.
+fn read_scf_excitation(ex: Table) -> SCFExcitation {
+    let defaults = SCFExcitation::default();
+    let s: String = ex
+        .get("spin")
+        .unwrap_or_else(|_| defaults.spin.as_str().to_string());
+    let spin: Spin = s.parse().unwrap_or_else(|msg| {
+        eprintln!("{msg}");
+        std::process::exit(1);
+    });
+    SCFExcitation {
+        spin,
+        occ: ex.get("occ").unwrap_or(defaults.occ),
+        vir: ex.get("vir").unwrap_or(defaults.vir),
+    }
+}
+
 /// Read basis state recipe from Lua table.
 /// # Arguments:
 /// - `t`: Lua table containing the state recipe specification.
@@ -173,15 +194,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
     let scfexcitation = t
         .get::<_, Option<Table>>("excit")
         .unwrap_or(None)
-        .map(|ex| {
-            let defaults = SCFExcitation::default();
-            let s: String = ex
-                .get("spin")
-                .unwrap_or_else(|_| defaults.spin.as_str().to_string());
-            let spin: Spin = s.parse().unwrap_or_else(|msg| {
-                eprintln!("{msg}");
-                std::process::exit(1);
-            });
+        .map(read_scf_excitation);
             SCFExcitation {
                 spin,
                 occ: ex.get("occ").unwrap_or(defaults.occ),
