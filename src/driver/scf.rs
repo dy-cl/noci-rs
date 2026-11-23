@@ -8,8 +8,8 @@ use ndarray::Array2;
 
 // Crate-root imports.
 use crate::basis::{generate_reference_noci_basis, hermitian_hnoci_basis};
-use crate::input::Input;
-use crate::noci::optimised::reshf_optimise;
+use crate::input::{Input, ResHFSpace};
+use crate::noci::optimised::{reshf_excitation_space, reshf_optimise};
 use crate::time_call;
 use crate::{AoData, HSCFState, SCFState, StateScalar};
 
@@ -54,16 +54,28 @@ pub fn generate_real_references(
             generate_reference_noci_basis(ao, input, Some(prev_states), None).states
         }
     });
-    let mut states = match &input.reshf {
-        Some(options) => time_call!(crate::timers::general::add_reshf_optimise, {
-            reshf_optimise(ao, input, options, &states, tol)
-        }),
-        None => states,
+    // Optimised references replace the SCF states, so they also seed the next geometry. An
+    // optimised excitation space becomes the basis alone, and the SCF states seed instead.
+    let (mut states, basis) = match &input.reshf {
+        Some(options) if options.space == ResHFSpace::Excitations => {
+            let basis = time_call!(crate::timers::general::add_reshf_optimise, {
+                let space = reshf_excitation_space(ao, input, &states);
+                reshf_optimise(ao, input, options, &space, tol)
+            });
+            (states, Some(basis))
+        }
+        Some(options) => {
+            let states = time_call!(crate::timers::general::add_reshf_optimise, {
+                reshf_optimise(ao, input, options, &states, tol)
+            });
+            (states, None)
+        }
+        None => (states, None),
     };
     align_orbitals(&mut states, prev_states, &ao.s);
 
     RealReferencePrep {
-        basis: states.clone(),
+        basis: basis.unwrap_or_else(|| states.clone()),
         states,
     }
 }
