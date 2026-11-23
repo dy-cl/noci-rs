@@ -10,7 +10,7 @@
 use std::time::Instant;
 
 // External crate imports.
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Axis, s};
 use num_complex::Complex64;
 use rayon::prelude::*;
 
@@ -257,81 +257,6 @@ fn vector_norm<T: NOCIScalar>(v: &Array1<T>) -> f64 {
     parts.into_iter().sum::<f64>().sqrt()
 }
 
-/// Inner products of every basis vector with one vector, `h_j = q_j^\dagger w`, in one sweep over
-/// fixed chunks, the chunk sums added in order.
-/// # Arguments:
-/// - `q`: Basis vectors.
-/// - `w`: Vector.
-/// # Returns:
-/// - `Vec<T>`: `q_j^\dagger w` for every `j`.
-/// # Panics
-/// - Panics if a vector is not contiguous, which no GMRES vector is.
-fn basis_products<T: NOCIScalar>(
-    q: &[Array1<T>],
-    w: &Array1<T>,
-) -> Vec<T> {
-    let zero = T::from_real(0.0);
-
-    // Each chunk `c` of `w` is read once against the same chunk of every basis vector,
-    // `p_{cj} = \sum_{i \in c} q_{ji}^* w_i`.
-    let parts = w
-        .as_slice()
-        .unwrap()
-        .par_chunks(CHUNK)
-        .enumerate()
-        .map(|(c, wc)| {
-            let span = c * CHUNK..c * CHUNK + wc.len();
-            q.iter()
-                .map(|qj| {
-                    qj.as_slice().unwrap()[span.clone()]
-                        .iter()
-                        .zip(wc)
-                        .fold(zero, |acc, (&qi, &wi)| acc + qi.conj() * wi)
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-
-    // `h_j = \sum_c p_{cj}`, summed in chunk order.
-    let mut h = vec![zero; q.len()];
-    for part in parts {
-        for (hj, pj) in h.iter_mut().zip(part) {
-            *hj += pj;
-        }
-    }
-    h
-}
-
-/// Linear combination of basis vectors, `u = \sum_j y_j q_j`, over the first `y.len()` vectors.
-/// # Arguments:
-/// - `q`: Basis vectors.
-/// - `y`: Coefficients.
-/// # Returns:
-/// - `Array1<T>`: `\sum_j y_j q_j`.
-/// # Panics
-/// - Panics if a basis vector is not contiguous, which no GMRES vector is.
-fn combine<T: NOCIScalar>(
-    q: &[Array1<T>],
-    y: &[T],
-) -> Array1<T> {
-    let mut u = Array1::from_elem(q[0].len(), T::from_real(0.0));
-
-    // Each chunk of `u` accumulates the same chunk of every basis vector, `u_i = \sum_j y_j q_{ji}`.
-    u.as_slice_mut()
-        .unwrap()
-        .par_chunks_mut(CHUNK)
-        .enumerate()
-        .for_each(|(c, uc)| {
-            let span = c * CHUNK..c * CHUNK + uc.len();
-            for (qj, &yj) in q.iter().zip(y) {
-                for (ui, &qi) in uc.iter_mut().zip(&qj.as_slice().unwrap()[span.clone()]) {
-                    *ui += yj * qi;
-                }
-            }
-        });
-    u
-}
-
 /// Compute the RMS norm of a residual vector.
 /// # Arguments:
 /// - `r`: Residual vector.
@@ -362,10 +287,41 @@ fn orthogonalise_arnoldi_vector<T: NOCIScalar>(
     k: usize,
 ) {
     for _ in 0..2 {
-        // `h = Q^\dagger w` in one sweep, then `w \leftarrow w - Q h` in a second.
-        let hk = basis_products(&q[..=k], w);
-        let correction = combine(&q[..=k], &hk);
-        w.zip_mut_with(&correction, |wi, &ci| *wi -= ci);
+        // `h = Q^\dagger w` in one sweep over fixed chunks of `w`, each read once against the same
+        // chunk of every basis vector, `p_{cj} = (\sum_{i \in c} q_{ji} w_i^*)^*`.
+        let parts = w
+            .axis_chunks_iter(Axis(0), CHUNK)
+            .into_par_iter()
+            .enumerate()
+            .map(|(c, wc)| {
+                let start = c * CHUNK;
+                let wc = wc.mapv(|wi| wi.conj());
+                q[..=k]
+                    .iter()
+                    .map(|qj| qj.slice(s![start..start + wc.len()]).dot(&wc).conj())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        // `h_j = \sum_c p_{cj}`, summed in chunk order whatever the thread count.
+        let mut hk = vec![T::from_real(0.0); k + 1];
+        for part in parts {
+            for (hj, pj) in hk.iter_mut().zip(part) {
+                *hj += pj;
+            }
+        }
+
+        // `w \leftarrow w - Q h` in a second sweep, each chunk of `w` updated in place by the same
+        // chunk of every basis vector.
+        w.axis_chunks_iter_mut(Axis(0), CHUNK)
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(c, mut wc)| {
+                let start = c * CHUNK;
+                for (qj, &hj) in q[..=k].iter().zip(&hk) {
+                    wc.scaled_add(-hj, &qj.slice(s![start..start + wc.len()]));
+                }
+            });
 
         for (j, &hjk) in hk.iter().enumerate() {
             h[(j, k)] += hjk;
@@ -583,7 +539,21 @@ fn update_solution<T, P>(
     if y.is_empty() {
         return;
     }
-    let correction = precondition(&combine(q, y.as_slice().unwrap()));
+
+    // `u = \sum_j y_j q_j`, each fixed chunk of `u` accumulating the same chunk of every basis
+    // vector.
+    let mut u = Array1::from_elem(x.len(), T::from_real(0.0));
+    u.axis_chunks_iter_mut(Axis(0), CHUNK)
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(c, mut uc)| {
+            let start = c * CHUNK;
+            for (qj, &yj) in q.iter().zip(y) {
+                uc.scaled_add(yj, &qj.slice(s![start..start + uc.len()]));
+            }
+        });
+
+    let correction = precondition(&u);
     x.zip_mut_with(&correction, |xi, &ci| *xi += ci);
 }
 
