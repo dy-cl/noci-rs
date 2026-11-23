@@ -43,8 +43,8 @@ pub(super) struct ContractedPair<T: NOCIScalar> {
     alpha: Vec<ContractionPoint<T>>,
     /// Beta extrapolation points of `F^\beta` and `S^\beta`.
     beta: Vec<ContractionPoint<T>>,
-    /// Whether the biorthogonal frame is the identity, `G = I`, `\alpha = \beta = 0` and `Q = I`
-    /// at a single point: a same-parent pair of an orthonormal parent, whose overlap is
+    /// Whether the pair is a same-parent pair of an orthonormal parent, whose biorthogonal frame
+    /// is the identity, `G = I`, `\alpha = \beta = 0` and `Q = I`, and whose overlap is
     /// `S^{PP} = I` on the parent's strings.
     identity: bool,
 }
@@ -125,11 +125,10 @@ impl<T: NOCIScalar> ContractedPair<T> {
             (&data.ao.s, fock.map(|f| f.fb)),
             data.tol,
         )?;
-        let trivial = |points: &[ContractionPoint<T>]| match points {
-            [point] => point.is_identity(data.tol),
-            _ => false,
-        };
-        let identity = target_parent == source_parent && trivial(&alpha) && trivial(&beta);
+        let identity = target_parent == source_parent
+            && data
+                .mocache
+                .is_some_and(|mocache| mocache[target_parent].orthogonal_slater_condon);
 
         Some(Self {
             target_parent,
@@ -366,34 +365,6 @@ impl<T: NOCIScalar> ContractedPair<T> {
 }
 
 impl<T: NOCIScalar> ContractionPoint<T> {
-    /// Whether this point is the identity frame within `tol`: unit scale, `G = I`,
-    /// `\alpha = \beta = 0` and `Q = I`.
-    /// # Arguments:
-    /// - `tol`: Largest deviation of any entry from the identity frame.
-    /// # Returns
-    /// - `bool`: Whether the frame is the identity.
-    fn is_identity(
-        &self,
-        tol: f64,
-    ) -> bool {
-        let unit = |m: &Array2<T>| {
-            m.indexed_iter().all(|((i, j), &x)| {
-                let delta = if i == j {
-                    T::from_real(1.0)
-                } else {
-                    T::from_real(0.0)
-                };
-                (x - delta).abs() <= tol
-            })
-        };
-        let zero = |m: &Array2<T>| m.iter().all(|x| x.abs() <= tol);
-        (self.scale - T::from_real(1.0)).abs() <= tol
-            && unit(&self.g)
-            && unit(&self.q)
-            && zero(&self.alpha)
-            && zero(&self.beta)
-    }
-
     /// Prepare the extrapolation points of the same-spin factors between the strings of a bra
     /// reference `w` and a ket reference `x`. With the Löwdin pairing
     /// `M_0 = U \tilde S V^\dagger`, every pair with `\tilde S_k < \mathtt{SINGULARTOL}` is
