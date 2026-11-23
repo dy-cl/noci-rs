@@ -134,23 +134,30 @@ impl<T: NOCIScalar> ContractedPair<T> {
             (&data.ao.s, fock.map(|f| f.fb)),
             data.tol,
         )?;
+
+        // A same-parent pair of an orthonormal parent has the identity frame.
         let identity = target_parent == source_parent
             && data
                 .mocache
                 .is_some_and(|mocache| mocache[target_parent].orthogonal_slater_condon);
 
-        // The factors of each reference string do not depend on the amplitudes, so they are
-        // applied once here and kept at every target string.
         let n = ket.ca.ncols();
         let target = &spin.parents[target_parent];
+
+        // The factors of each reference string do not depend on the amplitudes, so they are
+        // applied once here and kept at every target string.
         let reference = |points: &[ContractionPoint<T>],
                          strings: &[SpinStringData],
                          occupations: (u128, u128)| {
             let (source_occ, target_occ) = occupations;
+
+            // The ket reference string alone, `c_0 = 1`, through every point.
             let nocc = source_occ.count_ones() as usize;
             let mut r = StringAmplitudes::zeros((nocc, n - nocc), 1, false);
             r.c0[0] = T::one();
             let (f, s) = ContractionPoint::apply(points, &r, true, true);
+
+            // `F c_0` and `S c_0` at every target string.
             let at = |amp: &StringAmplitudes<T>| {
                 strings
                     .iter()
@@ -159,6 +166,7 @@ impl<T: NOCIScalar> ContractedPair<T> {
             };
             (at(&f), at(&s))
         };
+
         let reference_alpha = reference(&alpha, &target.areps, (ket.oa, bra.oa));
         let reference_beta = reference(&beta, &target.breps, (ket.ob, bra.ob));
 
@@ -232,12 +240,15 @@ impl<T: NOCIScalar> ContractedPair<T> {
             &data.space.parents()[self.target_parent],
             &data.space.parents()[self.source_parent],
         );
+        let n = ket.ca.ncols();
+
         // String ranks in small arrays, so each pass over the sources reads no string records.
         let ranks =
             |strings: &[SpinStringData]| strings.iter().map(|st| st.cache.rank).collect::<Vec<_>>();
         let (sarank, sbrank) = (ranks(&source.areps), ranks(&source.breps));
         let rank = |&(a, b, _): &(usize, usize, R)| (sarank[a], sbrank[b]);
-        let n = ket.ca.ncols();
+
+        // Amplitudes of a single vector over the source strings of one spin.
         let amplitudes = |occupation: u128,
                           strings: &[SpinStringData],
                           values: Vec<(usize, R)>,
@@ -257,12 +268,8 @@ impl<T: NOCIScalar> ContractedPair<T> {
             .map(|&(a, _, value)| (a, value))
             .collect();
         let class1 = || {
-            ContractionPoint::apply(
-                &self.alpha,
-                &amplitudes(ket.oa, &source.areps, column, true),
-                true,
-                true,
-            )
+            let c = amplitudes(ket.oa, &source.areps, column, true);
+            ContractionPoint::apply(&self.alpha, &c, true, true)
         };
 
         // Class 2: the alpha-reference row over excited beta strings, with the alpha factors of
@@ -273,12 +280,8 @@ impl<T: NOCIScalar> ContractedPair<T> {
             .map(|&(_, b, value)| (b, value))
             .collect();
         let class2 = || {
-            ContractionPoint::apply(
-                &self.beta,
-                &amplitudes(ket.ob, &source.breps, row, true),
-                true,
-                true,
-            )
+            let c = amplitudes(ket.ob, &source.breps, row, true);
+            ContractionPoint::apply(&self.beta, &c, true, true)
         };
 
         // Class 3: one column of `D^{11}` per beta single. Each column needs only the reference and
@@ -291,7 +294,7 @@ impl<T: NOCIScalar> ContractedPair<T> {
         let grouped = grouped.into_iter().collect::<Vec<_>>();
         let ncol = grouped.len();
 
-        // Chunks of `COLCHUNK` columns run concurrently, each applied as one batch per spin.
+        // Chunks of `COLCHUNK` columns run concurrently, column `c` of a chunk as its vector `c`.
         let chunks = if grouped.is_empty() {
             vec![&grouped[..]]
         } else {
@@ -301,34 +304,31 @@ impl<T: NOCIScalar> ContractedPair<T> {
             chunks
                 .par_iter()
                 .map(|chunk| {
-                    let alpha_columns = chunk
+                    // Alpha amplitudes: the alpha singles of every column.
+                    let values = chunk
                         .iter()
                         .enumerate()
                         .flat_map(|(c, (_, column))| {
                             column.iter().map(move |&(a, value)| (c, a, value))
                         })
                         .collect();
-                    let beta_columns = chunk
+                    let parent = (n, ket.oa, &source.areps[..]);
+                    let alpha = StringAmplitudes::gather(parent, chunk.len(), values, false);
+
+                    // Beta amplitudes: the beta single of every column, with unit amplitude.
+                    let values = chunk
                         .iter()
                         .enumerate()
                         .map(|(c, (b, _))| (c, *b, R::one()))
                         .collect();
-                    let alpha = StringAmplitudes::gather(
-                        (n, ket.oa, &source.areps),
-                        chunk.len(),
-                        alpha_columns,
-                        false,
-                    );
-                    let beta = StringAmplitudes::gather(
-                        (n, ket.ob, &source.breps),
-                        chunk.len(),
-                        beta_columns,
-                        false,
-                    );
-                    (
-                        ContractionPoint::apply(&self.alpha, &alpha, true, false),
-                        ContractionPoint::apply(&self.beta, &beta, true, false),
-                    )
+                    let parent = (n, ket.ob, &source.breps[..]);
+                    let beta = StringAmplitudes::gather(parent, chunk.len(), values, false);
+
+                    // One batched apply per spin, reference and single outputs only.
+                    let alpha = ContractionPoint::apply(&self.alpha, &alpha, true, false);
+                    let beta = ContractionPoint::apply(&self.beta, &beta, true, false);
+
+                    (alpha, beta)
                 })
                 .collect::<Vec<_>>()
         };
@@ -338,7 +338,7 @@ impl<T: NOCIScalar> ContractedPair<T> {
         let (((fa1, sa1), (fb2, sb2)), applied) =
             rayon::join(|| rayon::join(class1, class2), class3);
 
-        // Column `c` is vector `c % COLCHUNK` of chunk `c / COLCHUNK`; the chunks are read in place.
+        // The class-3 outputs of every chunk, by spin and operator.
         let mut fa3 = Vec::with_capacity(applied.len());
         let mut sa3 = Vec::with_capacity(applied.len());
         let mut fb3 = Vec::with_capacity(applied.len());
@@ -349,6 +349,9 @@ impl<T: NOCIScalar> ContractedPair<T> {
             fb3.push(fb);
             sb3.push(sb);
         }
+
+        // Reference output of column `c`, vector `c % COLCHUNK` of chunk `c / COLCHUNK`, read in
+        // place.
         let reference =
             |chunks: &[StringAmplitudes<R>], c: usize| chunks[c / COLCHUNK].c0[c % COLCHUNK];
 
@@ -364,6 +367,7 @@ impl<T: NOCIScalar> ContractedPair<T> {
                 .collect();
             amplitudes(ket.oa, &source.areps, values, false)
         };
+
         // Alpha-reference targets: beta applies of the reference rows of `F^\alpha D^{11}` and
         // `S^\alpha D^{11}`.
         let reference_row = |pick: &(dyn Fn(usize) -> R + Sync)| {
@@ -374,6 +378,7 @@ impl<T: NOCIScalar> ContractedPair<T> {
                 .collect();
             amplitudes(ket.ob, &source.breps, values, false)
         };
+
         // The four applies are independent and run concurrently.
         let (((fws, sws), (_, swf)), ((_, suf), (fus, sus))) = rayon::join(
             || {
@@ -409,16 +414,12 @@ impl<T: NOCIScalar> ContractedPair<T> {
                 .map(|st| string_positions(occupation, st))
                 .collect::<Vec<_>>()
         };
-        let (apos, bpos) = (
-            positions(bra.oa, &target.areps),
-            positions(bra.ob, &target.breps),
-        );
+        let apos = positions(bra.oa, &target.areps);
+        let bpos = positions(bra.ob, &target.breps);
 
         // Single-single targets: `Y^F = X^F (S^\beta)^T + X^S (F^\beta)^T` and
         // `Y^S = X^S (S^\beta)^T`, with one row per target single and one column per beta single.
         // `rows` maps every target string to its row, `usize::MAX` for strings that are not singles.
-        // Each matrix is filled as its transpose, one column at a time, so the reads run along the
-        // stored singles of one column.
         let singles = |strings: &[SpinStringData],
                        at: &[([usize; 2], [usize; 2])],
                        chunks: &[StringAmplitudes<R>]| {
@@ -429,29 +430,35 @@ impl<T: NOCIScalar> ContractedPair<T> {
             for (r, &k) in ids.iter().enumerate() {
                 rows[k] = r;
             }
+
+            // Each matrix is filled as its transpose, one column at a time, so the reads run along
+            // the stored singles of one column.
             let mt = Array2::from_shape_fn((ncol, ids.len()), |(c, r)| {
                 chunks[c / COLCHUNK].read(&strings[ids[r]], at[ids[r]], c % COLCHUNK)
             });
             (mt, rows)
         };
+
+        // The single rows of `F^\alpha D^{11}`, `S^\alpha D^{11}`, `F^\beta` and `S^\beta`.
         let (xf, arows) = singles(&target.areps, &apos, &fa3);
         let (xs, _) = singles(&target.areps, &apos, &sa3);
         let (bf, brows) = singles(&target.breps, &bpos, &fb3);
         let (bs, _) = singles(&target.breps, &bpos, &sb3);
+
+        // Both products, side by side for each target pair so one read serves both.
         let yf = xf.t().dot(&bs) + xs.t().dot(&bf);
         let ys = xs.t().dot(&bs);
-
-        // Both products of a target pair side by side, so one read serves both.
         let y = Array2::from_shape_fn(yf.dim(), |(r, c)| [yf[(r, c)], ys[(r, c)]]);
 
         // Every class at the target strings, packed per string so a target reads one record per
         // spin: alpha `[F_1, S_1, F_0, S_0, F_{ws}, S_{ws}, S_{wf}]` and beta
-        // `[F_0, S_0, F_2, S_2, S_{uf}, F_{us}, S_{us}]`, with the string ranks kept apart.
+        // `[F_0, S_0, F_2, S_2, S_{uf}, F_{us}, S_{us}]`.
         let at = |amp: &StringAmplitudes<R>,
                   strings: &[SpinStringData],
                   positions: &[([usize; 2], [usize; 2])],
                   k: usize| { amp.read(&strings[k], positions[k], 0) };
         let cast = |x: T| <R as From<T>>::from(x);
+
         let alpha = (0..target.areps.len())
             .map(|k| {
                 let read = |amp| at(amp, &target.areps, &apos, k);
@@ -466,6 +473,7 @@ impl<T: NOCIScalar> ContractedPair<T> {
                 ]
             })
             .collect::<Vec<_>>();
+
         let beta = (0..target.breps.len())
             .map(|k| {
                 let read = |amp| at(amp, &target.breps, &bpos, k);
@@ -480,6 +488,8 @@ impl<T: NOCIScalar> ContractedPair<T> {
                 ]
             })
             .collect::<Vec<_>>();
+
+        // Target string ranks kept apart from the packed records.
         let (arank, brank) = (ranks(&target.areps), ranks(&target.breps));
 
         // `Y^Q_{\bar a\bar b} = F_{\bar a\bar b} + \lambda S_{\bar a\bar b}` at every target
@@ -490,9 +500,12 @@ impl<T: NOCIScalar> ContractedPair<T> {
             .map(|&(out, i, j)| {
                 let [fa1, sa1, fa0, sa0, fws, sws, swf] = alpha[i];
                 let [fb0, sb0, fb2, sb2, suf, fus, sus] = beta[j];
+
+                // Classes 1 and 2.
                 let mut f = fa1 * sb0 + sa1 * fb0 + fa0 * sb2 + sa0 * fb2;
                 let mut s = sa1 * sb0 + sa0 * sb2;
 
+                // Class 3 by target class.
                 match (arank[i], brank[j]) {
                     (_, 0) => {
                         f += fws + swf;
@@ -687,11 +700,12 @@ impl<T: NOCIScalar> ContractionPoint<T> {
         R: NOCIScalar + From<T>,
     {
         let (o, nb, v) = c.c1.dim();
+        let half = R::from_real(0.5);
+        let zero = R::from_real(0.0);
+
         // The doubles outputs are created by the first point, so they need no zeroing.
         let mut sf = StringAmplitudes::zeros((o, v), nb, false);
         let mut ss = StringAmplitudes::zeros((o, v), nb, false);
-        let half = R::from_real(0.5);
-        let zero = R::from_real(0.0);
 
         // `\sum_{kb} x_{knb} m_{kb}` for every vector `n`.
         let traced = |x: &Array3<R>, m: &Array2<R>| {
@@ -702,14 +716,16 @@ impl<T: NOCIScalar> ContractionPoint<T> {
                     .fold(zero, |acc, (&xi, &mi)| acc + xi * mi)
             })
         };
-        // `x_{knb} \leftarrow \sum_j m_{jk} x_{jnb}` and `x_{knb} \leftarrow \sum_c x_{knc} m_{bc}`
-        // as single products over the batch.
+
+        // `x_{knb} \leftarrow \sum_j m_{jk} x_{jnb}` as one product over the batch.
         let left = |m: &Array2<R>, x: &Array3<R>| {
             m.t()
                 .dot(&x.view().into_shape((o, nb * v)).unwrap())
                 .into_shape((o, nb, v))
                 .unwrap()
         };
+
+        // `x_{knb} \leftarrow \sum_c x_{knc} m_{bc}` as one product over the batch.
         let right = |x: &Array3<R>, m: &Array2<R>| {
             x.view()
                 .into_shape((o * nb, v))
@@ -731,6 +747,7 @@ impl<T: NOCIScalar> ContractionPoint<T> {
             // Ket: `G` on each occupied index, `t_{knb} = \sum_j G_{jk} c_{jnb}` and
             // `t_{klab} = \sum_{ij} G_{ik} G_{jl} c_{ijab}` as one product per index.
             let mut t1 = left(&g, &c.c1);
+
             let t2 = c.c2.as_ref().map(|c2| {
                 let first = g.t().dot(&c2.view().into_shape((o, o * v * v)).unwrap());
                 let first = first.into_shape((o, o, v * v)).unwrap();
@@ -753,6 +770,7 @@ impl<T: NOCIScalar> ContractionPoint<T> {
                 t1.index_axis_mut(Axis(1), 0).scaled_add(R::one(), &z);
             }
             let r1 = right(&t1, &q);
+
             // `Q` on the second virtual index as one product, then on the first as one product per
             // occupied pair written in place, so no permuted copy of the doubles is made.
             let r2 = t2.map(|t2| {
@@ -786,6 +804,7 @@ impl<T: NOCIScalar> ContractionPoint<T> {
                     + r1.mapv(|z| z * e0)
                     + right(&r1, &f_vv)
                     - left(&f_oo, &r1);
+
                 if let Some(r2) = &r2 {
                     s1.index_axis_mut(Axis(1), 0)
                         .scaled_add(R::one(), &contract_pair(r2, &f_ov));
@@ -833,16 +852,20 @@ impl<T: NOCIScalar> ContractionPoint<T> {
                             }
                         }
                     }
+
                     s2
                 });
+
                 (s0, s1, s2)
             });
 
             // Bra: raise the rank through `\beta`, for `F c` from `\sigma` and for `S c` from `r`,
             // `w_{ina} = s_{ina} + \beta_{ai} s^n_0` and, for the single vector,
             // `w_{ijab} = s_{ijab} + P(ij)P(ab) \beta_{bj} s_{ia}
-            //  + s_0 (\beta_{ai}\beta_{bj} - \beta_{aj}\beta_{bi})`.
+            //  + s_0 (\beta_{ai}\beta_{bj} - \beta_{aj}\beta_{bi})`, weighted by the point's
+            // Lagrange weight.
             let scale = <R as From<T>>::from(point.scale);
+
             let raise = |out: &mut StringAmplitudes<R>,
                          x0: &Array1<R>,
                          x1: &Array3<R>,
@@ -851,6 +874,7 @@ impl<T: NOCIScalar> ContractionPoint<T> {
                 Zip::indexed(&mut out.c1)
                     .and(x1)
                     .for_each(|(i, n, a), c, &x| *c += scale * (x + beta[(a, i)] * x0[n]));
+
                 if !doubles {
                     return;
                 }
@@ -866,6 +890,7 @@ impl<T: NOCIScalar> ContractionPoint<T> {
                         + x1[(j, b)] * beta[(a, i)]
                         + y0 * (beta[(a, i)] * beta[(b, j)] - beta[(a, j)] * beta[(b, i)])
                 };
+
                 if let Some(out2) = out.c2.as_mut() {
                     if let Some(x2) = x2 {
                         out2.scaled_add(scale, &x2);
@@ -885,6 +910,7 @@ impl<T: NOCIScalar> ContractionPoint<T> {
                     out.c2 = Some(w);
                 }
             };
+
             if let Some((s0, s1, s2)) = sigma {
                 raise(&mut sf, &s0, &s1, s2);
             }
@@ -955,6 +981,7 @@ impl<R: NOCIScalar> StringAmplitudes<R> {
                 }
             }
         }
+
         out
     }
 
@@ -1057,5 +1084,6 @@ fn contract_pair<R: NOCIScalar>(
             }
         }
     }
+
     z
 }

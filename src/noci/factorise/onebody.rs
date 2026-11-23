@@ -358,7 +358,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             }
         }
 
-        // Source amplitudes and target rows of each parent, built once for all its pairs.
+        // Source amplitudes of each parent, built once for all its pairs.
         let sources = self
             .spin
             .parents
@@ -371,6 +371,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+
+        // Target rows of each parent, built once for all its pairs.
         let targets = self
             .spin
             .parents
@@ -401,6 +403,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &targets[block.target_parent],
                         lambda,
                     );
+
                     Some((block.target_parent, out))
                 }
                 _ => None,
@@ -418,9 +421,11 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         *s += value;
                     }
                 }
+
                 sum
             })
             .collect::<Vec<_>>();
+
         for (rows, sum) in targets.iter().zip(sums) {
             for (&(det, _, _), value) in rows.iter().zip(sum) {
                 y[det] += value;
