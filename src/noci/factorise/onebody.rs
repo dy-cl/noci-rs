@@ -358,7 +358,36 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             }
         }
 
-        // Contracted parent pairs run concurrently, each assigned whole to one worker.
+        // Source amplitudes of each parent, built once for all its pairs.
+        let sources = self
+            .spin
+            .parents
+            .par_iter()
+            .map(|parent| {
+                parent
+                    .entries
+                    .iter()
+                    .map(|e| (e.a, e.b, xs[e.det]))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        // Target rows of each parent, built once for all its pairs.
+        let targets = self
+            .spin
+            .parents
+            .par_iter()
+            .map(|parent| {
+                parent
+                    .entries
+                    .iter()
+                    .map(|e| (e.det, e.a, e.b))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        // Contracted parent pairs run concurrently, each assigned whole to one worker. Every pair
+        // returns its contributions in the row order of its target parent.
         let contracted = self
             .blocks
             .par_iter()
@@ -367,22 +396,38 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     if (block.target_parent * self.nparent + block.source_parent) % nworker
                         == worker =>
                 {
-                    let entries = |parent: usize| &self.spin.parents[parent].entries;
-                    let sources = entries(block.source_parent)
-                        .iter()
-                        .map(|e| (e.a, e.b, xs[e.det]))
-                        .collect::<Vec<_>>();
-                    let targets = entries(block.target_parent)
-                        .iter()
-                        .map(|e| (e.det, e.a, e.b))
-                        .collect::<Vec<_>>();
-                    Some(block.apply_pair(&self.spin, data, &sources, &targets, lambda))
+                    let out = block.apply_pair(
+                        &self.spin,
+                        data,
+                        &sources[block.source_parent],
+                        &targets[block.target_parent],
+                        lambda,
+                    );
+
+                    Some((block.target_parent, out))
                 }
                 _ => None,
             })
             .collect::<Vec<_>>();
-        for updates in contracted {
-            for (det, value) in updates {
+
+        // Sum the pairs of each target parent row by row, in parallel over parents, then add each
+        // sum into `y` once.
+        let sums = (0..self.nparent)
+            .into_par_iter()
+            .map(|parent| {
+                let mut sum = vec![zero; targets[parent].len()];
+                for (_, out) in contracted.iter().filter(|(p, _)| *p == parent) {
+                    for (s, &(_, value)) in sum.iter_mut().zip(out) {
+                        *s += value;
+                    }
+                }
+
+                sum
+            })
+            .collect::<Vec<_>>();
+
+        for (rows, sum) in targets.iter().zip(sums) {
+            for (&(det, _, _), value) in rows.iter().zip(sum) {
                 y[det] += value;
             }
         }
