@@ -1,11 +1,11 @@
 // elements/nonorthogonalwicks/storage.rs
 
 // Standard library imports.
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::ptr::NonNull;
 
 // External crate imports.
-use memmap2::{Mmap, MmapMut, MmapOptions};
+use memmap2::{MmapMut, MmapOptions};
 use serde::{Deserialize, Serialize};
 
 // Crate-root imports.
@@ -24,8 +24,6 @@ pub(crate) const WICKS_DISK_CACHE_VERSION: u32 = 3;
 pub(crate) enum WicksBacking<T: NOCIScalar> {
     /// Node-shared RMA allocation.
     Shared(WicksRma<T>),
-    /// Read-only file-backed memory map.
-    Mmap(Mmap),
     /// Writable file-backed memory map.
     MmapCow(MmapMut),
 }
@@ -65,8 +63,6 @@ impl<T: NOCIScalar> WicksShared<T> {
     /// - `self`: Writable Wick storage and associated view.
     /// # Returns
     /// - `&mut [T]`: Mutable slice over the full tensor slab.
-    /// # Panics
-    /// - Panics when the backing allocation is a read-only memory map.
     pub fn slab_mut(&mut self) -> &mut [T] {
         let ptr = self.base_mut_ptr();
         let len = self.view.slab_len;
@@ -78,18 +74,15 @@ impl<T: NOCIScalar> WicksShared<T> {
     /// - `self`: Writable Wick storage and associated view.
     /// # Returns
     /// - `*mut T`: Mutable pointer to the first slab entry.
-    /// # Panics
-    /// - Panics when the backing allocation is a read-only memory map.
     fn base_mut_ptr(&mut self) -> *mut T {
         match &mut self.backing {
             WicksBacking::Shared(rma) => rma.base_ptr as *mut T,
-            WicksBacking::Mmap(_) => panic!("Wick's slab is read-only"),
             WicksBacking::MmapCow(map) => map.as_mut_ptr() as *mut T,
         }
     }
 
-    /// Flush a writable file-backed tensor slab to disk. Shared-memory and read-only mappings
-    /// require no explicit flush through this interface.
+    /// Flush a writable file-backed tensor slab to disk. Shared-memory slabs require no explicit
+    /// flush through this interface.
     /// # Arguments:
     /// - `self`: Wick storage and associated view.
     /// # Returns
@@ -115,22 +108,6 @@ impl<T: NOCIScalar> WicksShared<T> {
     ) -> Self {
         Self {
             backing: WicksBacking::Shared(rma),
-            view,
-        }
-    }
-
-    /// Construct storage backed by a read-only file mapping.
-    /// # Arguments:
-    /// - `mmap`: Read-only memory map containing the Wick tensor slab.
-    /// - `view`: View over the mapped tensor slab.
-    /// # Returns
-    /// - `WicksShared<T>`: Read-only file-backed Wick storage.
-    pub(crate) fn from_mmap(
-        mmap: Mmap,
-        view: WicksView<T>,
-    ) -> Self {
-        Self {
-            backing: WicksBacking::Mmap(mmap),
             view,
         }
     }
@@ -228,12 +205,12 @@ pub(crate) fn create_wicks_mmap<T: NOCIScalar>(
     Ok(WicksShared::from_mmap_cow(mmap, view))
 }
 
-/// Load a read-only file-backed tensor slab together with its serialised offsets and scalar metadata.
+/// Load a writable file-backed tensor slab together with its serialised offsets and scalar metadata.
 /// # Arguments:
 /// - `slab_path`: Path to the raw file storing the contiguous tensor slab.
 /// - `meta_path`: Path to the serialised `WicksDiskMeta` object.
 /// # Returns
-/// - `std::io::Result<WicksShared<T>>`: Read-only file-backed Wick storage and slab view.
+/// - `std::io::Result<WicksShared<T>>`: Writable file-backed Wick storage and slab view.
 /// # Errors
 /// - Returns an I/O error if metadata or slab data cannot be read or mapped, or if the cache version is incompatible.
 /// # Panics
@@ -253,9 +230,11 @@ pub(crate) fn load_wicks_mmap<T: NOCIScalar>(
         ));
     }
 
-    let file = File::open(slab_path)?;
-    let mmap = unsafe { MmapOptions::new().map(&file)? };
-    let ptr = mmap.as_ptr() as *mut T;
+    // The slab is mapped writable, since each SNOCI step updates its Fock-dependent intermediates
+    // in place.
+    let file = OpenOptions::new().read(true).write(true).open(slab_path)?;
+    let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+    let ptr = mmap.as_mut_ptr() as *mut T;
 
     let view = WicksView {
         slab: NonNull::new(ptr).unwrap(),
@@ -266,5 +245,5 @@ pub(crate) fn load_wicks_mmap<T: NOCIScalar>(
         branches: disk_meta.branches,
     };
 
-    Ok(WicksShared::from_mmap(mmap, view))
+    Ok(WicksShared::from_mmap_cow(mmap, view))
 }
