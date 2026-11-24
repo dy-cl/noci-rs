@@ -35,4 +35,6 @@ pub(crate) struct HSCFRunData<'a> {
     pub(crate) noci_basis: bool,
     /// Two-electron integral complex scaling parameter.
     pub(crate) lambda: Complex64,
+    /// Orbital-gradient norm at which the optimisation is converged.
+    pub(crate) tol: f64,
 }

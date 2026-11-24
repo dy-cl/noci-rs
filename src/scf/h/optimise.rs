@@ -17,7 +17,6 @@ use super::finalise::finalise;
 use super::step::{finite_difference_newton_step, limit_step, line_search, sr1_step, step_norm};
 use super::types::{HSCFRunData, SecantPair, SpinBlock};
 
-const G_TOL: f64 = 1e-6;
 const HISTORY: usize = 20;
 
 /// Run a holomorphic unrestricted SCF quasi-Newton optimisation.
@@ -102,7 +101,7 @@ pub(crate) fn hscf_cycle(
             + gb.iter().map(|z| z.norm_sqr()).sum::<f64>())
         .sqrt();
 
-        if gnorm < G_TOL {
+        if gnorm < run.tol {
             if input.write.verbose >= 1 {
                 println!(
                     "{:4} {:16.10} {:+16.10}i {:12.4e} {:>12} {:>12}",
@@ -146,8 +145,8 @@ pub(crate) fn hscf_cycle(
             }
         }
         let (mut pa, mut pb) = if use_fd_newton {
-            finite_difference_newton_step((&ca, &cb), ao, (na, nb), (&ga, &gb), run.lambda)
-                .unwrap_or_else(|| sr1_step(&hist, (&ga, &gb), (&epsa, &epsb), (na, nb)))
+            let (c, g, eps) = ((&ca, &cb), (&ga, &gb), (&epsa, &epsb));
+            finite_difference_newton_step(c, ao, (na, nb), g, eps, run.lambda)
         } else {
             sr1_step(&hist, (&ga, &gb), (&epsa, &epsb), (na, nb))
         };
@@ -177,37 +176,30 @@ pub(crate) fn hscf_cycle(
             hist.clear();
             stagnant = 0;
 
-            if let Some((mut pa_fd, mut pb_fd)) =
-                finite_difference_newton_step((&ca, &cb), ao, (na, nb), (&ga, &gb), run.lambda)
-            {
-                limit_step(&mut pa_fd, &mut pb_fd);
+            let (c, g, eps) = ((&ca, &cb), (&ga, &gb), (&epsa, &epsb));
+            let (mut pa_fd, mut pb_fd) =
+                finite_difference_newton_step(c, ao, (na, nb), g, eps, run.lambda);
+            limit_step(&mut pa_fd, &mut pb_fd);
 
-                let (alpha_fd, ca_fd, cb_fd) = line_search(
-                    (&ca, &cb),
-                    ao,
-                    (na, nb),
-                    (&pa_fd, &pb_fd),
-                    gnorm,
-                    run.lambda,
-                );
+            let (alpha_fd, ca_fd, cb_fd) =
+                line_search(c, ao, (na, nb), (&pa_fd, &pb_fd), gnorm, run.lambda);
 
-                if alpha_fd != 0.0 {
-                    if input.write.verbose >= 1 {
-                        println!(
-                            "h-SCF finite-difference Newton rescue accepted: alpha = {:.4e}",
-                            alpha_fd
-                        );
-                    }
-
-                    step_prev = Some((pa_fd.mapv(|z| z * alpha_fd), pb_fd.mapv(|z| z * alpha_fd)));
-
-                    g_prev = Some((ga, gb));
-
-                    ca = ca_fd;
-                    cb = cb_fd;
-
-                    continue;
+            if alpha_fd != 0.0 {
+                if input.write.verbose >= 1 {
+                    println!(
+                        "h-SCF finite-difference Newton rescue accepted: alpha = {:.4e}",
+                        alpha_fd
+                    );
                 }
+
+                step_prev = Some((pa_fd.mapv(|z| z * alpha_fd), pb_fd.mapv(|z| z * alpha_fd)));
+
+                g_prev = Some((ga, gb));
+
+                ca = ca_fd;
+                cb = cb_fd;
+
+                continue;
             }
 
             if input.write.verbose >= 1 {
