@@ -297,7 +297,9 @@ fn reference_noci_h2_3_21g_1_0_ang_holomorphic_energies() {
         .zip(expected.reference_noci_energies.iter())
         .enumerate()
     {
-        assert_close(x, y, 1e-8, &format!("H2 holomorphic reference NOCI {i}"));
+        // Holomorphic states are converged to `\lVert g\rVert < 10^{-6}`, and the NOCI energy is
+        // first order in their orbitals, so it is reproducible only to about `10^{-7}`.
+        assert_close(x, y, 1e-7, &format!("H2 holomorphic reference NOCI {i}"));
     }
 
     assert_eq!(got_scf.len(), expected.final_scf_energies.len());
@@ -352,7 +354,9 @@ fn reference_noci_h2_3_21g_1_0_ang_holomorphic_energies_wicks() {
         .zip(expected.reference_noci_energies.iter())
         .enumerate()
     {
-        assert_close(x, y, 1e-8, &format!("H2 holomorphic reference NOCI {i}"));
+        // Holomorphic states are converged to `\lVert g\rVert < 10^{-6}`, and the NOCI energy is
+        // first order in their orbitals, so it is reproducible only to about `10^{-7}`.
+        assert_close(x, y, 1e-7, &format!("H2 holomorphic reference NOCI {i}"));
     }
 
     assert_eq!(got_scf.len(), expected.final_scf_energies.len());
