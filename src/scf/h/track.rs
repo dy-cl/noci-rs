@@ -17,6 +17,10 @@ use super::types::HSCFRunData;
 const PHASE: f64 = std::f64::consts::PI / 20.0;
 /// Number of steps used moving integrals to or from the complex plane.
 const STEPS: usize = 5;
+/// Orbital-gradient norm of a converged state that is kept: a tracking state or a physical state.
+const GTOL: f64 = 1e-6;
+/// Orbital-gradient norm of an intermediate step of a `\lambda` path, which only seeds the next.
+const STEPTOL: f64 = 1e-3;
 
 /// Initialise an off-axis h-SCF tracking state from a converged real HF solution.
 /// The electron-electron interaction is rotated from the physical Hamiltonian at
@@ -50,7 +54,8 @@ pub(crate) fn initialise_hscf_track(
         let lambda = Complex64::from_polar(1.0, theta);
 
         // Run holomorphic HF procedure and use the solution from
-        // run '\lambda_{k - 1}' as initial coefficients.
+        // run '\lambda_{k - 1}' as initial coefficients. Only the last step, the tracking state,
+        // is converged tightly.
         let state = hscf_cycle(
             &ca,
             &cb,
@@ -60,6 +65,7 @@ pub(crate) fn initialise_hscf_track(
                 label,
                 noci_basis: false,
                 lambda,
+                tol: if step == STEPS { GTOL } else { STEPTOL },
             },
         )?;
 
@@ -105,6 +111,7 @@ pub(crate) fn continue_hscf_track(
             label,
             noci_basis: false,
             lambda,
+            tol: GTOL,
         },
     )
 }
@@ -146,7 +153,8 @@ pub(crate) fn physical_hscf_state(
         let lambda = Complex64::from_polar(1.0, theta);
 
         // Run holomorphic HF procedure and use the solution from
-        // run '\lambda_{k - 1}' as initial coefficients.
+        // run '\lambda_{k - 1}' as initial coefficients. Only the last step, the physical state,
+        // is converged tightly.
         let state = hscf_cycle(
             &ca,
             &cb,
@@ -156,6 +164,7 @@ pub(crate) fn physical_hscf_state(
                 label,
                 noci_basis: noci_basis && step == STEPS,
                 lambda,
+                tol: if step == STEPS { GTOL } else { STEPTOL },
             },
         )?;
 

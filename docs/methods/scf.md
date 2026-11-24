@@ -118,7 +118,9 @@ g_{ai} = \frac{\partial\tilde E}{\partial\theta_{ai}}
 $$
 
 by quasi-Newton steps in energy-weighted coordinates, with complex-symmetric SR1 Hessian updates
-and a backtracking line search on $\lVert g\rVert$.
+and a backtracking line search on $\lVert g\rVert$. When $\lVert g\rVert$ stops falling, a Newton
+step $\mathbf H\mathbf p = -\mathbf g$ is solved by GMRES, preconditioned by the orbital gaps, with
+each Hessian product a finite difference of the gradient along the step direction.
 
 ### Tracking holomorphic solutions
 
@@ -132,6 +134,9 @@ $F^\omega_{\mu\nu}(\lambda) = h_{\mu\nu} + \lambda\big(J_{\mu\nu} - K^\omega_{\m
    orbitals are re-orthonormalised in each new atomic-orbital metric before optimisation.
 3. At each geometry the branch is relaxed back to $\lambda = 1$, giving the physical holomorphic
    state.
+
+The intermediate phase steps only seed the next one, so they are converged loosely; the off-axis
+and physical states are converged tightly.
 
 A recipe with `holomorphic = true` is initialised this way from the real solution named by its
 `partner`, or by its own label if `partner` is omitted. Holomorphic states can enter reference

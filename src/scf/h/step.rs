@@ -1,12 +1,13 @@
 // scf/h/step.rs
 
 // External crate imports.
-use ndarray::{Array1, Array2, Axis};
+use ndarray::{Array1, Array2, Axis, stack};
 use ndarray_linalg::Solve;
 use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::AoData;
+use crate::maths::gmres::{GMRESPrint, gmres};
 use crate::scf::DensityMode;
 use crate::scf::{density, fock_lambda, orbital_gradient};
 
@@ -26,7 +27,6 @@ const LINE_SHRINK: f64 = 0.5;
 /// - `g`: Alpha- and beta-spin occupied-virtual gradients.
 /// - `eps`: Alpha- and beta-spin pseudo-canonical orbital energies.
 /// - `nocc`: Number of occupied alpha- and beta-spin orbitals.
-/// - `opts`: h-SCF quasi-Newton options.
 /// # Returns:
 /// - `(Array2<Complex64>, Array2<Complex64>)`: Unweighted alpha- and beta-spin orbital steps.
 pub(crate) fn sr1_step(
@@ -45,15 +45,12 @@ pub(crate) fn sr1_step(
     let gpa = weight_by_gap(ga, epsa, na, DENOM_TOL, false);
     let gpb = weight_by_gap(gb, epsb, nb, DENOM_TOL, false);
 
-    let n = gpa.len() + gpb.len();
-
-    // Begin initial guess of the approximate Hessian as identity.
-    let mut b = Array2::<Complex64>::zeros((n, n));
-    for i in 0..n {
-        b[(i, i)] = Complex64::new(1.0, 0.0);
-    }
-
-    // For every secant pair stored update the approximated Hessian.
+    // The SR1 approximation `B_m = I + \sum_j r_j r_j^T / d_j` is kept as its columns `r_j` and
+    // denominators `d_j`, never as an `n \times n` matrix. For every pair in turn,
+    // `r_j = y_j - B_{j - 1} s_j` with `B_{j - 1} s_j = s_j + \sum_{i < j} r_i (r_i^T s_j) / d_i`
+    // and `d_j = r_j^T s_j`, skipping the update when `d_j` is small.
+    let mut rs: Vec<Array1<Complex64>> = Vec::new();
+    let mut ds: Vec<Complex64> = Vec::new();
     for pair in hist {
         // Convert previous step into energy-weighted coordinates as \bar s_{ai} = s_{ai} \sqrt{\Delta_{ai}}.
         let sa = weight_by_gap(&pair.sa, epsa, na, DENOM_TOL, true);
@@ -66,21 +63,38 @@ pub(crate) fn sr1_step(
         let s = pack(&sa, &sb);
         let y = pack(&ya, &yb);
 
-        // Calculate residual error in current prediction.
-        let r = &y - &b.dot(&s);
+        // Calculate residual error in current prediction, `r = y - B s`.
+        let mut r = &y - &s;
+        for (ri, &di) in rs.iter().zip(&ds) {
+            r.scaled_add(-ri.dot(&s) / di, ri);
+        }
 
-        // Update Hessian approximation as B_{k + 1} = B_k + (r_k r_k^T) / r_k^T s_k.
         let denom = r.dot(&s);
         if denom.norm() > SR1_TOL {
-            let col = r.view().insert_axis(Axis(1));
-            let row = r.view().insert_axis(Axis(0));
-            b = b + col.dot(&row).mapv(|z| z / denom);
+            rs.push(r);
+            ds.push(denom);
         }
     }
 
-    // Solve B \bar p = - \bar g for energy-weighted occupied-virtual rotation amplitudes.
-    let rhs = pack(&gpa, &gpb).mapv(|z| -z);
-    let p = b.solve_into(rhs.clone()).unwrap_or(rhs);
+    // Solve B \bar p = - \bar g for energy-weighted occupied-virtual rotation amplitudes by the
+    // Woodbury identity `B^{-1} = I - R (D + R^T R)^{-1} R^T`, with the columns `r_j` in `R` and
+    // `D = \mathrm{diag}(d_j)`. `B` is singular exactly when `D + R^T R` is, and then the step is
+    // `-\bar g`.
+    let g = pack(&gpa, &gpb);
+    let rhs = g.mapv(|z| -z);
+    let p = if rs.is_empty() {
+        rhs
+    } else {
+        let views = rs.iter().map(|r| r.view()).collect::<Vec<_>>();
+        let r = stack(Axis(1), &views).unwrap();
+        let m = Array2::from_diag(&Array1::from(ds)) + r.t().dot(&r);
+
+        match m.solve_into(r.t().dot(&g)) {
+            Ok(c) => -(g - r.dot(&c)),
+            Err(_) => rhs,
+        }
+    };
+
     let (pa_bar, pb_bar) = unpack(&p, (ga.nrows(), ga.ncols()), (gb.nrows(), gb.ncols()));
 
     // Convert the solution back to unweighted occupied-virtual rotation coordinates.
@@ -150,105 +164,93 @@ pub(crate) fn line_search(
     (best.0, best.1, best.2)
 }
 
-/// Build and solve a finite-difference local Newton equation for stalled h-SCF iterations.
+/// Solve the local Newton equation `H p = -g` of a stalled h-SCF iteration by restarted GMRES.
+/// Every Hessian product is one forward difference of the gradient along the orbital geodesic,
+/// `H v \approx [g(C(\epsilon \hat v)) - g(C)] \lVert v \rVert / \epsilon` with
+/// `\hat v = v / \lVert v \rVert`, so it costs one Fock build, and the orbital gaps
+/// `\Delta_{ai} = \tilde F_{aa} - \tilde F_{ii}` precondition the solve. The step is solved only to
+/// a modest relative accuracy, since the line search judges it.
 /// # Arguments:
 /// - `c`: Current `\alpha`- and `\beta`-spin MO coefficients.
 /// - `ao`: AO data.
 /// - `nocc`: Numbers of occupied `\alpha`- and `\beta`-spin orbitals.
 /// - `g`: Current `\alpha`- and `\beta`-spin occupied-virtual gradients.
+/// - `eps`: `\alpha`- and `\beta`-spin pseudo-canonical orbital energies.
 /// - `lambda`: Current holomorphic continuation parameter `\lambda`.
 /// # Returns:
-/// - `Option<(Array2<Complex64>, Array2<Complex64>)>`: Newton step if the linear solve succeeds.
+/// - `(Array2<Complex64>, Array2<Complex64>)`: `\alpha`- and `\beta`-spin Newton steps.
 pub(crate) fn finite_difference_newton_step(
     c: (&Array2<Complex64>, &Array2<Complex64>),
     ao: &AoData,
     nocc: (usize, usize),
     g: (&Array2<Complex64>, &Array2<Complex64>),
+    eps: (&Array1<Complex64>, &Array1<Complex64>),
     lambda: Complex64,
-) -> Option<(Array2<Complex64>, Array2<Complex64>)> {
-    let (ga, gb) = g;
-
-    let g0 = pack(ga, gb);
-    let h = finite_difference_hessian(c, ao, nocc, g, lambda);
-    let rhs = g0.mapv(|z| -z);
-    let p = h.solve_into(rhs).ok()?;
-
-    Some(unpack(
-        &p,
-        (ga.nrows(), ga.ncols()),
-        (gb.nrows(), gb.ncols()),
-    ))
-}
-
-/// Build a finite-difference internal h-SCF Hessian in occupied-virtual coordinates.
-/// # Arguments:
-/// - `c`: Current `\alpha`- and `\beta`-spin MO coefficients.
-/// - `ao`: AO data.
-/// - `nocc`: Numbers of occupied `\alpha`- and `\beta`-spin orbitals.
-/// - `g`: Current `\alpha`- and `\beta`-spin occupied-virtual gradients.
-/// - `lambda`: Current holomorphic continuation parameter `\lambda`.
-/// # Returns:
-/// - `Array2<Complex64>`: Finite-difference Jacobian of the h-SCF gradient.
-pub(crate) fn finite_difference_hessian(
-    c: (&Array2<Complex64>, &Array2<Complex64>),
-    ao: &AoData,
-    nocc: (usize, usize),
-    g: (&Array2<Complex64>, &Array2<Complex64>),
-    lambda: Complex64,
-) -> Array2<Complex64> {
+) -> (Array2<Complex64>, Array2<Complex64>) {
     let (ca, cb) = c;
     let (na, nb) = nocc;
     let (ga, gb) = g;
-
+    let (epsa, epsb) = eps;
+    let shapes = ((ga.nrows(), ga.ncols()), (gb.nrows(), gb.ncols()));
     let g0 = pack(ga, gb);
-    let n = g0.len();
-    let eps = 1.0e-4;
-    let mut h = Array2::<Complex64>::zeros((n, n));
 
-    // Column `j` is the forward difference
-    // `H_{:,j} = [g(C_j(\epsilon)) - g(C)] / \epsilon` in packed
-    // `\alpha`-`\beta` occupied-virtual coordinates.
-    for j in 0..n {
-        let mut va = Array2::<Complex64>::zeros(ga.raw_dim());
-        let mut vb = Array2::<Complex64>::zeros(gb.raw_dim());
+    // Finite-difference displacement `\epsilon`, Krylov dimension and iteration limit, and the
+    // residual of the solve relative to `g`.
+    let step = 1.0e-4;
+    let krylov = 64;
+    let relative = 1e-3;
 
-        if j < ga.len() {
-            for (k, x) in va.iter_mut().enumerate() {
-                if k == j {
-                    *x = Complex64::new(eps, 0.0);
-                    break;
-                }
-            }
-        } else {
-            let jb = j - ga.len();
-            for (k, x) in vb.iter_mut().enumerate() {
-                if k == jb {
-                    *x = Complex64::new(eps, 0.0);
-                    break;
-                }
-            }
+    // `H v` from the gradient at orbitals displaced by `\epsilon \hat v` along the geodesic, so
+    // the trial MO frames keep their orthonormality.
+    let hessian = |v: &Array1<Complex64>| {
+        let norm = v.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
+        if norm == 0.0 {
+            return Array1::zeros(v.len());
         }
 
-        // Perturb the occupied-virtual tangent direction along the orbital
-        // geodesic so the trial MO frames retain their orthonormality.
+        let (va, vb) = unpack(&v.mapv(|z| z * (step / norm)), shapes.0, shapes.1);
         let cat = geodesic_step(ca, &va, na, 1.0);
         let cbt = geodesic_step(cb, &vb, nb, 1.0);
 
-        // Rebuild the holomorphic densities and Fock matrices at the trial
-        // orbitals before evaluating the displaced gradient.
+        // Holomorphic densities and Fock matrices at the displaced orbitals.
         let da = density(&cat, na, DensityMode::Holomorphic);
         let db = density(&cbt, nb, DensityMode::Holomorphic);
-
         let (fa, fb) = fock_lambda(&ao.h, &ao.eri_coul, &da, &db, lambda);
 
+        // `H v = [g(C(\epsilon \hat v)) - g(C)] \lVert v \rVert / \epsilon`.
         let gt_a = orbital_gradient(&cat, &fa, na, DensityMode::Holomorphic);
         let gt_b = orbital_gradient(&cbt, &fb, nb, DensityMode::Holomorphic);
 
-        let dg = (pack(&gt_a, &gt_b) - &g0).mapv(|z| z / eps);
-        h.column_mut(j).assign(&dg);
-    }
+        (pack(&gt_a, &gt_b) - &g0).mapv(|z| z * (norm / step))
+    };
 
-    h
+    // `v_{ai} / \Delta_{ai}`, dividing twice by `\sqrt{\Delta_{ai}}`.
+    let precondition = |v: &Array1<Complex64>| {
+        let (va, vb) = unpack(v, shapes.0, shapes.1);
+        let gap = |x: &Array2<Complex64>, eps: &Array1<Complex64>, nocc: usize| {
+            let x = weight_by_gap(x, eps, nocc, DENOM_TOL, false);
+            weight_by_gap(&x, eps, nocc, DENOM_TOL, false)
+        };
+
+        pack(&gap(&va, epsa, na), &gap(&vb, epsb, nb))
+    };
+
+    // GMRES accepts a root-mean-square residual, here `relative` times that of `g`.
+    let gnorm = g0.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
+    let tol = relative * gnorm / (g0.len() as f64).sqrt();
+
+    let rhs = g0.mapv(|z| -z);
+    let result = gmres(
+        hessian,
+        precondition,
+        (&rhs, None),
+        krylov,
+        krylov,
+        tol,
+        GMRESPrint::Silent,
+    );
+
+    unpack(&result.x, shapes.0, shapes.1)
 }
 
 /// Apply or remove pseudo-canonical orbital-gap weighting:
