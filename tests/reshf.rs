@@ -4,8 +4,9 @@ mod common;
 use noci_rs::basis::generate_reference_noci_basis;
 use noci_rs::determinant::NOCISpace;
 use noci_rs::elements::build_mo_cache;
+use noci_rs::input::ResHFSpace;
 use noci_rs::noci::calculate_noci_energy;
-use noci_rs::noci::optimised::reshf_optimise;
+use noci_rs::noci::optimised::{reshf_excitation_space, reshf_optimise};
 use serde::Deserialize;
 use serial_test::serial;
 
@@ -31,7 +32,11 @@ fn run_reshf_fixture(fixture: &str) -> (Vec<f64>, f64) {
 
     let basis = generate_reference_noci_basis(&ao, &mut input, None, None);
     let options = input.reshf.as_ref().unwrap();
-    let states = reshf_optimise(&ao, &input, options, &basis.states, 1e-8);
+    let states = match options.space {
+        ResHFSpace::References => basis.states,
+        ResHFSpace::Excitations => reshf_excitation_space(&ao, &input, &basis.states),
+    };
+    let states = reshf_optimise(&ao, &input, options, &states, 1e-8);
 
     let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
 
@@ -97,4 +102,16 @@ fn reshf_h2_3_21g_1_5_ang_energies() {
 #[serial]
 fn reshf_h4_sto_3g_1_75_ang_energies() {
     check_reshf_fixture("RESHF_H4_STO-3G_1_75", "H4");
+}
+
+/// Test that optimising the whole NOCISD space of the H4 STO-3G 1.5 Angstrom chain's RHF reference
+/// reproduces the expected determinant energies, and that its reference NOCI energy reaches FCI.
+/// # Panics
+/// - If the number of determinants differs from the stored reference.
+/// - If a ResHF determinant or reference NOCI energy differs from known good value outside
+///   tolerance.
+#[test]
+#[serial]
+fn reshf_space_h4_sto_3g_1_5_ang_energies() {
+    check_reshf_fixture("RESHF_SPACE_H4_STO-3G_1_5", "H4 excitation space");
 }

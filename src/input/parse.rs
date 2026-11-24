@@ -15,7 +15,7 @@ use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
     GNOCCMCOptions, InitialShift, Input, JMDeterministicOptions, JMNOCCMCOptions, MatrixFormat,
     Metadynamics, MolOptions, NOCCNewton, NOCCPreconditioner, PropagationOptions, Propagator,
-    QMCOptions, ReplaceOptions, ResHFOptions, SCFExcitation, SCFInfo, SNOCIOptions,
+    QMCOptions, ReplaceOptions, ResHFOptions, ResHFSpace, SCFExcitation, SCFInfo, SNOCIOptions,
     SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin, SpinBias, StateRecipe, StateType,
     WicksOptions, WicksStorage, WriteOptions,
 };
@@ -905,6 +905,19 @@ fn read_reshf(reshf_tbl: Option<Table>) -> Option<ResHFOptions> {
             })
             .unwrap_or(defaults.weights);
         let cutoff: f64 = reshf_tbl.get("cutoff").unwrap_or(defaults.cutoff);
+        let space = match reshf_tbl
+            .get::<_, Option<String>>("space")
+            .unwrap_or(None)
+            .as_deref()
+        {
+            None => defaults.space,
+            Some("references") => ResHFSpace::References,
+            Some("excitations") => ResHFSpace::Excitations,
+            Some(other) => {
+                eprintln!("reshf.space must be \"references\" or \"excitations\", not \"{other}\"");
+                std::process::exit(1);
+            }
+        };
 
         // Validate the state average and the floor.
         let total: f64 = weights.iter().sum();
@@ -917,7 +930,11 @@ fn read_reshf(reshf_tbl: Option<Table>) -> Option<ResHFOptions> {
             std::process::exit(1);
         }
 
-        ResHFOptions { weights, cutoff }
+        ResHFOptions {
+            weights,
+            cutoff,
+            space,
+        }
     })
 }
 
@@ -1281,6 +1298,22 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
         && matches!(&states, StateType::Mom(recipes) if recipes.iter().any(|r| r.holomorphic))
     {
         eprintln!("reshf cannot be combined with holomorphic state recipes");
+        std::process::exit(1);
+    }
+
+    // An optimised excitation space is the whole NOCI basis, so no method may expand it again.
+    if reshf
+        .as_ref()
+        .is_some_and(|options| options.space == ResHFSpace::Excitations)
+        && (det_tbl.is_some()
+            || qmc.is_some()
+            || snoci_tbl.is_some()
+            || gnoccmc_tbl.is_some()
+            || jmnoccmc.is_some())
+    {
+        eprintln!(
+            "reshf.space = \"excitations\" cannot be combined with det, qmc, snoci, gnoccmc or jmnoccmc"
+        );
         std::process::exit(1);
     }
 

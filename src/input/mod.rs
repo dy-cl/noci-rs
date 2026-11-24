@@ -43,7 +43,7 @@ pub use nocc::{GNOCCMCOptions, NOCCNewton, NOCCPreconditioner};
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, FriOptions, InitialShift, QMCOptions};
 pub use replace::ReplaceOptions;
-pub use reshf::ResHFOptions;
+pub use reshf::{ResHFOptions, ResHFSpace};
 pub use scf::{DiisOptions, SCFInfo};
 pub use selected::{SNOCIOptions, SNOCIPreconditioner, SNOCIStorage};
 pub use state::{Metadynamics, SCFExcitation, SpatialBias, Spin, SpinBias, StateRecipe, StateType};

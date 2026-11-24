@@ -112,3 +112,9 @@ orthogonal.
 
 The optimised determinants replace the real SCF states marked `noci = true` and are ordinary SCF
 states to every later method. In a scan they also seed the SCF at the next geometry.
+
+With [`reshf.space = "excitations"`](../input/reshf.md#optimising-the-excitation-space), the
+determinants optimised are the references together with all their excitations of the `excit`
+orders. Each excitation becomes an independent determinant with its own orbitals, no longer tied
+to its parent's frame, and the optimised set is the reference NOCI basis. The SCF states, not the
+optimised determinants, seed the next geometry.
