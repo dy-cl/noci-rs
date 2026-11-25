@@ -189,8 +189,6 @@ pub(crate) fn create_wicks_mmap<T: NOCIScalar>(
 
     let mut mmap = unsafe { MmapOptions::new().len(nbytes).map_mut(&file)? };
     let ptr = mmap.as_mut_ptr() as *mut T;
-    let slab = unsafe { std::slice::from_raw_parts_mut(ptr, slab_len) };
-    slab.fill(<T as From<f64>>::from(f64::NAN));
 
     let meta = vec![PairMeta::<T>::default(); off.len()];
     let view = WicksView {
