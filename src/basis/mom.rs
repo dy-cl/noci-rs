@@ -17,6 +17,7 @@ use crate::{AoData, HSCFState, SCFState};
 // Parent/sibling imports.
 use super::bias::biased_density_guess;
 use super::duplicate::mark_duplicate_noci_states;
+use super::replace::generate_states_mom_replaced;
 use super::types::ReferenceBasis;
 
 /// Choose the previous-geometry real seed used for a MOM recipe.
@@ -45,7 +46,8 @@ fn previous_mom_seed<'a>(
 /// - `prev_map`: Previous real SCF states keyed by label.
 /// - `i`: Recipe index used as the parent/state index.
 /// # Returns
-/// - `SCFState`: Converged real SCF state for this recipe.
+/// - `Option<SCFState>`: Converged real SCF state for this recipe, or `None` if the SCF does not
+///   converge.
 pub(crate) fn run_mom_scf_state(
     ao: &AoData,
     input: &Input,
@@ -53,7 +55,7 @@ pub(crate) fn run_mom_scf_state(
     prev: Option<&[SCFState]>,
     prev_map: &HashMap<&str, &SCFState>,
     i: usize,
-) -> SCFState {
+) -> Option<SCFState> {
     if input.write.verbose >= 1 {
         let left = "=".repeat(45);
         let right = "=".repeat(46);
@@ -81,7 +83,6 @@ pub(crate) fn run_mom_scf_state(
         recipe.noci,
         (recipe.mom, scfexcitation, None),
     )
-    .expect("SCF did not converge")
 }
 
 /// Generate the SCF states using the maximum orbital overlap procedure.
@@ -106,7 +107,8 @@ pub(crate) fn generate_states_mom(
             continue;
         }
 
-        let state = run_mom_scf_state(ao, input, recipe, prev, prev_map, i);
+        let state =
+            run_mom_scf_state(ao, input, recipe, prev, prev_map, i).expect("SCF did not converge");
         out.push(state);
     }
     mark_duplicate_noci_states(&mut out, &ao.s, input.scf.d_tol, input.write.verbose);
@@ -208,7 +210,11 @@ pub(crate) fn generate_reference_basis_mom(
     prev_map: &HashMap<&str, &SCFState>,
     recipes: &[StateRecipe],
 ) -> ReferenceBasis {
-    let states = generate_states_mom(ao, input, prev, prev_map, recipes);
+    // Replacing duplicate or unconverged states by excited states runs only when requested.
+    let states = match &input.replace {
+        Some(options) => generate_states_mom_replaced(ao, input, prev, prev_map, recipes, options),
+        None => generate_states_mom(ao, input, prev, prev_map, recipes),
+    };
     let (hstates, htracks) = if recipes.iter().any(|recipe| recipe.holomorphic) {
         generate_hscf_states_mom(ao, input, recipes, &states, prev_htracks)
     } else {

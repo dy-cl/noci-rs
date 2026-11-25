@@ -15,9 +15,9 @@ use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
     GNOCCMCOptions, InitialShift, Input, JMDeterministicOptions, JMNOCCMCOptions, MatrixFormat,
     Metadynamics, MolOptions, NOCCNewton, NOCCPreconditioner, PropagationOptions, Propagator,
-    QMCOptions, ResHFOptions, SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner,
-    SNOCIStorage, SpatialBias, Spin, SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage,
-    WriteOptions,
+    QMCOptions, ReplaceOptions, ResHFOptions, SCFExcitation, SCFInfo, SNOCIOptions,
+    SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin, SpinBias, StateRecipe, StateType,
+    WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -133,6 +133,27 @@ fn read_initial_shift(
     shift
 }
 
+/// Read SCF excitation from Lua table.
+/// # Arguments:
+/// - `ex`: Lua table containing the excitation spin and occupied and virtual offsets.
+/// # Returns:
+/// - `SCFExcitation`: Parsed SCF excitation.
+fn read_scf_excitation(ex: Table) -> SCFExcitation {
+    let defaults = SCFExcitation::default();
+    let s: String = ex
+        .get("spin")
+        .unwrap_or_else(|_| defaults.spin.as_str().to_string());
+    let spin: Spin = s.parse().unwrap_or_else(|msg| {
+        eprintln!("{msg}");
+        std::process::exit(1);
+    });
+    SCFExcitation {
+        spin,
+        occ: ex.get("occ").unwrap_or(defaults.occ),
+        vir: ex.get("vir").unwrap_or(defaults.vir),
+    }
+}
+
 /// Read basis state recipe from Lua table.
 /// # Arguments:
 /// - `t`: Lua table containing the state recipe specification.
@@ -173,21 +194,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
     let scfexcitation = t
         .get::<_, Option<Table>>("excit")
         .unwrap_or(None)
-        .map(|ex| {
-            let defaults = SCFExcitation::default();
-            let s: String = ex
-                .get("spin")
-                .unwrap_or_else(|_| defaults.spin.as_str().to_string());
-            let spin: Spin = s.parse().unwrap_or_else(|msg| {
-                eprintln!("{msg}");
-                std::process::exit(1);
-            });
-            SCFExcitation {
-                spin,
-                occ: ex.get("occ").unwrap_or(defaults.occ),
-                vir: ex.get("vir").unwrap_or(defaults.vir),
-            }
-        });
+        .map(read_scf_excitation);
 
     StateRecipe {
         label,
@@ -914,6 +921,35 @@ fn read_reshf(reshf_tbl: Option<Table>) -> Option<ResHFOptions> {
     })
 }
 
+/// Read options for replacing duplicate or unconverged SCF states from optional Lua table.
+/// Each excitation is parsed as a state recipe's `excit` table.
+/// # Arguments:
+/// - `replace_tbl`: Optional Lua replace table.
+/// # Returns:
+/// - `Option<ReplaceOptions>`: Parsed replacement options.
+fn read_replace(replace_tbl: Option<Table>) -> Option<ReplaceOptions> {
+    replace_tbl.map(|replace_tbl| {
+        let defaults = ReplaceOptions::default();
+        let parent: Option<String> = replace_tbl.get("parent").unwrap_or(defaults.parent);
+        let excits: Vec<SCFExcitation> = replace_tbl
+            .get::<_, Option<Table>>("excits")
+            .unwrap_or(None)
+            .map(|t| {
+                t.sequence_values::<Table>()
+                    .map(|ex| {
+                        read_scf_excitation(ex.unwrap_or_else(|_| {
+                            eprintln!("replace.excits entries must be tables");
+                            std::process::exit(1);
+                        }))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or(defaults.excits);
+
+        ReplaceOptions { parent, excits }
+    })
+}
+
 /// Read GNOCCMC options from optional Lua table.
 /// # Arguments:
 /// - `gnoccmc_tbl`: Optional Lua gnoccmc table.
@@ -1215,6 +1251,7 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
     let qmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("qmc").unwrap_or(None);
     let snoci_tbl: Option<Table> = globals.get::<_, Option<Table>>("snoci").unwrap_or(None);
     let reshf_tbl: Option<Table> = globals.get::<_, Option<Table>>("reshf").unwrap_or(None);
+    let replace_tbl: Option<Table> = globals.get::<_, Option<Table>>("replace").unwrap_or(None);
     let gnoccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("gnoccmc").unwrap_or(None);
     let jmnoccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("jmnoccmc").unwrap_or(None);
 
@@ -1247,6 +1284,15 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
         std::process::exit(1);
     }
 
+    // Replacement acts on real MOM recipes only.
+    let replace = read_replace(replace_tbl);
+    if replace.is_some()
+        && !matches!(&states, StateType::Mom(recipes) if recipes.iter().all(|r| !r.holomorphic))
+    {
+        eprintln!("replace requires MOM state recipes without holomorphic states");
+        std::process::exit(1);
+    }
+
     Ok(Input {
         mol: read_mol(mol_tbl),
         scf: read_scf(scf_tbl),
@@ -1261,5 +1307,6 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
         prop,
         wicks: read_wicks(wicks_tbl),
         reshf,
+        replace,
     })
 }

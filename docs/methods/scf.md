@@ -74,6 +74,9 @@ where ${}^wD^\omega_{\mu\nu} = \sum_{\lambda\sigma}S_{\mu\lambda}\,{}^wD^{\omega
 is the covariant density of solution $w$. A solution with $d_{wx}^2$ or $\delta_{wx}^2$ below
 `scf.d_tol` from an earlier one is a duplicate and leaves the NOCI basis, so coalesced solutions
 are removed before they make it linearly dependent.
+With the [`replace`](../input/replace.md) table, a duplicate, or a recipe whose SCF does not
+converge, is instead followed by an excited state of a parent solution, converged by MOM from the
+parent's densities, so the basis keeps one determinant per recipe.
 
 ## SCF metadynamics
 

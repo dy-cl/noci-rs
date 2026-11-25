@@ -13,7 +13,8 @@ points as observations rather than rules.
   spin symmetry that each one breaks on its own.
 - **Watch for duplicates.** Near a coalescence point two recipes can converge to the same
   solution. Duplicates within `scf.d_tol` are removed automatically, but nearly identical solutions
-  still make the overlap ill-conditioned.
+  still make the overlap ill-conditioned. [`replace`](../input/replace.md) can put an excited state
+  in a removed duplicate's place.
 - **Use holomorphic states for scans** through regions where real solutions disappear. They keep
   the NOCI basis continuous along the scan. They are supported by reference NOCI, NOCI-PT2 and
   deterministic NOCIQMC, but not by stochastic NOCIQMC.

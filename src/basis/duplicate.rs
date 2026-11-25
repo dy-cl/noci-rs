@@ -58,6 +58,36 @@ pub fn density_distance<T: NOCIScalar>(
     dsa.iter().chain(dsb.iter()).map(|z| z.abs().powi(2)).sum()
 }
 
+/// Find the earliest NOCI-basis state of which `x` is a duplicate, that is
+/// `d_{wx}^2 < d_{\text{tol}}` or `d_D^2 < d_{\text{tol}}`.
+/// # Arguments:
+/// - `states`: Earlier determinant states to compare against.
+/// - `x`: Candidate determinant state.
+/// - `s`: AO overlap matrix.
+/// - `d_tol`: Tolerance below which two states are treated as duplicates.
+/// # Returns:
+/// - `Option<usize>`: Index in `states` of the state that `x` duplicates, if any.
+pub(super) fn find_duplicate<T: NOCIScalar>(
+    states: &[SCFState<T>],
+    x: &SCFState<T>,
+    s: &Array2<f64>,
+    d_tol: f64,
+) -> Option<usize> {
+    states.iter().position(|w| {
+        if !w.noci_basis {
+            return false;
+        }
+
+        let delec2 = electron_distance(w, x, s);
+        let dp2 = density_distance(w, x, s);
+        println!(
+            "State '{}' distance from state '{}', electron: {}, density: {}",
+            x.label, w.label, delec2, dp2
+        );
+        delec2 < d_tol || dp2 < d_tol
+    })
+}
+
 /// Mark duplicate NOCI-basis determinant states by setting `noci_basis = false`.
 /// States are retained for printing and branch tracking.
 /// # Arguments:
@@ -83,25 +113,12 @@ pub(crate) fn mark_duplicate_noci_states<T: NOCIScalar>(
             continue;
         }
 
-        for j in 0..i {
-            if !states[j].noci_basis {
-                continue;
-            }
-
-            let delec2 = electron_distance(&states[j], &states[i], s);
-            let dp2 = density_distance(&states[j], &states[i], s);
+        if let Some(j) = find_duplicate(&states[..i], &states[i], s, d_tol) {
             println!(
-                "State '{}' distance from state '{}', electron: {}, density: {}",
-                states[i].label, states[j].label, delec2, dp2
+                "Removed state '{}' from NOCI basis as duplicate of '{}'",
+                states[i].label, states[j].label
             );
-            if delec2 < d_tol || dp2 < d_tol {
-                println!(
-                    "Removed state '{}' from NOCI basis as duplicate of '{}'",
-                    states[i].label, states[j].label
-                );
-                states[i].noci_basis = false;
-                break;
-            }
+            states[i].noci_basis = false;
         }
     }
 }

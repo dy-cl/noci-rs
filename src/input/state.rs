@@ -3,6 +3,7 @@
 // Standard library imports.
 use std::str::FromStr;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Spin {
     Alpha,
     Beta,
@@ -53,6 +54,7 @@ impl Default for Spin {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct SCFExcitation {
     /// Spin channel to excite.
     pub spin: Spin,

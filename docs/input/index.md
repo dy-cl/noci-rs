@@ -17,6 +17,7 @@ be generated in loops, and common settings can be shared through `dofile`.
 | [`qmc`](propagation.md#qmc) | No | Stochastic NOCIQMC |
 | [`snoci`](snoci.md) | No | Selected NOCI and NOCI-PT2 |
 | [`reshf`](reshf.md) | No | ResHF optimisation of the references |
+| [`replace`](replace.md) | No | Excited states in place of duplicate or unconverged SCF states |
 | [`write`](write.md) | No | Output files, verbosity and restarts |
 | [`wicks`](wicks.md) | No | Nonorthogonal Wick intermediates and disk caches |
 | [`gnoccmc`](nocc.md#gnoccmc) | No | GNOCC, with the `gnocc` feature |
@@ -26,7 +27,8 @@ be generated in loops, and common settings can be shared through `dofile`.
 
 For every geometry in `mol.r`, in order:
 
-1. The SCF states of `states` are generated, seeded from the previous geometry.
+1. The SCF states of `states` are generated, seeded from the previous geometry. If `replace` is
+   present, duplicate or unconverged states are replaced by excited states.
 2. If `reshf` is present, ResHF re-optimises the states with `noci = true`.
 3. Reference NOCI runs over the states with `noci = true`, after duplicates are removed.
 4. Every post-NOCI table present runs, in this order: `det`, `jmnoccmc`, `gnoccmc`, `snoci`,
