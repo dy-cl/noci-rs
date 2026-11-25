@@ -8,7 +8,7 @@ use crate::AoData;
 use crate::NOCIScalar;
 use crate::determinant::ParentDeterminant;
 use crate::elements::{FockMOCache, MOCache};
-use crate::maths::{adjoint, real2_as};
+use crate::maths::{ERIAO2MOScratch, adjoint, eri_ao2mo_hermitian_into, real2_as};
 use crate::time_call;
 
 /// Calculate maximum deviation from Hermitian orthonormality, `C^\dagger S C = I`.
@@ -75,9 +75,8 @@ pub fn build_mo_cache<T: NOCIScalar>(
                 let nmo_a = ca.ncols();
                 let nmo_b = cb.ncols();
                 let mut eri_aa_asym = Array4::<T>::zeros((nmo_a, nmo_a, nmo_a, nmo_a));
-                let mut scratch =
-                    T::new_eri_ao2mo_scratch(&ao.eri_asym, nmo_a, nmo_a, nmo_a, nmo_a);
-                T::eri_ao2mo_hermitian_into(
+                let mut scratch = ERIAO2MOScratch::new(&ao.eri_asym, nmo_a, nmo_a, nmo_a);
+                eri_ao2mo_hermitian_into(
                     &ao.eri_asym,
                     ca,
                     ca,
@@ -88,9 +87,8 @@ pub fn build_mo_cache<T: NOCIScalar>(
                 );
                 // Repeat the antisymmetrized transformation in the beta MO basis.
                 let mut eri_bb_asym = Array4::<T>::zeros((nmo_b, nmo_b, nmo_b, nmo_b));
-                let mut scratch =
-                    T::new_eri_ao2mo_scratch(&ao.eri_asym, nmo_b, nmo_b, nmo_b, nmo_b);
-                T::eri_ao2mo_hermitian_into(
+                let mut scratch = ERIAO2MOScratch::new(&ao.eri_asym, nmo_b, nmo_b, nmo_b);
+                eri_ao2mo_hermitian_into(
                     &ao.eri_asym,
                     cb,
                     cb,
@@ -101,9 +99,8 @@ pub fn build_mo_cache<T: NOCIScalar>(
                 );
                 // Transform the alpha-beta Coulomb tensor without same-spin antisymmetrization.
                 let mut eri_ab_coul = Array4::<T>::zeros((nmo_a, nmo_a, nmo_b, nmo_b));
-                let mut scratch =
-                    T::new_eri_ao2mo_scratch(&ao.eri_coul, nmo_a, nmo_a, nmo_b, nmo_b);
-                T::eri_ao2mo_hermitian_into(
+                let mut scratch = ERIAO2MOScratch::new(&ao.eri_coul, nmo_a, nmo_b, nmo_b);
+                eri_ao2mo_hermitian_into(
                     &ao.eri_coul,
                     ca,
                     ca,

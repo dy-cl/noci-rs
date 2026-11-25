@@ -202,7 +202,6 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                 // Build every ordered parent pair directly into its assigned slab slices.
                 let tensor: &mut [T] =
                     unsafe { std::slice::from_raw_parts_mut(tensor_ptr, tensor_len) };
-                tensor.fill(<T as From<f64>>::from(f64::NAN));
 
                 for i in 0..nref {
                     for j in 0..nref {
