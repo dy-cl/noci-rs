@@ -858,11 +858,17 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
             std::process::exit(1);
         }
 
+        let follow = snoci_tbl
+            .get::<_, Option<bool>>("follow")
+            .unwrap_or(None)
+            .unwrap_or(defaults.follow);
+
         SNOCIOptions {
             sigma: snoci_tbl.get("sigma").unwrap_or(defaults.sigma),
             tol: snoci_tbl.get("tol").unwrap_or(defaults.tol),
             imag_shifts,
             roots,
+            follow,
             max_iter: snoci_tbl.get("max_iter").unwrap_or(defaults.max_iter),
             max_add: snoci_tbl.get("max_add").unwrap_or(defaults.max_add),
             max_dim: snoci_tbl.get("max_dim").unwrap_or(defaults.max_dim),

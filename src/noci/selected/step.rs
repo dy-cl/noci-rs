@@ -1,5 +1,8 @@
 // noci/selected/step.rs
 
+// Standard library imports.
+use std::collections::HashMap;
+
 // External crate imports.
 use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
@@ -11,7 +14,7 @@ use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::elements::nonorthogonalwicks::WicksShared;
 use crate::elements::{FockData, NOCIData};
 use crate::elements::{build_fock_mo_cache, noci_density, noci_spin_square, update_wicks_fock};
-use crate::input::{SNOCIPreconditioner, SNOCIStorage};
+use crate::input::{SNOCIPreconditioner, SNOCIStorage, StateType};
 use crate::maths::gmres::{GMRESPrint, gmres};
 use crate::noci::{OneBodyFactorisation, OneBodyScratch};
 use crate::scf::fock;
@@ -19,6 +22,7 @@ use crate::time_call;
 use crate::{PostSCFData, input::Input};
 
 // Parent/sibling imports.
+use super::guess::FollowedStates;
 use super::{
     CandidatePool, PT2Guess, PT2ProjectedOperator, SNOCIOverlaps, SNOCIPT2Result, SNOCIState,
 };
@@ -184,7 +188,8 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
 /// - `spaces`: Determinant space, current selected space, candidate determinants and the candidate
 ///   subset of the determinant space.
 /// - `blocks`: Candidate-current overlaps and candidate-current Hamiltonian `H_ai`.
-/// - `target`: Index, NOCI energy and current-space eigenvector of the corrected NOCI state.
+/// - `target`: Position in `snoci.roots`, energy-order index, NOCI energy and current-space
+///   eigenvector of the corrected NOCI state.
 /// - `wicks`: Mutable Wick's intermediates, whose Fock intermediates are rebuilt for this state.
 /// - `run`: MPI communicator, SNOCI iteration index and the converged amplitudes of the previous
 ///   geometry, the GMRES initial guesses.
@@ -195,7 +200,7 @@ fn solve_pt2_state<T, R, C>(
     input: &Input,
     spaces: (&NOCISpace<T>, &[NOCIIndex], &[NOCIIndex], &NOCISpace<T>),
     blocks: (&SNOCIOverlaps<T>, &Array2<T>),
-    target: (usize, f64, &Array1<T>),
+    target: (usize, usize, f64, &Array1<T>),
     mut wicks: Option<&mut WicksShared<T>>,
     run: (&C, usize, &PT2Guess),
 ) -> Vec<SNOCIPT2Result>
@@ -207,7 +212,7 @@ where
     let opts = input.snoci.as_ref().unwrap();
     let (space, selected_space, candidates, candidate_basis) = spaces;
     let (overlaps, h_ai) = blocks;
-    let (root, e_noci, coeffs) = target;
+    let (slot, root, e_noci, coeffs) = target;
     let (world, it, previous) = run;
 
     // `\langle S^2\rangle` identifies the spin of the corrected state in the printed results.
@@ -411,7 +416,7 @@ where
             };
 
             // Start from the previous geometry's amplitudes of this state and shift.
-            let x0 = previous.continue_to(candidate_basis, root, imag_shift, &rhs);
+            let x0 = previous.continue_to(candidate_basis, slot, imag_shift, &rhs);
 
             let g = &opts.gmres;
             let print = if world.rank() == 0 {
@@ -556,6 +561,22 @@ where
         let mut final_state: Option<SNOCIState<T>> = None;
         let mut candidate_pool: Option<CandidatePool> = None;
 
+        // States corrected at the previous geometry, followed through this one when enabled. A
+        // holomorphic recipe continues its real partner, which it replaces in the NOCI basis.
+        let mut followed = if opts.follow {
+            previous.followed.clone()
+        } else {
+            FollowedStates::default()
+        };
+        let partners: HashMap<&str, &str> = match &input.states {
+            StateType::Mom(recipes) => recipes
+                .iter()
+                .filter(|recipe| recipe.holomorphic)
+                .filter_map(|recipe| Some((recipe.label.as_str(), recipe.partner.as_deref()?)))
+                .collect(),
+            StateType::Metadynamics(_) => HashMap::new(),
+        };
+
         for it in 0..opts.max_iter {
             // Generate matrix elements for current space and solve GEVP for every NOCI state.
             let (hcurrent, scurrent, evals, evecs) = solve_current_space(
@@ -578,9 +599,67 @@ where
                 std::process::exit(1);
             }
 
+            // Correct the listed roots, or give each state corrected before the remaining
+            // eigenvector of largest overlap `|c^{\text{prev}\dagger} S c_j|`.
+            let mut roots = opts.roots.clone();
+            let mut similarity = Vec::new();
+            if opts.follow {
+                // Identify every determinant by its parent, or the parent's partner, and its
+                // replacements, so the overlap does not depend on the order of the NOCI basis.
+                let keys: HashMap<(String, [u128; 4]), usize> = selected_space
+                    .iter()
+                    .enumerate()
+                    .map(|(pos, &index)| {
+                        let label = space.parent_determinant(index).label.as_str();
+                        let alpha = &space.alpha(index).data.excitation;
+                        let beta = &space.beta(index).data.excitation;
+                        let label = partners.get(label).copied().unwrap_or(label).to_string();
+                        (
+                            (label, [alpha.holes, alpha.parts, beta.holes, beta.parts]),
+                            pos,
+                        )
+                    })
+                    .collect();
+
+                if !followed.coeffs.is_empty() {
+                    let s = scurrent.mapv(Into::<Complex64>::into);
+                    let sc = s.dot(&evecs.mapv(Into::<Complex64>::into));
+                    roots.clear();
+                    for prev in &followed.coeffs {
+                        // The earlier state in the current determinants, zero where absent.
+                        let mut p = Array1::<Complex64>::zeros(keys.len());
+                        for (key, &pos) in &keys {
+                            if let Some(&i) = followed.keys.get(key) {
+                                p[pos] = prev[i];
+                            }
+                        }
+
+                        // `|p^\dagger S c_j| / \sqrt{p^\dagger S p}`, at most one for normalised `c_j`.
+                        let pdag = p.mapv(|x| x.conj());
+                        let norm = pdag.dot(&s.dot(&p)).norm().sqrt();
+                        let overlaps = pdag.dot(&sc).mapv(|x| x.norm() / norm);
+
+                        let root = (0..evecs.ncols())
+                            .filter(|j| !roots.contains(j))
+                            .max_by(|&a, &b| overlaps[a].total_cmp(&overlaps[b]))
+                            .unwrap();
+                        roots.push(root);
+                        similarity.push(overlaps[root]);
+                    }
+                }
+
+                followed = FollowedStates {
+                    keys,
+                    coeffs: roots
+                        .iter()
+                        .map(|&root| evecs.column(root).mapv(Into::into))
+                        .collect(),
+                };
+            }
+
             // The first listed state drives candidate selection and convergence.
-            let ecurrent = evals[opts.roots[0]];
-            let coeffs = evecs.column(opts.roots[0]).to_owned();
+            let ecurrent = evals[roots[0]];
+            let coeffs = evecs.column(roots[0]).to_owned();
 
             if candidate_pool.is_none() {
                 candidate_pool = Some(CandidatePool::new(&mut space, &selected_space, input));
@@ -610,6 +689,12 @@ where
 
             if world.rank() == 0 {
                 print_snoci_iteration_start(it, selected_space.len(), npoolpre, npoolpost);
+                for (slot, (root, overlap)) in roots.iter().zip(&similarity).enumerate() {
+                    println!(
+                        "  Followed state {}:   NOCI state {}, overlap {:.6}",
+                        slot, root, overlap
+                    );
+                }
             }
 
             // PT2's numerical plan uses dense candidate-local indices. This temporary
@@ -619,19 +704,19 @@ where
 
             // Each listed NOCI state receives its own state-specific NOCI-PT2 correction.
             let mut pt2 = Vec::new();
-            for &root in &opts.roots {
+            for (slot, &root) in roots.iter().enumerate() {
                 let state_coeffs = evecs.column(root).to_owned();
                 pt2.extend(solve_pt2_state::<T, R, _>(
                     post,
                     input,
                     (&space, &selected_space, &pool.candidates, &candidate_basis),
                     (&overlaps, &h_ai),
-                    (root, evals[root], &state_coeffs),
+                    (slot, root, evals[root], &state_coeffs),
                     wicks.as_deref_mut(),
                     (world, it, previous),
                 ));
             }
-            let guess = PT2Guess::new(&candidate_basis, &pt2);
+            let guess = PT2Guess::new(&candidate_basis, &pt2, &roots, followed.clone());
 
             let remaining = opts.max_dim.saturating_sub(selected_space.len());
             if remaining == 0 && world.rank() == 0 {
@@ -653,7 +738,7 @@ where
             // Use the final imaginary shift of the first listed state as the main result for selection.
             let main_pt2 = pt2
                 .iter()
-                .rfind(|r| r.root == opts.roots[0])
+                .rfind(|r| r.root == roots[0])
                 .expect("At least one NOCI-PT2 shift must be evaluated.");
 
             let selected = select_candidates(
@@ -692,7 +777,7 @@ where
             let main_pt2 = state
                 .pt2
                 .iter()
-                .rfind(|r| r.root == opts.roots[0])
+                .rfind(|r| r.root == roots[0])
                 .expect("At least one NOCI-PT2 shift must be evaluated.");
 
             if main_pt2.ept2.abs() < opts.tol {

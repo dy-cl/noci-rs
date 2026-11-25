@@ -114,6 +114,9 @@ pub struct SNOCIOptions {
     pub imag_shifts: Vec<f64>,
     /// NOCI states to correct, counted from the lowest at zero. The first drives selection.
     pub roots: Vec<usize>,
+    /// Whether later geometries and iterations correct the NOCI states overlapping most with
+    /// those corrected before, rather than the same `roots` by energy order.
+    pub follow: bool,
     /// Maximum SNOCI macro-iterations.
     pub max_iter: usize,
     /// Maximum determinants added per iteration.
@@ -140,6 +143,7 @@ impl Default for SNOCIOptions {
             tol: 1e-8,
             imag_shifts: vec![0.0],
             roots: vec![0],
+            follow: true,
             max_iter: 100,
             max_add: 1,
             max_dim: 100,

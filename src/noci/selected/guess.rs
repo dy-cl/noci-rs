@@ -15,29 +15,48 @@ use crate::{NOCIScalar, StateScalar};
 // Parent/sibling imports.
 use super::SNOCIPT2Result;
 
-/// Converged NOCI-PT2 amplitudes of one geometry, kept as the GMRES initial guesses of the next.
-/// A candidate is identified by the label of its parent reference and its alpha and beta
-/// occupations, which the orbital alignment after SCF keeps comparable between geometries, so
-/// candidates of references added or removed between geometries simply start from zero.
+/// Converged NOCI-PT2 amplitudes of one geometry, kept as the GMRES initial guesses of the next,
+/// with the corrected NOCI states that the next geometry follows. A candidate is identified by
+/// the label of its parent reference and its alpha and beta occupations, which the orbital
+/// alignment after SCF keeps comparable between geometries, so candidates of references added or
+/// removed between geometries simply start from zero.
 #[derive(Clone, Default)]
 pub struct PT2Guess {
     /// Position of every candidate, keyed by its parent label and alpha and beta occupations.
     candidates: HashMap<(String, u128, u128), usize>,
-    /// Corrected NOCI state, imaginary shift, amplitudes `a` and right-hand side `b = -V` of every
-    /// solve, ordered as the candidates.
+    /// Position of the corrected state in `snoci.roots`, imaginary shift, amplitudes `a` and
+    /// right-hand side `b = -V` of every solve, ordered as the candidates.
     solves: Vec<(usize, f64, Array1<Complex64>, Array1<Complex64>)>,
+    /// Corrected NOCI states, which the next geometry follows.
+    pub(in crate::noci::selected) followed: FollowedStates,
+}
+
+/// Corrected NOCI states of one geometry or SNOCI iteration, which the next one follows.
+#[derive(Clone, Default)]
+pub(in crate::noci::selected) struct FollowedStates {
+    /// Position of every current determinant, identified by the label of its parent reference,
+    /// with a holomorphic reference named by its real partner, and its alpha and beta holes and
+    /// particles.
+    pub(in crate::noci::selected) keys: HashMap<(String, [u128; 4]), usize>,
+    /// Current-space eigenvectors of the corrected states, ordered as `snoci.roots`.
+    pub(in crate::noci::selected) coeffs: Vec<Array1<Complex64>>,
 }
 
 impl PT2Guess {
-    /// Keep the converged amplitudes of every corrected state and imaginary shift.
+    /// Keep the converged amplitudes of every corrected state and imaginary shift, and the
+    /// corrected NOCI states.
     /// # Arguments:
     /// - `candidates`: Candidate determinants, ordered as the amplitudes.
     /// - `results`: NOCI-PT2 results of every corrected state and imaginary shift.
+    /// - `roots`: Corrected NOCI states by energy order, ordered as `snoci.roots`.
+    /// - `followed`: Corrected NOCI states, ordered as `roots`.
     /// # Returns:
     /// - `Self`: Candidate positions with the amplitudes and right-hand sides of every solve.
     pub(in crate::noci::selected) fn new<T: StateScalar>(
         candidates: &NOCISpace<T>,
         results: &[SNOCIPT2Result],
+        roots: &[usize],
+        followed: FollowedStates,
     ) -> Self {
         Self {
             candidates: (0..candidates.len())
@@ -49,8 +68,12 @@ impl PT2Guess {
                 .collect(),
             solves: results
                 .iter()
-                .map(|r| (r.root, r.imag_shift, r.amplitudes.clone(), r.rhs.clone()))
+                .map(|r| {
+                    let slot = roots.iter().position(|&root| root == r.root).unwrap();
+                    (slot, r.imag_shift, r.amplitudes.clone(), r.rhs.clone())
+                })
                 .collect(),
+            followed,
         }
     }
 
@@ -61,7 +84,7 @@ impl PT2Guess {
     /// `\phi = \langle b_{\text{prev}}, b\rangle / |\langle b_{\text{prev}}, b\rangle|`.
     /// # Arguments:
     /// - `candidates`: Candidate determinants of the new geometry.
-    /// - `root`: Corrected NOCI state.
+    /// - `slot`: Position of the corrected state in `snoci.roots`.
     /// - `imag_shift`: Imaginary shift.
     /// - `rhs`: Right-hand side `b = -V` of the new geometry.
     /// # Returns:
@@ -69,7 +92,7 @@ impl PT2Guess {
     pub(in crate::noci::selected) fn continue_to<T, R>(
         &self,
         candidates: &NOCISpace<T>,
-        root: usize,
+        slot: usize,
         imag_shift: f64,
         rhs: &Array1<R>,
     ) -> Option<Array1<R>>
@@ -80,7 +103,7 @@ impl PT2Guess {
         let (_, _, a, b) = self
             .solves
             .iter()
-            .find(|(r, shift, _, _)| *r == root && *shift == imag_shift)?;
+            .find(|(s, shift, _, _)| *s == slot && *shift == imag_shift)?;
 
         // Position of every new candidate among the previous candidates.
         let matched = (0..candidates.len())
