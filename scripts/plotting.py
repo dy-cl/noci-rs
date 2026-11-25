@@ -458,10 +458,11 @@ def qmcShiftCorrelation(df: pd.DataFrame):
 
 def trackNOCIRoots(spectra, nstates):
     """
-    Track NOCI states across geometries by energy continuity.
+    Track NOCI states across geometries by energy continuity. Also return, for each geometry,
+    the energy-ordered root index assigned to every tracked state.
     """
     if not spectra:
-        return []
+        return [], {}
 
     R0, values0 = spectra[0]
     values0 = np.sort(np.asarray(values0, dtype=float))
@@ -472,6 +473,7 @@ def trackNOCIRoots(spectra, nstates):
     historyE = [tracked.copy()]
 
     rows = [(R0, state, E) for state, E in enumerate(tracked)]
+    assignments = {R0: tuple(range(nstates))}
 
     for R, values in spectra[1:]:
         values = np.sort(np.asarray(values, dtype=float))
@@ -509,11 +511,12 @@ def trackNOCIRoots(spectra, nstates):
         )
 
         rows.extend((R, state, E) for state, E in enumerate(tracked))
+        assignments[R] = bestPermutation
 
         historyR.append(R)
         historyE.append(tracked.copy())
 
-    return rows
+    return rows, assignments
 
 
 def readEnergy(path: Path, nstates=1) -> pd.DataFrame:
@@ -523,42 +526,6 @@ def readEnergy(path: Path, nstates=1) -> pd.DataFrame:
     text = path.read_text()
 
     rMatches = list(ENERGYRREGEX.finditer(text))
-
-    rows = []
-
-    for i, rMatch in enumerate(rMatches):
-        R = float(rMatch.group(1))
-
-        start = rMatch.start()
-        end = rMatches[i + 1].start() if i + 1 < len(rMatches) else len(text)
-
-        block = text[start:end]
-
-        for m in ENERGYSTATEREGEX.finditer(block):
-            idx = m.group("idx")
-            rawLabel = (m.group("label") or "").strip()
-
-            if m.group("hprefix") and rawLabel and not rawLabel.startswith("h-"):
-                if rawLabel.startswith("RHF") or rawLabel.startswith("UHF"):
-                    rawLabel = f"h-{rawLabel}"
-
-            E = float(m.group("E"))
-            label = createEnergyLabel(
-                idx,
-                rawLabel,
-            )
-
-            rows.append(
-                (
-                    R,
-                    idx,
-                    rawLabel,
-                    label,
-                    E,
-                )
-            )
-
-    rows = [row for row in rows if row[3] != "NOCI"]
 
     spectra = []
 
@@ -579,12 +546,66 @@ def readEnergy(path: Path, nstates=1) -> pd.DataFrame:
 
         spectra.append((R, eigenvalues))
 
-    trackedRows = trackNOCIRoots(
+    # PT2 roots are numbered by NOCI energy order, so track at least as many NOCI states as
+    # there are PT2 roots and relabel each PT2 root by the tracked state it belongs to.
+    pt2Roots = {int(k) for k in re.findall(r"State\(NOCI-PT2:\s*(\d+)", text)}
+    ntrack = max([nstates, *(k + 1 for k in pt2Roots)])
+    trackedRows, assignments = trackNOCIRoots(
         spectra,
-        nstates,
+        ntrack,
     )
 
+    rows = []
+
+    for i, rMatch in enumerate(rMatches):
+        R = float(rMatch.group(1))
+
+        start = rMatch.start()
+        end = rMatches[i + 1].start() if i + 1 < len(rMatches) else len(text)
+
+        block = text[start:end]
+
+        for m in ENERGYSTATEREGEX.finditer(block):
+            idx = m.group("idx")
+            rawLabel = (m.group("label") or "").strip()
+
+            if m.group("hprefix") and rawLabel and not rawLabel.startswith("h-"):
+                if rawLabel.startswith("RHF") or rawLabel.startswith("UHF"):
+                    rawLabel = f"h-{rawLabel}"
+
+            E = float(m.group("E"))
+
+            if idx.startswith("NOCI-PT2") and R in assignments:
+                root = int(PT2STATEREGEX.search(idx).group(1))
+
+                # A PT2 root whose NOCI state is not tracked here belongs to another curve.
+                if root not in assignments[R]:
+                    continue
+
+                state = assignments[R].index(root)
+                idx = PT2STATEREGEX.sub(f"NOCI-PT2: {state}", idx, count=1)
+
+            label = createEnergyLabel(
+                idx,
+                rawLabel,
+            )
+
+            rows.append(
+                (
+                    R,
+                    idx,
+                    rawLabel,
+                    label,
+                    E,
+                )
+            )
+
+    rows = [row for row in rows if row[3] != "NOCI"]
+
     for R, state, E in trackedRows:
+        if state >= nstates:
+            continue
+
         label = "NOCI" if state == 0 else f"NOCI {state}"
 
         idx = f"NOCI-reference {state}"
