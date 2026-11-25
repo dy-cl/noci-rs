@@ -13,7 +13,7 @@ use crate::NOCIScalar;
 use crate::determinant::ParentDeterminant;
 use crate::elements::occ_coeffs;
 use crate::input::Spin;
-use crate::maths::{ERIAO2MOScratch, adjoint, real2_as};
+use crate::maths::{ERIAO2MOScratch, adjoint, eri_ao2mo_hermitian_into, real2_as};
 
 /// `Nonzero occupied-orbital singular values {}^{xw}\tilde S_k below this value are near-zero.`
 /// A near-zero pair would put `\tilde S_k^{-1}` into the fundamental contractions, and the large
@@ -354,12 +354,12 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         let j: Vec<(usize, Array4<T>)> = combos
             .into_par_iter()
             .map_init(
-                || -> ERIAO2MOScratch<T> { T::new_eri_ao2mo_scratch(eri, nmo, nmo, nmo, nmo) },
+                || ERIAO2MOScratch::new(eri, nmo, nmo, nmo),
                 |scratch, (slot, (mi, mj, mk, ml))| {
                     let mut blk = Array4::<T>::zeros((nmo, nmo, nmo, nmo));
                     let mut exch = Array4::<T>::zeros((nmo, nmo, nmo, nmo));
                     // Transform the direct two-electron contribution.
-                    T::eri_ao2mo_hermitian_into(
+                    eri_ao2mo_hermitian_into(
                         eri,
                         &cx[mi],
                         &xc[mj],
@@ -369,7 +369,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
                         scratch,
                     );
                     // Transform the exchange contribution with the second pair of excitation indices interchanged.
-                    T::eri_ao2mo_hermitian_into(
+                    eri_ao2mo_hermitian_into(
                         eri,
                         &cx[mi],
                         &cx_conj[mk],
@@ -1012,10 +1012,10 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
         let iiab: Vec<IIABBlock<T>> = combos
             .into_par_iter()
             .map_init(
-                || -> ERIAO2MOScratch<T> { T::new_eri_ao2mo_scratch(eri, nmo, nmo, nmo, nmo) },
+                || ERIAO2MOScratch::new(eri, nmo, nmo, nmo),
                 |scratch, (ma0, maz, mb0, mby)| {
                     let mut blk = Array4::<T>::zeros((nmo, nmo, nmo, nmo));
-                    T::eri_ao2mo_hermitian_into(
+                    eri_ao2mo_hermitian_into(
                         eri,
                         cx_a[ma0],
                         xc_a[maz],

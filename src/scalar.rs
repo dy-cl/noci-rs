@@ -12,8 +12,8 @@ use crate::maths::{C64x1, F64x1, Simd};
 #[cfg(target_arch = "x86_64")]
 use crate::maths::{C64x4, C64x8, F64x4, F64x8};
 use crate::maths::{
-    ERIScalar, einsum_ba_ab_complex, einsum_ba_ab_complex_real, einsum_ba_ab_real,
-    einsum_ba_abcd_cd_complex, einsum_ba_abcd_cd_complex_real, einsum_ba_abcd_cd_real,
+    einsum_ba_ab_complex, einsum_ba_ab_complex_real, einsum_ba_ab_real, einsum_ba_abcd_cd_complex,
+    einsum_ba_abcd_cd_complex_real, einsum_ba_abcd_cd_real,
 };
 
 // Scalar generic marker trait for SCF states.
@@ -81,7 +81,7 @@ impl HSCFState {
 }
 
 /// Scalar type accepted by generic NOCI matrix-element code.
-pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
+pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> {
     /// One-lane packed counterpart, through which the packed kernels evaluate a single element.
     type Packed1: Simd<1, Scalar = Self>;
 

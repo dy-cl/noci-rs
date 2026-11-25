@@ -2,368 +2,134 @@
 
 // External crate imports.
 use ndarray::linalg::general_mat_mul;
-use ndarray::{
-    Array2, Array4, ArrayView2, ArrayView4, ArrayViewMut2, ArrayViewMut4, Axis, LinalgScalar, Zip,
-};
-use num_complex::Complex64;
+use ndarray::{Array2, Array4, ArrayView2, ArrayViewMut2, ArrayViewMut4, Axis};
 use rayon::prelude::*;
 
-/// Reusable allocation boundary for AO-to-MO ERI transformations.
-pub struct ERIAO2MOScratch<T: ERIScalar> {
-    /// Alternating contraction and permutation buffer.
+// Crate-root imports.
+use crate::StateScalar;
+
+/// Reusable buffers for AO-to-MO ERI transformations.
+pub struct ERIAO2MOScratch<T> {
+    /// `Half-transformed (\mu\nu|rs) buffer.`
     worka: Vec<T>,
-    /// Alternating contraction and permutation buffer.
+    /// `Three-quarter-transformed (\mu q|rs) buffer.`
     workb: Vec<T>,
-    /// `Conjugated C_{\mu,p} buffer populated only by the complex implementation.`
-    c_mu_p_conj: Vec<T>,
-    /// `Conjugated C_{\lambda,r} buffer populated only by the complex implementation.`
-    c_lam_r_conj: Vec<T>,
-    /// Empty for `f64`; for `Complex64`, a single complex conversion of the real AO ERIs.
-    eri_as: Option<Array4<T>>,
 }
 
-/// Coefficient matrices for an AO-to-MO ERI transformation.
-struct AO2MOCoefficients<'a, T: ERIScalar> {
-    /// `C_{\mu,p} coefficients.`
-    c_mu_p: ArrayView2<'a, T>,
-    /// `C_{\nu,q} coefficients.`
-    c_nu_q: ArrayView2<'a, T>,
-    /// `C_{\lambda,r} coefficients.`
-    c_lam_r: ArrayView2<'a, T>,
-    /// `C_{\sigma,s} coefficients.`
-    c_sig_s: ArrayView2<'a, T>,
-}
-
-/// Scratch buffers for an AO-to-MO ERI transformation.
-struct AO2MOScratch<'a, T: ERIScalar> {
-    /// Reusable contraction and permutation buffer.
-    worka: &'a mut [T],
-    /// Reusable contraction and permutation buffer.
-    workb: &'a mut [T],
-}
-
-/// Scalar type accepted by Hermitian ERI AO-to-MO transformation dispatch.
-pub trait ERIScalar: LinalgScalar + From<f64> + Send + Sync {
-    /// Construct reusable scratch storage for AO-to-MO ERI transformations.
+impl<T: StateScalar> ERIAO2MOScratch<T> {
+    /// Construct reusable buffers for AO-to-MO ERI transformations.
     /// # Arguments:
-    /// - `eri`: AO basis ERIs.
-    /// - `nmop`: Number of p-index MOs.
+    /// - `eri`: AO basis ERIs, which set the number of basis functions.
     /// - `nmoq`: Number of q-index MOs.
     /// - `nmor`: Number of r-index MOs.
     /// - `nmos`: Number of s-index MOs.
     /// # Returns
-    /// - `ERIAO2MOScratch<Self>`: Reusable transformation scratch storage.
-    fn new_eri_ao2mo_scratch(
+    /// - `ERIAO2MOScratch<T>`: Reusable transformation buffers.
+    pub fn new(
         eri: &Array4<f64>,
-        nmop: usize,
         nmoq: usize,
         nmor: usize,
         nmos: usize,
-    ) -> ERIAO2MOScratch<Self>;
-
-    /// Transform ERIs from AO to MO basis with Hermitian bra-side conjugation into caller storage.
-    /// # Arguments:
-    /// - `eri`: AO basis ERIs.
-    /// - `c_mu_p`: `MO coefficients C_{\mu,p}, conjugated in the transform.`
-    /// - `c_nu_q`: `MO coefficients C_{\nu,q}.`
-    /// - `c_lam_r`: `MO coefficients C_{\lambda,r}, conjugated in the transform.`
-    /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
-    /// - `out`: Output ERIs in `[p, q, r, s]` order.
-    /// - `scratch`: Reusable transformation scratch storage.
-    /// # Returns
-    /// - `()`: Writes transformed ERIs into `out`.
-    fn eri_ao2mo_hermitian_into(
-        eri: &Array4<f64>,
-        c_mu_p: &Array2<Self>,
-        c_nu_q: &Array2<Self>,
-        c_lam_r: &Array2<Self>,
-        c_sig_s: &Array2<Self>,
-        out: ArrayViewMut4<'_, Self>,
-        scratch: &mut ERIAO2MOScratch<Self>,
-    );
-}
-
-impl ERIScalar for f64 {
-    /// Construct reusable scratch storage for real AO-to-MO ERI transformations.
-    /// # Arguments:
-    /// - `eri`: AO basis ERIs.
-    /// - `nmop`: Number of p-index MOs.
-    /// - `nmoq`: Number of q-index MOs.
-    /// - `nmor`: Number of r-index MOs.
-    /// - `nmos`: Number of s-index MOs.
-    /// # Returns
-    /// - `ERIAO2MOScratch<f64>`: Reusable transformation scratch storage.
-    fn new_eri_ao2mo_scratch(
-        eri: &Array4<f64>,
-        nmop: usize,
-        nmoq: usize,
-        nmor: usize,
-        nmos: usize,
-    ) -> ERIAO2MOScratch<Self> {
+    ) -> Self {
         let nbas = eri.shape()[0];
 
-        let t1len = nbas * nbas * nbas * nmos;
-        let t2len = nbas * nbas * nmos * nmor;
-        let t3len = nbas * nmos * nmor * nmoq;
-        let t4len = nmos * nmor * nmoq * nmop;
-
-        let worklen = t1len.max(t2len).max(t3len).max(t4len);
-
-        ERIAO2MOScratch {
-            worka: vec![0.0; worklen],
-            workb: vec![0.0; worklen],
-            c_mu_p_conj: Vec::new(),
-            c_lam_r_conj: Vec::new(),
-            eri_as: None,
+        Self {
+            worka: vec![T::zero(); nbas * nbas * nmor * nmos],
+            workb: vec![T::zero(); nbas * nmoq * nmor * nmos],
         }
-    }
-
-    /// Transform ERIs from AO to real MO basis with Hermitian bra-side conjugation into caller storage.
-    /// For real coefficients this is equivalent to the ordinary AO-to-MO transform.
-    /// # Arguments:
-    /// - `eri`: AO basis ERIs.
-    /// - `c_mu_p`: `MO coefficients C_{\mu,p}.`
-    /// - `c_nu_q`: `MO coefficients C_{\nu,q}.`
-    /// - `c_lam_r`: `MO coefficients C_{\lambda,r}.`
-    /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
-    /// - `out`: Output ERIs in `[p, q, r, s]` order.
-    /// - `scratch`: Reusable transformation scratch storage.
-    /// # Returns
-    /// - `()`: Writes transformed ERIs into `out`.
-    fn eri_ao2mo_hermitian_into(
-        eri: &Array4<f64>,
-        c_mu_p: &Array2<Self>,
-        c_nu_q: &Array2<Self>,
-        c_lam_r: &Array2<Self>,
-        c_sig_s: &Array2<Self>,
-        out: ArrayViewMut4<'_, Self>,
-        scratch: &mut ERIAO2MOScratch<Self>,
-    ) {
-        eri_ao2mo_into(
-            eri.view(),
-            AO2MOCoefficients {
-                c_mu_p: c_mu_p.view(),
-                c_nu_q: c_nu_q.view(),
-                c_lam_r: c_lam_r.view(),
-                c_sig_s: c_sig_s.view(),
-            },
-            out,
-            AO2MOScratch {
-                worka: &mut scratch.worka,
-                workb: &mut scratch.workb,
-            },
-        );
     }
 }
 
-impl ERIScalar for Complex64 {
-    /// Construct reusable scratch storage for complex AO-to-MO ERI transformations.
-    /// # Arguments:
-    /// - `eri`: AO basis ERIs.
-    /// - `nmop`: Number of p-index MOs.
-    /// - `nmoq`: Number of q-index MOs.
-    /// - `nmor`: Number of r-index MOs.
-    /// - `nmos`: Number of s-index MOs.
-    /// # Returns
-    /// - `ERIAO2MOScratch<Complex64>`: Reusable transformation scratch storage.
-    fn new_eri_ao2mo_scratch(
-        eri: &Array4<f64>,
-        nmop: usize,
-        nmoq: usize,
-        nmor: usize,
-        nmos: usize,
-    ) -> ERIAO2MOScratch<Self> {
-        let nbas = eri.shape()[0];
-
-        let t1len = nbas * nbas * nbas * nmos;
-        let t2len = nbas * nbas * nmos * nmor;
-        let t3len = nbas * nmos * nmor * nmoq;
-        let t4len = nmos * nmor * nmoq * nmop;
-
-        let worklen = t1len.max(t2len).max(t3len).max(t4len);
-
-        ERIAO2MOScratch {
-            worka: vec![Complex64::new(0.0, 0.0); worklen],
-            workb: vec![Complex64::new(0.0, 0.0); worklen],
-            c_mu_p_conj: vec![Complex64::new(0.0, 0.0); nbas * nmop],
-            c_lam_r_conj: vec![Complex64::new(0.0, 0.0); nbas * nmor],
-            eri_as: Some(eri.mapv(|x| Complex64::new(x, 0.0))),
-        }
-    }
-
-    /// Transform ERIs from AO to complex MO basis with Hermitian bra-side conjugation into caller storage.
-    /// This is the ordinary complex MO integral transform for Hermitian matrix elements.
-    /// # Arguments:
-    /// - `_eri`: AO basis ERIs, already converted and stored in `scratch`.
-    /// - `c_mu_p`: `MO coefficients C_{\mu,p}, conjugated in the transform.`
-    /// - `c_nu_q`: `MO coefficients C_{\nu,q}.`
-    /// - `c_lam_r`: `MO coefficients C_{\lambda,r}, conjugated in the transform.`
-    /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
-    /// - `out`: Output ERIs in `[p, q, r, s]` order.
-    /// - `scratch`: Reusable transformation scratch storage.
-    /// # Returns
-    /// - `()`: Writes transformed ERIs into `out`.
-    fn eri_ao2mo_hermitian_into(
-        _eri: &Array4<f64>,
-        c_mu_p: &Array2<Self>,
-        c_nu_q: &Array2<Self>,
-        c_lam_r: &Array2<Self>,
-        c_sig_s: &Array2<Self>,
-        out: ArrayViewMut4<'_, Self>,
-        scratch: &mut ERIAO2MOScratch<Self>,
-    ) {
-        let nbas = c_mu_p.nrows();
-
-        let nmop = c_mu_p.ncols();
-        let nmor = c_lam_r.ncols();
-
-        // Hermitian MO integrals conjugate the bra-side coefficients
-        // `C_{\mu p}^*` and `C_{\lambda r}^*` before the four AO contractions.
-        {
-            let mut c_mu_p_conj =
-                ArrayViewMut2::from_shape((nbas, nmop), &mut scratch.c_mu_p_conj).unwrap();
-            Zip::from(&mut c_mu_p_conj)
-                .and(c_mu_p)
-                .for_each(|dst, &src| *dst = src.conj());
-        }
-        {
-            let mut c_lam_r_conj =
-                ArrayViewMut2::from_shape((nbas, nmor), &mut scratch.c_lam_r_conj).unwrap();
-            Zip::from(&mut c_lam_r_conj)
-                .and(c_lam_r)
-                .for_each(|dst, &src| *dst = src.conj());
-        }
-
-        let c_mu_p_conj = ArrayView2::from_shape((nbas, nmop), &scratch.c_mu_p_conj).unwrap();
-        let c_lam_r_conj = ArrayView2::from_shape((nbas, nmor), &scratch.c_lam_r_conj).unwrap();
-
-        let eri_as = scratch.eri_as.as_ref().unwrap();
-
-        eri_ao2mo_into(
-            eri_as.view(),
-            AO2MOCoefficients {
-                c_mu_p: c_mu_p_conj,
-                c_nu_q: c_nu_q.view(),
-                c_lam_r: c_lam_r_conj,
-                c_sig_s: c_sig_s.view(),
-            },
-            out,
-            AO2MOScratch {
-                worka: &mut scratch.worka,
-                workb: &mut scratch.workb,
-            },
-        );
-    }
-}
-
-/// Transform typed AO ERIs using preselected coefficient matrices and reusable buffers.
-/// `The contraction order is \sigma then \lambda then \nu then \mu.`
-/// The final assignment writes `[p, q, r, s]` into `out`.
+/// Transform real AO ERIs into the MO integrals of Hermitian matrix elements,
+/// `(pq|rs) = \sum_{\mu\nu\lambda\sigma} C^*_{\mu p} C_{\nu q} C^*_{\lambda r} C_{\sigma s} (\mu\nu|\lambda\sigma)`.
+/// For real coefficients the conjugations have no effect. The first half-transformation forms
+/// `(\mu\nu|rs) = \sum_{\lambda\sigma} C^*_{\lambda r} (\mu\nu|\lambda\sigma) C_{\sigma s}` as one small
+/// matrix product per AO pair, which stays in cache. The second half contracts `\nu` and then
+/// `\mu` with matrix products whose rows already follow the `[p, q, r, s]` output order, so no
+/// intermediate tensor is permuted.
 /// # Arguments:
-/// - `eri`: Typed AO ERIs.
-/// - `coefficients`: AO-to-MO coefficient matrices.
+/// - `eri`: AO basis ERIs in `[\mu, \nu, \lambda, \sigma]` order.
+/// - `c_mu_p`: `MO coefficients C_{\mu,p}, conjugated in the transform.`
+/// - `c_nu_q`: `MO coefficients C_{\nu,q}.`
+/// - `c_lam_r`: `MO coefficients C_{\lambda,r}, conjugated in the transform.`
+/// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
 /// - `out`: Output ERIs in `[p, q, r, s]` order.
-/// - `scratch`: Reusable contraction and permutation buffers.
+/// - `scratch`: Reusable transformation buffers.
 /// # Returns
 /// - `()`: Writes the `[p, q, r, s]` tensor into `out`.
-fn eri_ao2mo_into<T: ERIScalar>(
-    eri: ArrayView4<'_, T>,
-    coefficients: AO2MOCoefficients<'_, T>,
-    mut out: ArrayViewMut4<'_, T>,
-    scratch: AO2MOScratch<'_, T>,
+/// # Panics
+/// - Panics if `out` is not in standard contiguous layout.
+pub fn eri_ao2mo_hermitian_into<T: StateScalar>(
+    eri: &Array4<f64>,
+    c_mu_p: &Array2<T>,
+    c_nu_q: &Array2<T>,
+    c_lam_r: &Array2<T>,
+    c_sig_s: &Array2<T>,
+    out: ArrayViewMut4<'_, T>,
+    scratch: &mut ERIAO2MOScratch<T>,
 ) {
     let nbas = eri.shape()[0];
-    let nmop = coefficients.c_mu_p.ncols();
-    let nmoq = coefficients.c_nu_q.ncols();
-    let nmor = coefficients.c_lam_r.ncols();
-    let nmos = coefficients.c_sig_s.ncols();
-    let alpha = T::from(1.0);
-    let beta = T::from(0.0);
-    let worka = scratch.worka;
-    let workb = scratch.workb;
+    let nmop = c_mu_p.ncols();
+    let nmoq = c_nu_q.ncols();
+    let nmor = c_lam_r.ncols();
+    let nmos = c_sig_s.ncols();
+    let alpha = T::one();
+    let beta = T::zero();
 
-    // Each matrix product is split into row blocks, four per thread, which are independent
-    // products, so a transform uses every thread even when it is the only work running.
-    let blocks = 4 * rayon::current_num_threads();
+    let nrs = nmor * nmos;
+    let nqrs = nmoq * nrs;
 
-    let t1len = nbas * nbas * nbas * nmos;
-    let t2len = nbas * nbas * nmos * nmor;
-    let t3len = nbas * nmos * nmor * nmoq;
-    let t4len = nmos * nmor * nmoq * nmop;
+    // Hermitian MO integrals conjugate the bra-side coefficients `C^*_{\mu p}` and
+    // `C^*_{\lambda r}`; the transposes are the left factors of the matrix products below.
+    let c_mu_t = c_mu_p.t().mapv(|z| z.conj());
+    let c_nu_t = c_nu_q.t();
+    let c_lam_t = c_lam_r.t().mapv(|z| z.conj());
 
-    // Contract the last AO index first: `(\mu\nu|\lambda\sigma) \to (\mu\nu|\lambda s)`.
-    let erirows = eri.into_shape((nbas * nbas * nbas, nbas)).unwrap();
-    let mut t1rows =
-        ArrayViewMut2::from_shape((nbas * nbas * nbas, nmos), &mut worka[..t1len]).unwrap();
-    let chunk = erirows.nrows().div_ceil(blocks).max(1);
-    t1rows
-        .axis_chunks_iter_mut(Axis(0), chunk)
-        .into_par_iter()
-        .zip(erirows.axis_chunks_iter(Axis(0), chunk))
-        .for_each(|(mut block, rows)| {
-            general_mat_mul(alpha, &rows, &coefficients.c_sig_s, beta, &mut block);
+    // First half-transformation of each AO pair,
+    // `(\mu\nu|rs) = [C_\lambda^\dagger (\mu\nu|\cdot\cdot) C_\sigma]_{rs}`, stored as `[\mu, \nu, r, s]`.
+    let eripairs = eri.view().into_shape((nbas * nbas, nbas * nbas)).unwrap();
+    scratch.worka[..nbas * nbas * nrs]
+        .par_chunks_mut(nrs)
+        .enumerate()
+        .for_each_init(
+            || {
+                (
+                    Array2::<T>::zeros((nbas, nbas)),
+                    Array2::<T>::zeros((nmor, nbas)),
+                )
+            },
+            |(pair, half), (munu, dst)| {
+                pair.iter_mut()
+                    .zip(eripairs.row(munu))
+                    .for_each(|(p, &x)| *p = T::from_real(x));
+                general_mat_mul(alpha, &c_lam_t, pair, beta, half);
+
+                let mut dst = ArrayViewMut2::from_shape((nmor, nmos), dst).unwrap();
+                general_mat_mul(alpha, half, c_sig_s, beta, &mut dst);
+            },
+        );
+
+    // Contract `\nu \to q` for each `\mu`, `(\mu q|rs) = \sum_\nu C_{\nu q} (\mu\nu|rs)`, stored as
+    // `[\mu, q, r, s]`.
+    let t2 = &scratch.worka[..nbas * nbas * nrs];
+    scratch.workb[..nbas * nqrs]
+        .par_chunks_mut(nqrs)
+        .zip(t2.par_chunks(nbas * nrs))
+        .for_each(|(dst, src)| {
+            let src = ArrayView2::from_shape((nbas, nrs), src).unwrap();
+            let mut dst = ArrayViewMut2::from_shape((nmoq, nrs), dst).unwrap();
+            general_mat_mul(alpha, &c_nu_t, &src, beta, &mut dst);
         });
 
-    // Move `\lambda` to the contiguous axis for the next matrix multiplication.
-    let src = ArrayView4::from_shape((nbas, nbas, nbas, nmos), &worka[..t1len]).unwrap();
-    let mut dst = ArrayViewMut4::from_shape((nbas, nbas, nmos, nbas), &mut workb[..t1len]).unwrap();
-    Zip::from(&mut dst)
-        .and(&src.permuted_axes([0, 1, 3, 2]))
-        .par_for_each(|d, &x| *d = x);
-
-    // Contract `\lambda \to r`, then rotate `\nu` into the contiguous axis.
-    let t1rows = ArrayView2::from_shape((nbas * nbas * nmos, nbas), &workb[..t1len]).unwrap();
-    let mut t2rows =
-        ArrayViewMut2::from_shape((nbas * nbas * nmos, nmor), &mut worka[..t2len]).unwrap();
-    let chunk = t1rows.nrows().div_ceil(blocks).max(1);
-    t2rows
-        .axis_chunks_iter_mut(Axis(0), chunk)
+    // Contract `\mu \to p` directly into `out` viewed as `[p, (q, r, s)]`. The product is split
+    // into column blocks, four per thread, which are independent products.
+    let t3 = ArrayView2::from_shape((nbas, nqrs), &scratch.workb[..nbas * nqrs]).unwrap();
+    let mut out = out.into_shape((nmop, nqrs)).unwrap();
+    let chunk = nqrs.div_ceil(4 * rayon::current_num_threads()).max(1);
+    out.axis_chunks_iter_mut(Axis(1), chunk)
         .into_par_iter()
-        .zip(t1rows.axis_chunks_iter(Axis(0), chunk))
-        .for_each(|(mut block, rows)| {
-            general_mat_mul(alpha, &rows, &coefficients.c_lam_r, beta, &mut block);
+        .zip(t3.axis_chunks_iter(Axis(1), chunk))
+        .for_each(|(mut block, cols)| {
+            general_mat_mul(alpha, &c_mu_t, &cols, beta, &mut block);
         });
-
-    let src = ArrayView4::from_shape((nbas, nbas, nmos, nmor), &worka[..t2len]).unwrap();
-    let mut dst = ArrayViewMut4::from_shape((nbas, nmos, nmor, nbas), &mut workb[..t2len]).unwrap();
-    Zip::from(&mut dst)
-        .and(&src.permuted_axes([0, 2, 3, 1]))
-        .par_for_each(|d, &x| *d = x);
-
-    // Contract `\nu \to q`, then expose `\mu` for the final contraction.
-    let t2rows = ArrayView2::from_shape((nbas * nmos * nmor, nbas), &workb[..t2len]).unwrap();
-    let mut t3rows =
-        ArrayViewMut2::from_shape((nbas * nmos * nmor, nmoq), &mut worka[..t3len]).unwrap();
-    let chunk = t2rows.nrows().div_ceil(blocks).max(1);
-    t3rows
-        .axis_chunks_iter_mut(Axis(0), chunk)
-        .into_par_iter()
-        .zip(t2rows.axis_chunks_iter(Axis(0), chunk))
-        .for_each(|(mut block, rows)| {
-            general_mat_mul(alpha, &rows, &coefficients.c_nu_q, beta, &mut block);
-        });
-
-    let src = ArrayView4::from_shape((nbas, nmos, nmor, nmoq), &worka[..t3len]).unwrap();
-    let mut dst = ArrayViewMut4::from_shape((nmos, nmor, nmoq, nbas), &mut workb[..t3len]).unwrap();
-    Zip::from(&mut dst)
-        .and(&src.permuted_axes([1, 2, 3, 0]))
-        .par_for_each(|d, &x| *d = x);
-
-    // Contract `\mu \to p` and permute temporary `[s,r,q,p]` into `[p,q,r,s]`.
-    let t3rows = ArrayView2::from_shape((nmos * nmor * nmoq, nbas), &workb[..t3len]).unwrap();
-    let mut t4rows =
-        ArrayViewMut2::from_shape((nmos * nmor * nmoq, nmop), &mut worka[..t4len]).unwrap();
-    let chunk = t3rows.nrows().div_ceil(blocks).max(1);
-    t4rows
-        .axis_chunks_iter_mut(Axis(0), chunk)
-        .into_par_iter()
-        .zip(t3rows.axis_chunks_iter(Axis(0), chunk))
-        .for_each(|(mut block, rows)| {
-            general_mat_mul(alpha, &rows, &coefficients.c_mu_p, beta, &mut block);
-        });
-
-    let src = ArrayView4::from_shape((nmos, nmor, nmoq, nmop), &worka[..t4len]).unwrap();
-    Zip::from(&mut out)
-        .and(&src.permuted_axes([3, 2, 1, 0]))
-        .par_for_each(|d, &x| *d = x);
 }
