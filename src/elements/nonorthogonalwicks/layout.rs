@@ -2,6 +2,7 @@
 
 // External crate imports.
 use ndarray::{Array2, Array4};
+use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::NOCIScalar;
@@ -415,6 +416,7 @@ pub fn write2t<T: NOCIScalar>(
 
 /// Copy a rank-four tensor already constructed in `[r,c,i,j]` order into the slab without
 /// `permuting its axes. This is the ordering used by the different-spin \mathcal{II} evaluator.`
+/// The copy is split into contiguous chunks written in parallel.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
 /// - `off`: Offset of the first tensor entry in units of `T`.
@@ -427,11 +429,18 @@ fn write4rcij<T: NOCIScalar>(
     a: &Array4<T>,
 ) {
     let src = a.as_slice().expect("Array4 must be contiguous");
-    slab[off..off + src.len()].copy_from_slice(src);
+    let chunk = src.len().div_ceil(4 * rayon::current_num_threads()).max(1);
+
+    slab[off..off + src.len()]
+        .par_chunks_mut(chunk)
+        .zip(src.par_chunks(chunk))
+        .for_each(|(dst, src)| dst.copy_from_slice(src));
 }
 
 /// Permute a rank-four tensor from constructed `[r,c,i,j]` order to stored `[i,j,r,c]` order.
 /// `This places the fixed \mathcal J replacement pair before the varying minor entry.`
+/// Each stored `(i,j)` block of `[r,c]` entries is contiguous, so the blocks are written in
+/// parallel, each gathered from the strided source.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
 /// - `off`: Offset of the first stored tensor entry in units of `T`.
@@ -446,23 +455,19 @@ fn write4ijrc<T: NOCIScalar>(
     let sh = a.shape();
     let nr = sh[0];
     let nc = sh[1];
-    let ni = sh[2];
-    let nj = sh[3];
+    let nij = sh[2] * sh[3];
 
     let src = a.as_slice().expect("Array4 must be contiguous");
     let dst = &mut slab[off..off + src.len()];
 
-    for r in 0..nr {
-        for c in 0..nc {
-            for i in 0..ni {
-                for j in 0..nj {
-                    let src_idx = ((r * nc + c) * ni + i) * nj + j;
-                    let dst_idx = ((i * nj + j) * nr + r) * nc + c;
-                    dst[dst_idx] = src[src_idx];
-                }
+    // `dst[(ij, r, c)] = src[(r, c, ij)]`, with `ij` the flattened `(i, j)` index.
+    dst.par_chunks_mut(nr * nc)
+        .enumerate()
+        .for_each(|(ij, block)| {
+            for (rc, d) in block.iter_mut().enumerate() {
+                *d = src[rc * nij + ij];
             }
-        }
-    }
+        });
 }
 
 /// Convert row and column indices into a row-major flat index.
