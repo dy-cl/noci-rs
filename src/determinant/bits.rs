@@ -158,13 +158,19 @@ impl Bits {
         Bits(words)
     }
 
-    /// The 64-bit words, from the lowest orbital up, for fingerprints that must match those of a
-    /// `u128` at the default width.
+    /// The 64-bit words from the lowest orbital up, without trailing zero words beyond the first
+    /// two, so fingerprints match those of a `u128` and do not depend on the width of the build.
     /// # Returns
-    /// - `[u64; WORDS]`: Words of the bitstring.
+    /// - `&[u64]`: Significant words of the bitstring.
     #[inline(always)]
-    pub fn words(self) -> [u64; WORDS] {
-        self.0
+    pub fn words(&self) -> &[u64] {
+        let n = self
+            .0
+            .iter()
+            .rposition(|&w| w != 0)
+            .map_or(0, |k| k + 1)
+            .max(2);
+        &self.0[..n]
     }
 
     /// Orbitals of the set in increasing order.

@@ -310,7 +310,7 @@ pub(crate) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
         mix(i as u64);
         mix(det.parent as u64);
         for value in [alpha.occupation, beta.occupation] {
-            value.words().into_iter().for_each(&mut mix);
+            value.words().iter().copied().for_each(&mut mix);
         }
         mix(alpha.data.phase.to_bits());
         mix(beta.data.phase.to_bits());
@@ -321,7 +321,7 @@ pub(crate) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
             beta.data.excitation.holes,
             beta.data.excitation.parts,
         ] {
-            value.words().into_iter().for_each(&mut mix);
+            value.words().iter().copied().for_each(&mut mix);
         }
 
         // Parent frames are shared by many determinants, so each is mixed once.
