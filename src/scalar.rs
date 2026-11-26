@@ -8,6 +8,7 @@ use num_complex::Complex64;
 use serde::{Deserialize, Serialize};
 
 // Crate-root imports.
+use crate::determinant::Bits;
 use crate::maths::{C64x1, F64x1, Simd};
 #[cfg(target_arch = "x86_64")]
 use crate::maths::{C64x4, C64x8, F64x4, F64x8};
@@ -39,9 +40,9 @@ pub struct SCFState<T: StateScalar = f64> {
     /// Energy of SCF state in Ha.
     pub e: T,
     /// MO occupancy vector for spin alpha orbitals as bitstring.
-    pub oa: u128,
+    pub oa: Bits,
     /// MO occupancy vector for spin beta orbitals as bitstring.
-    pub ob: u128,
+    pub ob: Bits,
     /// MO coefficients for spin alpha electrons, (nao, nao).
     pub ca: Arc<Array2<T>>,
     /// MO coefficients for spin beta electrons, (nao, nao).

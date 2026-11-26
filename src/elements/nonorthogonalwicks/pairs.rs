@@ -19,6 +19,7 @@
 use std::ops::Range;
 
 // Crate-root imports.
+use crate::determinant::Bits;
 use crate::determinant::{NOCISpace, ParentDeterminant, SpinStringData};
 use crate::elements::DetPair;
 use crate::hash::FastMap;
@@ -51,17 +52,17 @@ impl SpinPairRows {
     /// # Returns
     /// - `Self`: Rows of distinct spin-string pairs and the slot of every request.
     fn new(
-        references: (u128, u128),
-        occupations: &[(u128, u128)],
+        references: (Bits, Bits),
+        occupations: &[(Bits, Bits)],
     ) -> Self {
         // Within one reference pair a spin string is identified by its occupation. Index the
         // distinct bra spin strings as rows and, within each row, the distinct ket spin strings,
         // preparing each spin string only the first time it is seen.
-        let mut row_of: FastMap<u128, usize> = FastMap::default();
+        let mut row_of: FastMap<Bits, usize> = FastMap::default();
         let mut row_sources: Vec<(SpinStringData, Vec<SpinStringData>)> = Vec::new();
-        let mut column_of: Vec<FastMap<u128, usize>> = Vec::new();
+        let mut column_of: Vec<FastMap<Bits, usize>> = Vec::new();
         let mut positions = Vec::with_capacity(occupations.len());
-        let mut previous: Option<(u128, usize)> = None;
+        let mut previous: Option<(Bits, usize)> = None;
 
         for &(bra, ket) in occupations {
             // Consecutive requests usually share their bra, so check the previous row first.

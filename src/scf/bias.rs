@@ -8,6 +8,7 @@ use ndarray::Array2;
 
 // Crate-root imports.
 use crate::basis::electron_distance;
+use crate::determinant::Bits;
 use crate::{AoData, SCFState};
 
 /// Construct the SCF metadynamics bias term.
@@ -32,8 +33,8 @@ pub(crate) fn metadynamics_bias(
 
     let tmpscf = SCFState {
         e: 0.0,
-        oa: 0u128,
-        ob: 0u128,
+        oa: Bits::EMPTY,
+        ob: Bits::EMPTY,
         ca: Arc::new(Array2::zeros((nbf, nbf))),
         cb: Arc::new(Array2::zeros((nbf, nbf))),
         da: Arc::new(da.clone()),

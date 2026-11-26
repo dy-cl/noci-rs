@@ -10,6 +10,7 @@ use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::elements::nonorthogonalwicks::WicksShared;
 use crate::elements::{FockData, NOCIData};
@@ -606,7 +607,7 @@ where
             if opts.follow {
                 // Identify every determinant by its parent, or the parent's partner, and its
                 // replacements, so the overlap does not depend on the order of the NOCI basis.
-                let keys: HashMap<(String, [u128; 4]), usize> = selected_space
+                let keys: HashMap<(String, [Bits; 4]), usize> = selected_space
                     .iter()
                     .enumerate()
                     .map(|(pos, &index)| {

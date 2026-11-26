@@ -1,5 +1,8 @@
 // basis/excitation.rs
 
+// Crate-root imports.
+use crate::determinant::Bits;
+
 /// Calculate fermionic sign associated with applying a set of creation and annihilation operators to a determinant described by a bitstring.
 /// # Arguments:
 /// - `occ`: Occupancy bitstring.
@@ -9,43 +12,25 @@
 /// - `f64`: Fermionic phase factor.
 #[inline(always)]
 pub fn excitation_phase(
-    mut occ: u128,
+    mut occ: Bits,
     holes: &[usize],
     parts: &[usize],
 ) -> f64 {
-    /// Determine whether the number of occupied orbitals below orbital index `p` is odd.
-    /// # Arguments:
-    /// - `bits`: Occupancy bitstring.
-    /// - `p`: Orbital index.
-    /// # Returns:
-    /// - `bool`: `true` if the number of occupied orbitals with index less than `p` is odd, otherwise `false`.
-    #[inline(always)]
-    fn below(
-        bits: u128,
-        p: usize,
-    ) -> bool {
-        if p == 0 {
-            false
-        } else {
-            ((bits & ((1u128 << p) - 1)).count_ones() & 1) != 0
-        }
-    }
-
     let mut odd = false;
 
     // Annihilate in reverse operator order; each occupied orbital below an
     // index contributes one fermionic exchange sign.
     for &i in holes.iter().rev() {
-        odd ^= below(occ, i);
-        occ &= !(1u128 << i);
+        odd ^= occ.count_below(i) & 1 == 1;
+        occ &= !Bits::bit(i);
     }
 
     // Create in the supplied order. The final insertion cannot affect any
     // later parity calculation and need not update the bitstring.
     for (k, &a) in parts.iter().enumerate() {
-        odd ^= below(occ, a);
+        odd ^= occ.count_below(a) & 1 == 1;
         if k + 1 != parts.len() {
-            occ |= 1u128 << a;
+            occ |= Bits::bit(a);
         }
     }
     if odd { -1.0 } else { 1.0 }
@@ -60,47 +45,29 @@ pub fn excitation_phase(
 /// - `f64`: Fermionic phase factor.
 #[inline(always)]
 pub(crate) fn excitation_phase_bits(
-    mut occ: u128,
-    mut holes: u128,
-    mut parts: u128,
+    mut occ: Bits,
+    mut holes: Bits,
+    mut parts: Bits,
 ) -> f64 {
-    /// Determine whether the occupied population below `p` has odd parity.
-    /// # Arguments:
-    /// - `bits`: Occupancy bitstring after any preceding operators have acted.
-    /// - `p`: Orbital index defining the exclusive upper bound.
-    /// # Returns
-    /// - `bool`: Whether an odd number of occupied orbitals have index below `p`.
-    #[inline(always)]
-    fn below(
-        bits: u128,
-        p: usize,
-    ) -> bool {
-        if p == 0 {
-            false
-        } else {
-            ((bits & ((1u128 << p) - 1)).count_ones() & 1) != 0
-        }
-    }
-
     let mut odd = false;
 
     // Apply annihilators from highest to lowest occupied index, updating
     // `(-1)^{N_{<i}}` after each removal.
-    while holes != 0 {
-        let i = 127 - holes.leading_zeros() as usize;
-        odd ^= below(occ, i);
-        occ &= !(1u128 << i);
-        holes &= !(1u128 << i);
+    while !holes.is_empty() {
+        let i = holes.last();
+        odd ^= occ.count_below(i) & 1 == 1;
+        occ &= !Bits::bit(i);
+        holes &= !Bits::bit(i);
     }
 
     // Apply creators from lowest to highest index. The last insertion need
     // not change `occ` because no later operator uses its occupancy.
-    while parts != 0 {
-        let a = parts.trailing_zeros() as usize;
-        odd ^= below(occ, a);
-        parts &= parts - 1;
-        if parts != 0 {
-            occ |= 1u128 << a;
+    while !parts.is_empty() {
+        let a = parts.first();
+        odd ^= occ.count_below(a) & 1 == 1;
+        parts = parts.without_first();
+        if !parts.is_empty() {
+            occ |= Bits::bit(a);
         }
     }
 
@@ -117,15 +84,15 @@ pub(crate) fn excitation_phase_bits(
 /// - `holes`: Orbitals annihilated by the excitation.
 /// - `parts`: Orbitals created by the excitation, disjoint from `holes`.
 /// # Returns
-/// - `Option<(u128, f64)>`: Excited occupation and its sign, or `None` if the excitation
+/// - `Option<(Bits, f64)>`: Excited occupation and its sign, or `None` if the excitation
 ///   annihilates the determinant.
 #[inline(always)]
 pub(crate) fn apply_excitation(
-    occ: u128,
-    holes: u128,
-    parts: u128,
-) -> Option<(u128, f64)> {
-    if occ & holes != holes || occ & !holes & parts != 0 {
+    occ: Bits,
+    holes: Bits,
+    parts: Bits,
+) -> Option<(Bits, f64)> {
+    if occ & holes != holes || !(occ & !holes & parts).is_empty() {
         return None;
     }
     let phase = excitation_phase_bits(occ, holes, parts);
@@ -138,12 +105,12 @@ pub(crate) fn apply_excitation(
 /// - `holes`: Orbitals removed from the parent determinant.
 /// - `parts`: Orbitals added to the parent determinant.
 /// # Returns
-/// - `u128`: Reconstructed parent occupation bitstring.
+/// - `Bits`: Reconstructed parent occupation bitstring.
 pub(crate) fn undo_excitation(
-    occ: u128,
-    holes: u128,
-    parts: u128,
-) -> u128 {
+    occ: Bits,
+    holes: Bits,
+    parts: Bits,
+) -> Bits {
     (occ & !parts) | holes
 }
 
@@ -152,11 +119,11 @@ pub(crate) fn undo_excitation(
 /// - `parent`: Parent occupation bitstring.
 /// - `child`: Child occupation bitstring.
 /// # Returns
-/// - `(u128, u128)`: Hole and particle orbital masks.
+/// - `(Bits, Bits)`: Hole and particle orbital masks.
 #[inline(always)]
 pub(crate) fn excitation_between(
-    parent: u128,
-    child: u128,
-) -> (u128, u128) {
+    parent: Bits,
+    child: Bits,
+) -> (Bits, Bits) {
     (parent & !child, child & !parent)
 }

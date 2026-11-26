@@ -52,7 +52,8 @@ impl AuxiliaryGenerator {
             let beta = data.space.beta(source);
             let frame = FrameSource {
                 parent: data.space.parent(source),
-                reference: alpha.data.excitation.holes == 0 && beta.data.excitation.holes == 0,
+                reference: alpha.data.excitation.holes.is_empty()
+                    && beta.data.excitation.holes.is_empty(),
                 alpha: FrameSpin {
                     occupied: &alpha.occupied,
                     virtuals: &alpha.virtuals,
@@ -106,7 +107,7 @@ pub(in crate::noci::stochastic) fn pchb_generator(
     for reference in (0..data.space.len()).map(NOCIIndex) {
         let parent = data.space.parent(reference);
         let (alpha, beta) = data.space.excitations(reference);
-        if alpha.holes != 0 || beta.holes != 0 || parent >= mocache.len() {
+        if !alpha.holes.is_empty() || !beta.holes.is_empty() || parent >= mocache.len() {
             continue;
         }
 

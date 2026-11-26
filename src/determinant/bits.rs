@@ -36,11 +36,12 @@ impl Bits {
 
     /// Single orbital `{p}`.
     /// # Arguments:
-    /// - `p`: Orbital index, below [`Bits::CAPACITY`].
+    /// - `p`: Orbital index, below [`Bits::CAPACITY`], as any unsigned label type.
     /// # Returns
     /// - `Bits`: Bitstring holding only `p`.
     #[inline(always)]
-    pub fn bit(p: usize) -> Self {
+    pub fn bit(p: impl Into<usize>) -> Self {
+        let p = p.into();
         let mut words = [0; WORDS];
         words[p >> 6] = 1 << (p & 63);
         Bits(words)
@@ -122,7 +123,11 @@ impl Bits {
     /// - Panics if the set is empty.
     #[inline(always)]
     pub fn first(self) -> usize {
-        let k = self.0.iter().position(|&w| w != 0).expect("empty bitstring");
+        let k = self
+            .0
+            .iter()
+            .position(|&w| w != 0)
+            .expect("empty bitstring");
         64 * k + self.0[k].trailing_zeros() as usize
     }
 
@@ -133,7 +138,11 @@ impl Bits {
     /// - Panics if the set is empty.
     #[inline(always)]
     pub fn last(self) -> usize {
-        let k = self.0.iter().rposition(|&w| w != 0).expect("empty bitstring");
+        let k = self
+            .0
+            .iter()
+            .rposition(|&w| w != 0)
+            .expect("empty bitstring");
         64 * k + 63 - self.0[k].leading_zeros() as usize
     }
 
@@ -147,6 +156,15 @@ impl Bits {
             *word &= *word - 1;
         }
         Bits(words)
+    }
+
+    /// The 64-bit words, from the lowest orbital up, for fingerprints that must match those of a
+    /// `u128` at the default width.
+    /// # Returns
+    /// - `[u64; WORDS]`: Words of the bitstring.
+    #[inline(always)]
+    pub fn words(self) -> [u64; WORDS] {
+        self.0
     }
 
     /// Orbitals of the set in increasing order.

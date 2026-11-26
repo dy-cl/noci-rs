@@ -249,20 +249,11 @@ pub(super) fn construct_determinant_indices<T: NOCIScalar>(
             // `L_x` and `L_w` determine the two ordered blocks of the determinant labels.
             let nocc = w.nocc;
             let nvirt = w.nmo - nocc;
-            let mut xh = x_ex.holes;
-            let mut xp = x_ex.parts;
-            let mut wh = w_ex.holes;
-            let mut wp = w_ex.parts;
             let mut i = 0usize;
 
             // Bra pairs: `(r_k,c_k) = (a_k,i_k)`. Compact virtual row labels subtract
             // `N_{\text{occ}}` from the particle's MO index.
-            while xh != 0 {
-                let hole = xh.trailing_zeros() as usize;
-                let part = xp.trailing_zeros() as usize;
-                xh &= xh - 1;
-                xp &= xp - 1;
-
+            for (hole, part) in x_ex.holes.ones().zip(x_ex.parts.ones()) {
                 rows[i] = part - nocc;
                 cols[i] = hole;
                 i += 1;
@@ -270,12 +261,7 @@ pub(super) fn construct_determinant_indices<T: NOCIScalar>(
 
             // Ket pairs: `(r_{R_x+k},c_{R_x+k}) = (j_k,b_k)`. Offset occupied rows by
             // `N_{\text{virt}}` so the row space is ordered as `V_x \cup O_w`.
-            while wh != 0 {
-                let hole = wh.trailing_zeros() as usize;
-                let part = wp.trailing_zeros() as usize;
-                wh &= wh - 1;
-                wp &= wp - 1;
-
+            for (hole, part) in w_ex.holes.ones().zip(w_ex.parts.ones()) {
                 rows[i] = nvirt + hole;
                 cols[i] = part;
                 i += 1;

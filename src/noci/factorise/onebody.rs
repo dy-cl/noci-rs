@@ -13,6 +13,7 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::determinant::{NOCIIndex, NOCISpace, NOCISpinStringIndex, SpinStringData};
 use crate::elements::calculate_f_pair_orthogonal;
 use crate::elements::calculate_s_pair_orthogonal;
@@ -1291,16 +1292,12 @@ fn apply_orthogonal_alpha_singles<T, R>(
     let (oa, _) = space.occupations(source);
     // Enumerate `\alpha` excitations `i \to a` with `i` occupied and `a`
     // virtual, leaving the `\beta` occupation unchanged.
-    let mut holes = oa;
-    while holes != 0 {
-        let hole = holes.trailing_zeros() as usize;
-        holes &= holes - 1;
-
+    for hole in oa.ones() {
         for part in 0..nmo {
-            if ((oa >> part) & 1) == 1 {
+            if oa.contains(part) {
                 continue;
             }
-            let target_oa = (oa & !(1u128 << hole)) | (1u128 << part);
+            let target_oa = (oa & !Bits::bit(hole)) | Bits::bit(part);
 
             let strings = space.parent_spin_strings(state.parent);
             let Some(&aid) = strings.aids.get(&target_oa) else {
@@ -1353,16 +1350,12 @@ fn apply_orthogonal_beta_singles<T, R>(
     let state = space.spin_string_pair(source);
     let (_, ob) = space.occupations(source);
     // Enumerate `\beta` excitations `i \to a` while `\alpha` occupation stays fixed.
-    let mut holes = ob;
-    while holes != 0 {
-        let hole = holes.trailing_zeros() as usize;
-        holes &= holes - 1;
-
+    for hole in ob.ones() {
         for part in 0..nmo {
-            if ((ob >> part) & 1) == 1 {
+            if ob.contains(part) {
                 continue;
             }
-            let target_ob = (ob & !(1u128 << hole)) | (1u128 << part);
+            let target_ob = (ob & !Bits::bit(hole)) | Bits::bit(part);
 
             let strings = space.parent_spin_strings(state.parent);
             let Some(&bid) = strings.bids.get(&target_ob) else {

@@ -9,6 +9,7 @@
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::determinant::DeterminantData;
 use crate::determinant::DeterminantState;
 use crate::elements::{DetPair, FockData, NOCIData};
@@ -71,7 +72,7 @@ pub(crate) trait PairOperator<T: NOCIScalar> {
         &self,
         data: &NOCIData<'_, T>,
         parent: usize,
-        occupations: &[(u128, u128)],
+        occupations: &[(Bits, Bits)],
         connections: &[DeterminantData],
         values: &mut [Self::Out],
     );
@@ -182,7 +183,7 @@ impl<T: NOCIScalar> PairOperator<T> for Overlap {
         &self,
         _data: &NOCIData<'_, T>,
         _parent: usize,
-        occupations: &[(u128, u128)],
+        occupations: &[(Bits, Bits)],
         connections: &[DeterminantData],
         values: &mut [T],
     ) {
@@ -294,7 +295,7 @@ impl<T: NOCIScalar> PairOperator<T> for Fock<'_, T> {
         &self,
         _data: &NOCIData<'_, T>,
         parent: usize,
-        occupations: &[(u128, u128)],
+        occupations: &[(Bits, Bits)],
         connections: &[DeterminantData],
         values: &mut [T],
     ) {
@@ -417,7 +418,7 @@ impl<T: NOCIScalar> PairOperator<T> for HamiltonianOverlap {
         &self,
         data: &NOCIData<'_, T>,
         parent: usize,
-        occupations: &[(u128, u128)],
+        occupations: &[(Bits, Bits)],
         connections: &[DeterminantData],
         values: &mut [(T, T)],
     ) {

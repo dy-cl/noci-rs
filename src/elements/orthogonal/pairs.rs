@@ -4,6 +4,7 @@
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::determinant::{ConnectionState, DeterminantData, NOCIIndex, NOCISpace};
 use crate::elements::{DetPair, FockMOCache, NOCIData};
 use crate::time_call;
@@ -46,8 +47,8 @@ pub(crate) fn calculate_s_pair_orthogonal<T: NOCIScalar>(
 ///   the occupations.
 #[inline(always)]
 pub(in crate::elements) fn connection_data(
-    l_occ: (u128, u128),
-    g_occ: (u128, u128),
+    l_occ: (Bits, Bits),
+    g_occ: (Bits, Bits),
     rank: usize,
 ) -> Option<DeterminantData> {
     let data = DeterminantData::between(g_occ, l_occ);
@@ -68,7 +69,7 @@ pub(crate) struct OrthogonalHamiltonianScratch {
     /// Original request positions grouped by source parent.
     groups: Vec<Vec<usize>>,
     /// Source occupations of the requests of one parent.
-    occupations: Vec<(u128, u128)>,
+    occupations: Vec<(Bits, Bits)>,
     /// Connection data of the requests of one parent.
     states: Vec<DeterminantData>,
     /// Hamiltonian elements of the requests of one parent.
@@ -190,7 +191,7 @@ pub(in crate::elements) fn calculate_pairs_orthogonal_batched<U: Copy>(
     rank: usize,
     zero: U,
     out: &mut [U],
-    mut kernel: impl FnMut(&[(u128, u128)], &[DeterminantData], &mut [U]),
+    mut kernel: impl FnMut(&[(Bits, Bits)], &[DeterminantData], &mut [U]),
 ) {
     // Prepare coupled requests and write uncoupled ones directly.
     let mut outputs = Vec::with_capacity(requests.len());

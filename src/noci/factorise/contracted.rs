@@ -18,6 +18,7 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::elements::nonorthogonalwicks::{SINGULARTOL, SameSpinBuild};
 use crate::elements::{FockData, NOCIData};
 use crate::maths::adjoint;
@@ -155,7 +156,7 @@ impl<T: NOCIScalar> ContractedPair<T> {
 
         // Target double replacements of each spin grouped by packed hole pair, so each occupied
         // pair of an apply reads its own strings.
-        let doubles = |occupation: u128, slots: &[StringSlot]| {
+        let doubles = |occupation: Bits, slots: &[StringSlot]| {
             let nocc = occupation.count_ones() as usize;
             let mut grouped = vec![Vec::new(); nocc * nocc.saturating_sub(1) / 2];
             for (k, slot) in slots.iter().enumerate().filter(|(_, slot)| slot.rank == 2) {
@@ -173,7 +174,7 @@ impl<T: NOCIScalar> ContractedPair<T> {
         let reference = |points: &[ContractionPoint<T>],
                          slots: &[StringSlot],
                          grouped: &[Vec<(usize, usize, usize)>],
-                         source_occ: u128| {
+                         source_occ: Bits| {
             // The ket reference string alone, `c_0 = 1`, through every point.
             let nocc = source_occ.count_ones() as usize;
             let mut r = StringAmplitudes::zeros((nocc, n - nocc), 1, false);
@@ -555,19 +556,19 @@ impl<T: NOCIScalar> ContractionPoint<T> {
     /// # Returns
     /// - `Option<Vec<Self>>`: The points, or `None` when the pair cannot be extrapolated.
     fn build(
-        bra: (&Array2<T>, u128),
-        ket: (&Array2<T>, u128),
+        bra: (&Array2<T>, Bits),
+        ket: (&Array2<T>, Bits),
         operators: (&Array2<f64>, Option<&Array2<T>>),
         tol: f64,
     ) -> Option<Vec<Self>> {
         let (s, f) = operators;
 
         // Occupied and virtual orbitals of both references, each in ascending orbital order.
-        let split = |c: &Array2<T>, occupation: u128| {
+        let split = |c: &Array2<T>, occupation: Bits| {
             let n = c.ncols();
             let pick = |occupied: bool| {
                 let columns = (0..n)
-                    .filter(|&k| (occupation >> k & 1 == 1) == occupied)
+                    .filter(|&k| occupation.contains(k) == occupied)
                     .collect::<Vec<_>>();
                 c.select(Axis(1), &columns)
             };

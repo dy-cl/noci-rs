@@ -8,6 +8,7 @@
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::determinant::DeterminantData;
 use crate::elements::{LaneBatch, group_lanes, xw_lanes};
 #[cfg(target_arch = "x86_64")]
@@ -41,7 +42,7 @@ pub(crate) trait OrthogonalElement<T: NOCIScalar> {
     /// - `T`: Matrix element of the pair.
     fn value(
         &self,
-        occupation: (u128, u128),
+        occupation: (Bits, Bits),
         state: &DeterminantData,
     ) -> T;
 
@@ -66,7 +67,7 @@ struct OrthogonalLanes<'a, E, T> {
     /// Operator and the parent data it reads.
     element: &'a E,
     /// Source alpha and beta occupations in request order.
-    occupations: &'a [(u128, u128)],
+    occupations: &'a [(Bits, Bits)],
     /// Request of every lane.
     order: &'a [usize],
     /// Matrix elements in request order.
@@ -198,7 +199,7 @@ impl<E: OrthogonalElement<T>, T: NOCIScalar, const RA: usize, const RB: usize>
 /// - `()`: Writes every matrix element into `out`.
 pub(crate) fn xw_orthogonal_batched<E: OrthogonalElement<T>, T: NOCIScalar>(
     element: &E,
-    occupations: &[(u128, u128)],
+    occupations: &[(Bits, Bits)],
     states: &[DeterminantData],
     out: &mut [T],
 ) {

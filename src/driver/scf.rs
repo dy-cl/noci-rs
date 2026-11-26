@@ -8,6 +8,7 @@ use ndarray::Array2;
 
 // Crate-root imports.
 use crate::basis::{generate_reference_noci_basis, hermitian_hnoci_basis};
+use crate::determinant::Bits;
 use crate::input::Input;
 use crate::noci::optimised::reshf_optimise;
 use crate::time_call;
@@ -134,7 +135,6 @@ fn align_orbitals<T: StateScalar>(
     s: &Array2<f64>,
 ) {
     let s = s.mapv(T::from_real);
-    let occupied = |bits: u128, k: usize| bits >> k & 1 == 1;
 
     // States new at this geometry have nothing to align with and are left as the SCF gave them.
     for state in states.iter_mut() {
@@ -161,7 +161,7 @@ fn align_orbitals<T: StateScalar>(
             let mut place = (0..n)
                 .map(|j| {
                     (0..n)
-                        .filter(|&i| occupied(occold, i) == occupied(*occ, j))
+                        .filter(|&i| occold.contains(i) == occ.contains(j))
                         .max_by(|&a, &b| o[(a, j)].abs().total_cmp(&o[(b, j)].abs()))
                         .unwrap_or(j)
                 })
@@ -194,8 +194,8 @@ fn align_orbitals<T: StateScalar>(
 
             // The occupation bits follow the occupied orbitals to their new positions.
             *occ = (0..n)
-                .filter(|&j| occupied(*occ, j))
-                .fold(0, |bits, j| bits | 1 << place[j]);
+                .filter(|&j| occ.contains(j))
+                .fold(Bits::EMPTY, |bits, j| bits | Bits::bit(place[j]));
             *c = Arc::new(aligned);
         }
     }

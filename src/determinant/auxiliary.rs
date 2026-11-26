@@ -8,6 +8,7 @@ use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::determinant::{ParentSpinStrings, SpinStringIndex, SpinStringPair, SpinStringState};
 
 // Parent/sibling imports.
+use super::bits::Bits;
 use super::connection::ConnectionState;
 use super::state::determinant_index;
 
@@ -201,11 +202,11 @@ impl AuxiliarySpace {
 /// - `()`: Appends reachable occupations to `out`.
 fn reachable_spin_occupations(
     state: &SpinStringState,
-    out: &mut Vec<u128>,
+    out: &mut Vec<Bits>,
 ) {
     for &hole in &state.occupied {
         for &particle in &state.virtuals {
-            out.push((state.occupation & !(1u128 << hole)) | (1u128 << particle));
+            out.push((state.occupation & !Bits::bit(hole)) | Bits::bit(particle));
         }
     }
     // Choose unordered hole and particle pairs so each same-spin double
@@ -214,8 +215,8 @@ fn reachable_spin_occupations(
         for j in i + 1..state.occupied.len() {
             for a in 0..state.virtuals.len() {
                 for b in a + 1..state.virtuals.len() {
-                    let holes = (1u128 << state.occupied[i]) | (1u128 << state.occupied[j]);
-                    let parts = (1u128 << state.virtuals[a]) | (1u128 << state.virtuals[b]);
+                    let holes = Bits::bit(state.occupied[i]) | Bits::bit(state.occupied[j]);
+                    let parts = Bits::bit(state.virtuals[a]) | Bits::bit(state.virtuals[b]);
                     out.push((state.occupation & !holes) | parts);
                 }
             }

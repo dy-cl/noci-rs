@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 // Crate-root imports.
 use crate::AoData;
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::determinant::ParentDeterminant;
 use crate::elements::occ_coeffs;
 use crate::input::Spin;
@@ -427,9 +428,9 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     pub(crate) fn count_zero_overlap_pairs(
         s_munu: &Array2<f64>,
         g_c: &Array2<T>,
-        go: u128,
+        go: Bits,
         l_c: &Array2<T>,
-        lo: u128,
+        lo: Bits,
         tol: f64,
     ) -> (usize, usize) {
         let l_c_occ = occ_coeffs(l_c, lo);
@@ -1061,7 +1062,7 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
         s: &Array2<f64>,
         l_c: &Array2<T>,
         g_c: &Array2<T>,
-        lo: u128,
+        lo: Bits,
         i: usize,
     ) -> (Array2<T>, Array2<T>) {
         let nao = l_c.nrows();

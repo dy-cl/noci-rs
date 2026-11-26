@@ -3,6 +3,7 @@
 // Crate-root imports.
 use crate::AoData;
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::determinant::DeterminantData;
 use crate::elements::MOCache;
 #[cfg(target_arch = "x86_64")]
@@ -40,7 +41,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalHamiltonian<'_, T> {
     /// - `T`: Orthogonal Slater-Condon Hamiltonian matrix element.
     fn value(
         &self,
-        occupation: (u128, u128),
+        occupation: (Bits, Bits),
         state: &DeterminantData,
     ) -> T {
         xw_hamiltonian_orthogonal(self.ao, self.cache, occupation, state)
@@ -159,7 +160,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalHamiltonian<'_, T> {
 pub(crate) fn xw_hamiltonian_orthogonal<T: NOCIScalar>(
     ao: &AoData,
     cache: &MOCache<T>,
-    source: (u128, u128),
+    source: (Bits, Bits),
     state: &DeterminantData,
 ) -> T {
     let ranks = (
@@ -192,7 +193,7 @@ pub(crate) fn xw_hamiltonian_orthogonal<T: NOCIScalar>(
 fn xw_hamiltonian_orthogonal_const<T: NOCIScalar, const RA: usize, const RB: usize>(
     ao: &AoData,
     cache: &MOCache<T>,
-    source: (u128, u128),
+    source: (Bits, Bits),
     state: &DeterminantData,
 ) -> T {
     let alpha = &state.alpha.cache;
@@ -206,52 +207,28 @@ fn xw_hamiltonian_orthogonal_const<T: NOCIScalar, const RA: usize, const RB: usi
         // `+ \frac12\sum_{ij\sigma}\langle ii||jj\rangle`
         // `+ \sum_{i\in O_\alpha,j\in O_\beta}(ii|jj)`.
         let mut h = T::from_real(ao.enuc);
-        let mut bits = source.0;
-        while bits != 0 {
-            let i = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
+        for i in source.0.ones() {
             h += cache.ha[(i, i)];
         }
 
-        let mut bits = source.1;
-        while bits != 0 {
-            let i = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
+        for i in source.1.ones() {
             h += cache.hb[(i, i)];
         }
 
-        let mut bits_i = source.0;
-        while bits_i != 0 {
-            let i = bits_i.trailing_zeros() as usize;
-            bits_i &= bits_i - 1;
-            let mut bits_j = source.0;
-            while bits_j != 0 {
-                let j = bits_j.trailing_zeros() as usize;
-                bits_j &= bits_j - 1;
+        for i in source.0.ones() {
+            for j in source.0.ones() {
                 h += T::from_real(0.5) * cache.eri_aa_asym[(i, i, j, j)];
             }
         }
 
-        let mut bits_i = source.1;
-        while bits_i != 0 {
-            let i = bits_i.trailing_zeros() as usize;
-            bits_i &= bits_i - 1;
-            let mut bits_j = source.1;
-            while bits_j != 0 {
-                let j = bits_j.trailing_zeros() as usize;
-                bits_j &= bits_j - 1;
+        for i in source.1.ones() {
+            for j in source.1.ones() {
                 h += T::from_real(0.5) * cache.eri_bb_asym[(i, i, j, j)];
             }
         }
 
-        let mut bits_i = source.0;
-        while bits_i != 0 {
-            let i = bits_i.trailing_zeros() as usize;
-            bits_i &= bits_i - 1;
-            let mut bits_j = source.1;
-            while bits_j != 0 {
-                let j = bits_j.trailing_zeros() as usize;
-                bits_j &= bits_j - 1;
+        for i in source.0.ones() {
+            for j in source.1.ones() {
                 h += cache.eri_ab_coul[(i, i, j, j)];
             }
         }
@@ -269,17 +246,11 @@ fn xw_hamiltonian_orthogonal_const<T: NOCIScalar, const RA: usize, const RB: usi
         // `+ \sum_{j\in O_\alpha\setminus i}(ai||jj)`
         // `+ \sum_{j\in O_\beta}(ai|jj)]`.
         let mut h = cache.ha[(a, i)];
-        let mut bits = source.0 & !(1u128 << i);
-        while bits != 0 {
-            let j = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
+        for j in (source.0 & !Bits::bit(i)).ones() {
             h += cache.eri_aa_asym[(a, i, j, j)];
         }
 
-        let mut bits = source.1;
-        while bits != 0 {
-            let j = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
+        for j in source.1.ones() {
             h += cache.eri_ab_coul[(a, i, j, j)];
         }
 
@@ -295,17 +266,11 @@ fn xw_hamiltonian_orthogonal_const<T: NOCIScalar, const RA: usize, const RB: usi
         // `+ \sum_{j\in O_\beta\setminus i}(ai||jj)`
         // `+ \sum_{j\in O_\alpha}(jj|ia)]`.
         let mut h = cache.hb[(a, i)];
-        let mut bits = source.1 & !(1u128 << i);
-        while bits != 0 {
-            let j = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
+        for j in (source.1 & !Bits::bit(i)).ones() {
             h += cache.eri_bb_asym[(a, i, j, j)];
         }
 
-        let mut bits = source.0;
-        while bits != 0 {
-            let j = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
+        for j in source.0.ones() {
             h += cache.eri_ab_coul[(j, j, i, a)];
         }
 

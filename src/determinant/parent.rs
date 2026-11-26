@@ -9,15 +9,18 @@ use ndarray::Array2;
 // Crate-root imports.
 use crate::{SCFState, StateScalar};
 
+// Parent/sibling imports.
+use super::bits::Bits;
+
 /// One selected SCF reference's orbital frame and occupations.
 #[derive(Clone)]
 pub struct ParentDeterminant<T: StateScalar> {
     /// SCF energy associated with this parent reference.
     pub(crate) e: T,
     /// Alpha-spin occupation of the parent determinant.
-    pub(crate) oa: u128,
+    pub(crate) oa: Bits,
     /// Beta-spin occupation of the parent determinant.
-    pub(crate) ob: u128,
+    pub(crate) ob: Bits,
     /// Alpha-spin MO coefficients defining the parent orbital frame.
     pub(crate) ca: Arc<Array2<T>>,
     /// Beta-spin MO coefficients defining the parent orbital frame.

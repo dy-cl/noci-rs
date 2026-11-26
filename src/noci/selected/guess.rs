@@ -9,6 +9,7 @@ use ndarray::Array1;
 use num_complex::Complex64;
 
 // Crate-root imports.
+use crate::determinant::Bits;
 use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::{NOCIScalar, StateScalar};
 
@@ -23,7 +24,7 @@ use super::SNOCIPT2Result;
 #[derive(Clone, Default)]
 pub struct PT2Guess {
     /// Position of every candidate, keyed by its parent label and alpha and beta occupations.
-    candidates: HashMap<(String, u128, u128), usize>,
+    candidates: HashMap<(String, Bits, Bits), usize>,
     /// Position of the corrected state in `snoci.roots`, imaginary shift, amplitudes `a` and
     /// right-hand side `b = -V` of every solve, ordered as the candidates.
     solves: Vec<(usize, f64, Array1<Complex64>, Array1<Complex64>)>,
@@ -37,7 +38,7 @@ pub(in crate::noci::selected) struct FollowedStates {
     /// Position of every current determinant, identified by the label of its parent reference,
     /// with a holomorphic reference named by its real partner, and its alpha and beta holes and
     /// particles.
-    pub(in crate::noci::selected) keys: HashMap<(String, [u128; 4]), usize>,
+    pub(in crate::noci::selected) keys: HashMap<(String, [Bits; 4]), usize>,
     /// Current-space eigenvectors of the corrected states, ordered as `snoci.roots`.
     pub(in crate::noci::selected) coeffs: Vec<Array1<Complex64>>,
 }

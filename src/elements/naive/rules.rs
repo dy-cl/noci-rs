@@ -8,6 +8,7 @@ use ndarray_linalg::{Determinant, SVD};
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::maths::{adjoint, real2_as};
 
 /// Storage of quantities required to compute matrix elements between determinant pairs in the naive fashion.
@@ -36,11 +37,9 @@ pub(crate) struct Pair<T: NOCIScalar> {
 /// - `Array2<T>`: Occupied-only MO coefficient matrix.
 pub fn occ_coeffs<T: NOCIScalar>(
     c: &Array2<T>,
-    occ: u128,
+    occ: Bits,
 ) -> Array2<T> {
-    let occ_idx: Vec<usize> = (0..c.ncols())
-        .filter(|&i| ((occ >> i) & 1u128) == 1)
-        .collect();
+    let occ_idx: Vec<usize> = (0..c.ncols()).filter(|&i| occ.contains(i)).collect();
     let mut c_occ = Array2::<T>::zeros((c.nrows(), occ_idx.len()));
     for (k, &i) in occ_idx.iter().enumerate() {
         c_occ.column_mut(k).assign(&c.index_axis(Axis(1), i));

@@ -11,6 +11,7 @@ use crate::basis::{excitation_between, excitation_phase_bits};
 use crate::{ExcitationSpin, ExcitationSpinCache, StateScalar};
 
 // Parent/sibling imports.
+use super::bits::Bits;
 use super::parent::ParentDeterminant;
 
 /// Define a typed spin-string handle, a parent-local position implementing `SpinStringIndex`.
@@ -95,7 +96,7 @@ pub(crate) struct SpinStringData {
 #[derive(Clone)]
 pub(crate) struct SpinStringState {
     /// Occupation bitstring in the parent orbital frame.
-    pub(crate) occupation: u128,
+    pub(crate) occupation: Bits,
     /// Excitation, phase and fixed-rank cache relative to the parent spin string.
     pub(crate) data: SpinStringData,
     /// Physical orbital labels indexed by occupied rank.
@@ -112,9 +113,9 @@ pub(crate) struct ParentSpinStrings<I: SpinStringIndex> {
     /// Canonical beta spin strings indexed by typed spin ID.
     pub(crate) beta: Vec<SpinStringState>,
     /// Alpha occupation-to-spin-string-ID map.
-    pub(crate) aids: HashMap<u128, I>,
+    pub(crate) aids: HashMap<Bits, I>,
     /// Beta occupation-to-spin-string-ID map.
-    pub(crate) bids: HashMap<u128, I>,
+    pub(crate) bids: HashMap<Bits, I>,
 }
 
 /// The identity of a determinant: its parent orbital frame and its alpha and beta occupations in
@@ -125,9 +126,9 @@ pub(crate) struct DeterminantState {
     /// Parent orbital frame of the determinant.
     pub(crate) parent: usize,
     /// Alpha occupation bitstring in the parent frame.
-    pub(crate) alpha: u128,
+    pub(crate) alpha: Bits,
     /// Beta occupation bitstring in the parent frame.
-    pub(crate) beta: u128,
+    pub(crate) beta: Bits,
 }
 
 /// A determinant relative to a reference determinant of the same frame, an alpha spin string times
@@ -151,8 +152,8 @@ impl SpinStringData {
     /// - `Self`: Spin string data relative to the reference.
     #[inline(always)]
     pub(crate) fn between(
-        reference: u128,
-        occupation: u128,
+        reference: Bits,
+        occupation: Bits,
     ) -> Self {
         let (holes, parts) = excitation_between(reference, occupation);
         let excitation = ExcitationSpin { holes, parts };
@@ -173,15 +174,15 @@ impl SpinStringState {
     /// # Returns:
     /// - `Self`: Canonical parent-local spin string.
     pub(crate) fn new(
-        parent_occupation: u128,
-        occupation: u128,
+        parent_occupation: Bits,
+        occupation: Bits,
         norb: usize,
     ) -> Self {
         let noccupied = occupation.count_ones() as usize;
         let mut occupied = Vec::with_capacity(noccupied);
         let mut virtuals = Vec::with_capacity(norb - noccupied);
         for orbital in 0..norb {
-            if occupation & (1u128 << orbital) == 0 {
+            if !occupation.contains(orbital) {
                 virtuals.push(orbital as u8);
             } else {
                 occupied.push(orbital as u8);
@@ -322,8 +323,8 @@ impl DeterminantData {
     /// - `Self`: Data of both spin strings relative to the reference.
     #[inline(always)]
     pub(crate) fn between(
-        reference: (u128, u128),
-        occupations: (u128, u128),
+        reference: (Bits, Bits),
+        occupations: (Bits, Bits),
     ) -> Self {
         Self {
             alpha: SpinStringData::between(reference.0, occupations.0),

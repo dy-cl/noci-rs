@@ -7,6 +7,7 @@ use std::sync::Arc;
 use ndarray::{Array1, Array2, Axis, s};
 
 // Crate-root imports.
+use crate::determinant::Bits;
 use crate::maths::adjoint;
 use crate::{SCFState, StateScalar};
 
@@ -57,11 +58,11 @@ impl SpinOccupation {
 /// - `(Vec<usize>, Vec<usize>)`: Occupied and virtual orbital indices.
 fn orbital_occupation(
     nmo: usize,
-    occ: u128,
+    occ: Bits,
 ) -> (Vec<usize>, Vec<usize>) {
-    let occupied = (0..nmo).filter(|&p| ((occ >> p) & 1u128) == 1).collect();
+    let occupied = (0..nmo).filter(|&p| occ.contains(p)).collect();
 
-    let virtuals = (0..nmo).filter(|&p| ((occ >> p) & 1u128) == 0).collect();
+    let virtuals = (0..nmo).filter(|&p| !occ.contains(p)).collect();
 
     (occupied, virtuals)
 }
@@ -87,13 +88,8 @@ pub fn occ_first<T: StateScalar>(st: &SCFState<T>) -> SCFState<T> {
     // `D^\sigma = C_{\text{occ}}^\sigma (C_{\text{occ}}^\sigma)^\dagger`.
     let da = ca_occ.dot(&adjoint(&ca_occ));
 
-    // Encode contiguous occupied columns in the new bitstring; handle the
-    // full 128-bit case without an overflowing shift.
-    let oa = if naocc == 128 {
-        u128::MAX
-    } else {
-        (1u128 << naocc) - 1
-    };
+    // Encode contiguous occupied columns in the new bitstring.
+    let oa = Bits::below(naocc);
 
     let (bocc, bvirt) = orbital_occupation(st.cb.ncols(), st.ob);
     let nbocc = bocc.len();
@@ -105,11 +101,7 @@ pub fn occ_first<T: StateScalar>(st: &SCFState<T>) -> SCFState<T> {
 
     let db = cb_occ.dot(&adjoint(&cb_occ));
 
-    let ob = if nbocc == 128 {
-        u128::MAX
-    } else {
-        (1u128 << nbocc) - 1
-    };
+    let ob = Bits::below(nbocc);
 
     let mut out = st.clone();
 
@@ -164,11 +156,11 @@ pub(crate) fn mo_occupancies(
 /// # Arguments
 /// - `idx`: Occupied MO indices.
 /// # Returns
-/// - `u128`: Occupation bitstring.
-pub(crate) fn occvec_to_bits(idx: &[usize]) -> u128 {
-    let mut bits = 0u128;
+/// - `Bits`: Occupation bitstring.
+pub(crate) fn occvec_to_bits(idx: &[usize]) -> Bits {
+    let mut bits = Bits::EMPTY;
     for &i in idx {
-        bits |= 1u128 << i;
+        bits |= Bits::bit(i);
     }
     bits
 }

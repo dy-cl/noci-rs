@@ -18,6 +18,7 @@ use crate::input::Input;
 use crate::{ExcitationSpin, SCFState, StateScalar};
 
 // Parent/sibling imports.
+use super::bits::Bits;
 use super::state::determinant_index;
 
 determinant_index!(NOCISpinStringIndex, SpinStringIndex);
@@ -52,32 +53,27 @@ pub struct NOCISpace<T: StateScalar> {
 /// # Returns:
 /// - `String`: Spin-resolved excitation label.
 fn excitation_label(
-    alpha_holes: u128,
-    alpha_parts: u128,
-    beta_holes: u128,
-    beta_parts: u128,
+    alpha_holes: Bits,
+    alpha_parts: Bits,
+    beta_holes: Bits,
+    beta_parts: Bits,
 ) -> String {
-    let format_mask = |mut bits: u128| {
-        let mut orbitals = Vec::with_capacity(bits.count_ones() as usize);
-
-        while bits != 0 {
-            let orbital = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            orbitals.push(orbital.to_string());
-        }
-
-        orbitals.join(" ")
+    let format_mask = |bits: Bits| {
+        bits.ones()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
     };
 
     let mut labels = Vec::new();
-    if alpha_holes != 0 {
+    if !alpha_holes.is_empty() {
         labels.push(format!(
             "alpha {} -> {}",
             format_mask(alpha_holes),
             format_mask(alpha_parts),
         ));
     }
-    if beta_holes != 0 {
+    if !beta_holes.is_empty() {
         labels.push(format!(
             "beta {} -> {}",
             format_mask(beta_holes),
@@ -174,17 +170,17 @@ impl<T: StateScalar> NOCISpace<T> {
                                     // then let `push` derive total metadata from its parent.
                                     let oa =
                                         alpha_holes.iter().fold(alpha.occupation, |occ, &hole| {
-                                            occ & !(1u128 << hole)
+                                            occ & !Bits::bit(hole)
                                         });
                                     let oa = alpha_parts
                                         .iter()
-                                        .fold(oa, |occ, &part| occ | (1u128 << part));
+                                        .fold(oa, |occ, &part| occ | Bits::bit(part));
                                     let ob = beta_holes
                                         .iter()
-                                        .fold(beta.occupation, |occ, &hole| occ & !(1u128 << hole));
+                                        .fold(beta.occupation, |occ, &hole| occ & !Bits::bit(hole));
                                     let ob = beta_parts
                                         .iter()
-                                        .fold(ob, |occ, &part| occ | (1u128 << part));
+                                        .fold(ob, |occ, &part| occ | Bits::bit(part));
 
                                     // Undo the source's parent-relative excitation before
                                     // labeling the total parent-to-child excitation.
@@ -277,8 +273,8 @@ impl<T: StateScalar> NOCISpace<T> {
     pub(crate) fn push(
         &mut self,
         parent: usize,
-        oa: u128,
-        ob: u128,
+        oa: Bits,
+        ob: Bits,
         label: String,
     ) -> NOCIIndex {
         let reference = &self.parents[parent];
@@ -424,11 +420,11 @@ impl<T: StateScalar> NOCISpace<T> {
     /// - `self`: Retained NOCI space.
     /// - `index`: Global retained determinant index.
     /// # Returns:
-    /// - `(u128, u128)`: Physical spin occupations.
+    /// - `(Bits, Bits)`: Physical spin occupations.
     pub fn occupations(
         &self,
         index: NOCIIndex,
-    ) -> (u128, u128) {
+    ) -> (Bits, Bits) {
         (self.alpha(index).occupation, self.beta(index).occupation)
     }
 

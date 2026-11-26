@@ -394,34 +394,19 @@ unsafe fn xw_rdmk_same_m0_const<
     // Append bra `(a,i)` pairs in the compact `V_x \times O_x` orbital spaces.
     let nocc = w.nocc;
     let nvirt = w.nmo - nocc;
-    let mut x_holes = ex.0.holes;
-    let mut x_parts = ex.0.parts;
-
-    for i in 0..RX {
-        let col = x_holes.trailing_zeros() as usize;
-        let row = x_parts.trailing_zeros() as usize - nocc;
-
+    for (i, (hole, part)) in ex.0.holes.ones().zip(ex.0.parts.ones()).enumerate() {
         for lane in 0..LANES {
-            cols[lane][K + i] = col;
-            rows[lane][K + i] = row;
+            cols[lane][K + i] = hole;
+            rows[lane][K + i] = part - nocc;
         }
-        x_holes &= x_holes - 1;
-        x_parts &= x_parts - 1;
     }
 
     // Append ket `(j,b)` pairs in `O_w \times V_w`, after all bra excitation labels.
-    let mut w_holes = ex.1.holes;
-    let mut w_parts = ex.1.parts;
-    for i in 0..(L - RX) {
-        let row = nvirt + w_holes.trailing_zeros() as usize;
-        let col = w_parts.trailing_zeros() as usize;
-
+    for (i, (hole, part)) in ex.1.holes.ones().zip(ex.1.parts.ones()).enumerate() {
         for lane in 0..LANES {
-            rows[lane][K + RX + i] = row;
-            cols[lane][K + RX + i] = col;
+            rows[lane][K + RX + i] = nvirt + hole;
+            cols[lane][K + RX + i] = part;
         }
-        w_holes &= w_holes - 1;
-        w_parts &= w_parts - 1;
     }
 
     let zero = V::zero();
@@ -516,34 +501,19 @@ unsafe fn xw_rdmk_same_m_const<
     // Append bra `(a,i)` pairs in the compact `V_x \times O_x` orbital spaces.
     let nocc = w.nocc;
     let nvirt = w.nmo - nocc;
-    let mut x_holes = ex.0.holes;
-    let mut x_parts = ex.0.parts;
-
-    for i in 0..RX {
-        let col = x_holes.trailing_zeros() as usize;
-        let row = x_parts.trailing_zeros() as usize - nocc;
-
+    for (i, (hole, part)) in ex.0.holes.ones().zip(ex.0.parts.ones()).enumerate() {
         for lane in 0..LANES {
-            cols[lane][K + i] = col;
-            rows[lane][K + i] = row;
+            cols[lane][K + i] = hole;
+            rows[lane][K + i] = part - nocc;
         }
-        x_holes &= x_holes - 1;
-        x_parts &= x_parts - 1;
     }
 
     // Append ket `(j,b)` pairs in `O_w \times V_w`, after all bra excitation labels.
-    let mut w_holes = ex.1.holes;
-    let mut w_parts = ex.1.parts;
-    for i in 0..(L - RX) {
-        let row = nvirt + w_holes.trailing_zeros() as usize;
-        let col = w_parts.trailing_zeros() as usize;
-
+    for (i, (hole, part)) in ex.1.holes.ones().zip(ex.1.parts.ones()).enumerate() {
         for lane in 0..LANES {
-            rows[lane][K + RX + i] = row;
-            cols[lane][K + RX + i] = col;
+            rows[lane][K + RX + i] = nvirt + hole;
+            cols[lane][K + RX + i] = part;
         }
-        w_holes &= w_holes - 1;
-        w_parts &= w_parts - 1;
     }
 
     // Build both packed endpoints, with the creators-first external block entirely in `X`:
