@@ -54,25 +54,10 @@ impl Default for Spin {
 }
 
 pub struct SCFExcitation {
-    /// Spin channel to excite.
-    pub spin: Spin,
-    /// Occupied orbital offset.
-    pub occ: i32,
-    /// Virtual orbital offset.
-    pub vir: i32,
-}
-
-impl Default for SCFExcitation {
-    /// Return default SCF excitation.
-    /// # Returns:
-    /// - `Self`: Excitation with no excitation.
-    fn default() -> Self {
-        Self {
-            spin: Spin::default(),
-            occ: 0,
-            vir: 0,
-        }
-    }
+    /// Alpha hole and particle offsets `(occ, vir)`, or `None` to leave alpha unexcited.
+    pub alpha: Option<(i32, i32)>,
+    /// Beta hole and particle offsets `(occ, vir)`, or `None` to leave beta unexcited.
+    pub beta: Option<(i32, i32)>,
 }
 
 pub struct SpinBias {

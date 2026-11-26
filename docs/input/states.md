@@ -70,10 +70,22 @@ both spins by $(1 + \text{pol})$ and `-1` by $(1 - \text{pol})$. A `0` leaves th
 | `spin` | string | `"both"` | Spin channel to excite: `"alpha"`, `"beta"` or `"both"`. |
 | `occ` | integer | `0` | Hole, as an offset from the number of occupied orbitals: `-1` is the HOMO, `-2` the orbital below. |
 | `vir` | integer | `0` | Particle, as an offset from the number of occupied orbitals: `0` is the LUMO. |
+| `alpha` | table | none | Separate `{ occ, vir }` excitation of the $\alpha$ channel. |
+| `beta` | table | none | Separate `{ occ, vir }` excitation of the $\beta$ channel. |
 
 For example, `excit = { spin = "both", occ = -1, vir = 0 }` targets the doubly excited
 HOMO → LUMO solution. The default `occ = 0` points at the LUMO, which is not occupied, so always
 give `occ`.
+
+To excite the two spins differently, give `alpha` and `beta` tables instead of `spin`, `occ` and
+`vir`; a channel without a table stays in its ground occupation. For example,
+
+```lua
+excit = { alpha = { occ = -1, vir = 0 }, beta = { occ = -2, vir = 0 } }
+```
+
+seeds the open-shell double excitation HOMO$_\alpha$, (HOMO−1)$_\beta$ → LUMO. Only channels with
+an excitation use MOM.
 
 ## `states.metadynamics`
 

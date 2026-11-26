@@ -9,7 +9,7 @@ use std::sync::Arc;
 use ndarray::{Array1, Array2, Axis};
 
 // Crate-root imports.
-use crate::input::{Input, SCFExcitation, Spin, StateType};
+use crate::input::{Input, SCFExcitation, StateType};
 use crate::maths::general_evp_x;
 use crate::utils::print_array2_indexed;
 use crate::write::write_orbitals;
@@ -24,19 +24,6 @@ use super::occupation::{mo_occupancies, occvec_to_bits};
 use super::print::{print_header, print_iteration, print_mos};
 use super::select::{aufbau_indices, mom_select};
 
-/// Convert spin enum to printable label.
-/// # Arguments
-/// - `spin`: Spin sector from input.
-/// # Returns
-/// - `&str`: Printable spin label.
-pub(in crate::scf) fn spin_label(spin: &Spin) -> &str {
-    match spin {
-        Spin::Alpha => "alpha",
-        Spin::Beta => "beta",
-        Spin::Both => "both",
-    }
-}
-
 /// Determine which spin channels should use MOM occupation selection.
 /// # Arguments
 /// - `use_mom`: Whether to use MOM for non-excited SCF occupation tracking.
@@ -48,11 +35,7 @@ fn mom_flags(
     scfexcitation: Option<&SCFExcitation>,
 ) -> (bool, bool) {
     if let Some(ex) = scfexcitation {
-        match ex.spin {
-            Spin::Alpha => (true, false),
-            Spin::Beta => (false, true),
-            Spin::Both => (true, true),
-        }
+        (ex.alpha.is_some(), ex.beta.is_some())
     } else if use_mom {
         (true, true)
     } else {
@@ -60,19 +43,19 @@ fn mom_flags(
     }
 }
 
-/// Build the initial excited-state occupation used to seed MOM.
+/// Build the initial excited-state occupation of one spin channel used to seed MOM.
 /// # Arguments
 /// - `nocc`: Number of occupied MOs.
-/// - `ex`: Excited SCF occupation request.
+/// - `offsets`: Hole and particle offsets `(occ, vir)` from the Fermi level.
 /// # Returns
 /// - `Vec<usize>`: Occupied MO indices.
 fn seed_excited_occupation(
     nocc: usize,
-    ex: &SCFExcitation,
+    offsets: (i32, i32),
 ) -> Vec<usize> {
     let mut idx: Vec<usize> = (0..nocc).collect();
-    let occ_abs = (nocc as i32 + ex.occ) as usize;
-    let vir_abs = nocc + ex.vir as usize;
+    let occ_abs = (nocc as i32 + offsets.0) as usize;
+    let vir_abs = nocc + offsets.1 as usize;
     idx.retain(|&k| k != occ_abs);
     idx.push(vir_abs);
     idx
@@ -86,7 +69,7 @@ fn seed_excited_occupation(
 /// - `nocc`: Number of occupied MOs.
 /// - `use_mom`: Whether to use MOM occupation selection.
 /// - `c_occ_old`: Previous iteration occupied MO coefficient matrix.
-/// - `scfexcitation`: Optional excited SCF occupation request.
+/// - `excitation`: Optional hole and particle offsets `(occ, vir)` of this spin channel.
 /// # Returns
 /// - `(Vec<usize>, Array2<f64>)`: Occupied MO indices and occupied MO coefficients.
 fn occupy(
@@ -96,16 +79,16 @@ fn occupy(
     nocc: usize,
     use_mom: bool,
     c_occ_old: Option<&Array2<f64>>,
-    scfexcitation: Option<&SCFExcitation>,
+    excitation: Option<(i32, i32)>,
 ) -> (Vec<usize>, Array2<f64>) {
     let idx = if use_mom {
         match c_occ_old {
             // If some orbitals already exist use MOM on them.
             Some(c_occ_old) => mom_select(c_occ_old, c, s, nocc),
             // If they do not exist we are on first MOM iteration.
-            None => match scfexcitation {
+            None => match excitation {
                 // If there's an excitation do excited state MOM.
-                Some(ex) => seed_excited_occupation(nocc, ex),
+                Some(offsets) => seed_excited_occupation(nocc, offsets),
                 // Otherwise take Aufbau ordering for first MOM iteration.
                 None => aufbau_indices(e, nocc),
             },
@@ -189,8 +172,10 @@ pub(crate) fn roothaan_step(
     let ((ea, ca), (eb, cb)) =
         rayon::join(|| general_evp_x(f.0, &ao.x), || general_evp_x(f.1, &ao.x));
 
-    let (idx_a, ca_occ) = occupy(&ea, &ca, &ao.s, na, mom.0, c_occ_old.0, scfexcitation);
-    let (idx_b, cb_occ) = occupy(&eb, &cb, &ao.s, nb, mom.1, c_occ_old.1, scfexcitation);
+    let alpha = scfexcitation.and_then(|ex| ex.alpha);
+    let beta = scfexcitation.and_then(|ex| ex.beta);
+    let (idx_a, ca_occ) = occupy(&ea, &ca, &ao.s, na, mom.0, c_occ_old.0, alpha);
+    let (idx_b, cb_occ) = occupy(&eb, &cb, &ao.s, nb, mom.1, c_occ_old.1, beta);
 
     // Rebuild physical densities, Fock matrices, and the unbiased SCF energy.
     let (da, db) = rayon::join(

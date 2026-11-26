@@ -7,9 +7,6 @@ use num_complex::Complex64;
 // Crate-root imports.
 use crate::input::{Input, SCFExcitation};
 
-// Parent/sibling imports.
-use super::cycle::spin_label;
-
 /// Print SCF header information.
 /// # Arguments
 /// - `input`: Contains user specified input data.
@@ -25,10 +22,14 @@ pub(crate) fn print_header(
     }
     match scfexcitation {
         Some(ex) => {
-            let sp = spin_label(&ex.spin);
+            let channel = |offsets: Option<(i32, i32)>| match offsets {
+                Some((occ, vir)) => format!("from occupied: {occ}, to virtual: {vir}"),
+                None => "none".to_string(),
+            };
             println!(
-                "Requested excitation: [spin: {}, from occupied: {}, to virtual: {}]",
-                sp, ex.occ, ex.vir
+                "Requested excitation: [alpha: {}; beta: {}]",
+                channel(ex.alpha),
+                channel(ex.beta)
             );
         }
         None => println!("No excitation requested."),
