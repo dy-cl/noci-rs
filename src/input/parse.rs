@@ -302,6 +302,7 @@ fn read_scf(scf_tbl: Option<Table>) -> SCFInfo {
             fds_sdf_tol: scf_tbl.get("fds_sdf_tol").unwrap_or(defaults.fds_sdf_tol),
             d_tol: scf_tbl.get("d_tol").unwrap_or(defaults.d_tol),
             diis,
+            imom: scf_tbl.get("imom").unwrap_or(defaults.imom),
         }
     } else {
         SCFInfo::default()

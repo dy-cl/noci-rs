@@ -25,6 +25,9 @@ pub struct SCFInfo {
     pub d_tol: f64,
     /// DIIS acceleration options.
     pub diis: DiisOptions,
+    /// Whether MOM compares against the initial occupied orbitals (IMOM) rather than the previous
+    /// iteration's.
+    pub imom: bool,
 }
 
 impl Default for SCFInfo {
@@ -38,6 +41,7 @@ impl Default for SCFInfo {
             fds_sdf_tol: 1e-8,
             d_tol: 1e-4,
             diis: DiisOptions::default(),
+            imom: false,
         }
     }
 }
