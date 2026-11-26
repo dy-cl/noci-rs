@@ -41,7 +41,7 @@ states = {
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `label` | string | `""` | Name of the state. It identifies the state at the next geometry, for `partner` lookups and in orbital file names. Recipes with `excit` are seeded from the previous geometry's state labelled `"RHF"`. |
+| `label` | string | `""` | Name of the state. It identifies the state at the next geometry, for `partner` lookups and in orbital file names. Recipes with `excit` are seeded from the previous geometry's state labelled `"RHF"`, or at the first geometry from the `"RHF"` state generated before them, so `occ` and `vir` index its canonical orbitals. |
 | `noci` | boolean | `false` when omitted | Whether the state enters the reference NOCI basis, and is optimised by ResHF. **Set it explicitly**: see [Parsing rules](index.md#parsing-rules). |
 | `mom` | boolean | `false` | Use MOM occupations for both spins in a recipe without `excit`. Recipes with `excit` always use MOM in the excited spin channel. |
 | `spin_bias` | table | none | Spin polarisation of the initial guess, see [bias tables](#bias-tables). Produces spin-broken UHF states. |

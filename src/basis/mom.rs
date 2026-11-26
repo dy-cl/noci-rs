@@ -43,6 +43,7 @@ fn previous_mom_seed<'a>(
 /// - `recipe`: State recipe to run.
 /// - `prev`: Previous real states, used only to decide whether continuation is available.
 /// - `prev_map`: Previous real SCF states keyed by label.
+/// - `rhf`: RHF already converged at this geometry, if any.
 /// - `i`: Recipe index used as the parent/state index.
 /// # Returns
 /// - `SCFState`: Converged real SCF state for this recipe.
@@ -52,6 +53,7 @@ pub(crate) fn run_mom_scf_state(
     recipe: &StateRecipe,
     prev: Option<&[SCFState]>,
     prev_map: &HashMap<&str, &SCFState>,
+    rhf: Option<&SCFState>,
     i: usize,
 ) -> SCFState {
     if input.write.verbose >= 1 {
@@ -63,11 +65,16 @@ pub(crate) fn run_mom_scf_state(
 
     // If there are previous states, use them. Ground states are seeded from their previous
     // geometry equivalent, whilst excited states are seeded from RHF at the previous geometry.
-    // Any excited states that may or may not be generated here are distinct from those formed
-    // in the NOCI-QMC basis. Those formed here form the reference NOCI basis and are relaxed.
+    // Without a previous geometry, excited states are seeded from the RHF at this geometry so
+    // that the requested excitation indexes the converged RHF orbitals rather than those of
+    // the SAD guess. Any excited states that may or may not be generated here are distinct
+    // from those formed in the NOCI-QMC basis. Those formed here form the reference NOCI basis
+    // and are relaxed.
     let scfexcitation = recipe.scfexcitation.as_ref();
     let seed = if prev.is_some() {
         previous_mom_seed(recipe, prev_map)
+    } else if scfexcitation.is_some() {
+        rhf
     } else {
         None
     };
@@ -106,7 +113,8 @@ pub(crate) fn generate_states_mom(
             continue;
         }
 
-        let state = run_mom_scf_state(ao, input, recipe, prev, prev_map, i);
+        let rhf = out.iter().find(|s| s.label == "RHF");
+        let state = run_mom_scf_state(ao, input, recipe, prev, prev_map, rhf, i);
         out.push(state);
     }
     mark_duplicate_noci_states(&mut out, &ao.s, input.scf.d_tol, input.write.verbose);
