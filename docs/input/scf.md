@@ -25,6 +25,7 @@ scf = {
 | `fds_sdf_tol` | number | `1e-8` | Threshold on the commutator norm $\lVert\mathbf F^\omega\mathbf D^\omega\mathbf S - \mathbf S\mathbf D^\omega\mathbf F^\omega\rVert$, summed over spins in the orthonormalised basis ([SCF states](../methods/scf.md#conventional-scf)). An SCF has converged when both this and `e_tol` are satisfied. |
 | `d_tol` | number | `1e-4` | Density distance below which two solutions are duplicates. Duplicates are excluded from the NOCI basis, and collapsed solutions are rejected in metadynamics. |
 | `diis.space` | integer | `8` | Maximum DIIS subspace size. DIIS is always used. |
+| `imom` | boolean | `false` | Select MOM occupations by overlap with the occupied orbitals of the first iteration (initial MOM) instead of the previous one. Keeps excited states from drifting back to the ground state when the hole and particle orbitals share their symmetry with lower occupied orbitals. |
 
 ResHF uses `e_tol`, `fds_sdf_tol`, `max_cycle` and `diis.space` for its own convergence.
 

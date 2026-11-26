@@ -365,8 +365,11 @@ pub fn scf_cycle(
             (ca_occ_old.as_ref(), cb_occ_old.as_ref()),
             scfexcitation,
         );
-        ca_occ_old = Some(step.c_occ.0.clone());
-        cb_occ_old = Some(step.c_occ.1.clone());
+        // IMOM keeps the first iteration's occupied orbitals as the overlap reference.
+        if !input.scf.imom || ca_occ_old.is_none() {
+            ca_occ_old = Some(step.c_occ.0.clone());
+            cb_occ_old = Some(step.c_occ.1.clone());
+        }
 
         // Evaluate energy, commutator, and orbital-gradient convergence diagnostics.
         let err = if use_diis {
