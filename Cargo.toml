@@ -49,6 +49,8 @@ members = [
 [features]
 default = []
 timings = []
+# Orbital bitstrings of 256 rather than 128 orbitals.
+wide = []
 gnocc = ["dep:wick-build"]
 
 [profile.release]
