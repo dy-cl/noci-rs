@@ -10,9 +10,7 @@ use hdf5::types::VarLenUnicode;
 use ndarray::{Array1, Array2};
 
 // Crate-root imports.
-use crate::input::{
-    ExcitationGen, InitialShift, Input, MatrixFormat, Spin, StateType, WicksStorage,
-};
+use crate::input::{ExcitationGen, InitialShift, Input, MatrixFormat, StateType, WicksStorage};
 use crate::{AoData, NOCIScalar};
 
 const CAMEL: &str = r#"
@@ -132,14 +130,12 @@ pub fn print_input(input: &Input) {
                 match &r.scfexcitation {
                     Some(ex) => {
                         println!("  EXCIT:");
-                        let spin = match ex.spin {
-                            Spin::Alpha => "alpha",
-                            Spin::Beta => "beta",
-                            Spin::Both => "both",
-                        };
-                        println!("    SPIN: {}", spin);
-                        println!("    OCC: {}", ex.occ);
-                        println!("    VIR: {}", ex.vir);
+                        for (name, offsets) in [("ALPHA", ex.alpha), ("BETA", ex.beta)] {
+                            match offsets {
+                                Some((occ, vir)) => println!("    {name}: OCC {occ}, VIR {vir}"),
+                                None => println!("    {name}: NONE"),
+                            }
+                        }
                     }
                     None => println!("  EXCIT: NONE"),
                 }

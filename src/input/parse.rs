@@ -170,22 +170,38 @@ fn read_state_recipe(t: Table) -> StateRecipe {
             SpatialBias { pattern, pol }
         });
 
+    // An excitation is either separate `alpha` and `beta` tables, each `{occ, vir}`, or one
+    // `{occ, vir}` applied to the channels selected by `spin`.
     let scfexcitation = t
         .get::<_, Option<Table>>("excit")
         .unwrap_or(None)
         .map(|ex| {
-            let defaults = SCFExcitation::default();
+            let offsets = |tbl: &Table| (tbl.get("occ").unwrap_or(0), tbl.get("vir").unwrap_or(0));
+            let alpha: Option<Table> = ex.get("alpha").unwrap_or(None);
+            let beta: Option<Table> = ex.get("beta").unwrap_or(None);
+            if alpha.is_some() || beta.is_some() {
+                return SCFExcitation {
+                    alpha: alpha.as_ref().map(offsets),
+                    beta: beta.as_ref().map(offsets),
+                };
+            }
+
             let s: String = ex
                 .get("spin")
-                .unwrap_or_else(|_| defaults.spin.as_str().to_string());
+                .unwrap_or_else(|_| Spin::default().as_str().to_string());
             let spin: Spin = s.parse().unwrap_or_else(|msg| {
                 eprintln!("{msg}");
                 std::process::exit(1);
             });
+            let pair = offsets(&ex);
+            let (alpha, beta) = match spin {
+                Spin::Alpha => (true, false),
+                Spin::Beta => (false, true),
+                Spin::Both => (true, true),
+            };
             SCFExcitation {
-                spin,
-                occ: ex.get("occ").unwrap_or(defaults.occ),
-                vir: ex.get("vir").unwrap_or(defaults.vir),
+                alpha: alpha.then_some(pair),
+                beta: beta.then_some(pair),
             }
         });
 
