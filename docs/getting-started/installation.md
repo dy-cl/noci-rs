@@ -55,6 +55,18 @@ cache width and monomorphisation, not the largest excitation rank that can be ev
 AVX-512 pack four and eight determinant pairs per lane respectively; neither limits the excitation
 rank.
 
+### More than 128 orbitals
+
+Occupations are stored as bitstrings of up to 128 orbitals per spin. For a larger basis, build
+with
+
+```bash
+cargo build --release --features wide
+```
+
+which allows 256. A calculation whose basis exceeds the limit of the build stops at startup with
+an error.
+
 ### Timing counters
 
 ```bash

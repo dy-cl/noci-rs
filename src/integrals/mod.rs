@@ -15,6 +15,7 @@ use ndarray::{Array1, Array2, Array4, Axis, s};
 
 // Crate-root imports.
 use crate::AoData;
+use crate::determinant::Bits;
 use crate::maths::{general_evp_x, loewdin_x};
 
 /// Evaluate a two-index integral in row-major AO order.
@@ -230,6 +231,16 @@ pub fn generate_ao_data(
         "#
     ));
     let cint = &mol.cint;
+
+    // Occupations are stored as `Bits`, so every orbital needs a bit: stop rather than overflow.
+    if cint.nao() > Bits::CAPACITY {
+        eprintln!(
+            "{} orbitals exceed the limit of {} in this build; the `wide` feature allows 256",
+            cint.nao(),
+            Bits::CAPACITY
+        );
+        std::process::exit(1);
+    }
 
     // Build the AO metric and core Hamiltonian `H_{\text{core}} = T + V_{\text{nuc}}`, then
     // orthogonalise the metric for subsequent generalised eigenproblems.
