@@ -41,9 +41,12 @@ impl Bits {
     /// - `Bits`: Bitstring holding only `p`.
     #[inline(always)]
     pub fn bit(p: impl Into<usize>) -> Self {
+        // Select the word rather than index it, so the bitstring stays in registers.
         let p = p.into();
         let mut words = [0; WORDS];
-        words[p >> 6] = 1 << (p & 63);
+        for (k, word) in words.iter_mut().enumerate() {
+            *word = if p >> 6 == k { 1 << (p & 63) } else { 0 };
+        }
         Bits(words)
     }
 
@@ -78,7 +81,7 @@ impl Bits {
         self,
         p: usize,
     ) -> bool {
-        (self.0[p >> 6] >> (p & 63)) & 1 == 1
+        (self & Bits::bit(p)) != Bits::EMPTY
     }
 
     /// Number of orbitals in the set.
@@ -223,7 +226,23 @@ impl Ord for Bits {
         &self,
         other: &Self,
     ) -> Ordering {
-        self.0.iter().rev().cmp(other.0.iter().rev())
+        // Subtract with borrow from the lowest word up, as for a `u128`, so the comparison has no
+        // branches: a final borrow means `self < other`, and any non-zero difference `self > other`.
+        let mut borrow = false;
+        let mut differ = 0;
+        for (&a, &b) in self.0.iter().zip(&other.0) {
+            let (d, b1) = a.overflowing_sub(b);
+            let (d, b2) = d.overflowing_sub(u64::from(borrow));
+            borrow = b1 | b2;
+            differ |= d;
+        }
+        if borrow {
+            Ordering::Less
+        } else if differ != 0 {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
     }
 }
 
