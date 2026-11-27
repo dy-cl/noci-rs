@@ -14,7 +14,7 @@ use crate::determinant::Bits;
 use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::elements::nonorthogonalwicks::WicksShared;
 use crate::elements::{FockData, NOCIData};
-use crate::elements::{build_fock_mo_cache, noci_density, noci_spin_square, update_wicks_fock};
+use crate::elements::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::input::{SNOCIPreconditioner, SNOCIStorage, StateType};
 use crate::maths::general_evp;
 use crate::maths::gmres::{GMRESPrint, gmres};
@@ -220,8 +220,12 @@ where
     let (slot, root, e_noci, coeffs) = target;
     let (world, it, previous) = run;
 
-    // `\langle S^2\rangle` identifies the spin of the corrected state in the printed results.
-    let s2 = noci_spin_square(post.ao, space, selected_space, coeffs, post.tol);
+    // `\langle S^2\rangle = c^\dagger \langle i|S^2|j\rangle c / c^\dagger S c` identifies the spin of the
+    // corrected state in the printed results.
+    let coeffs_conj = coeffs.mapv(|x| x.conj());
+    let ss_c = coeffs_conj.dot(&blocks.ss_ii.dot(coeffs));
+    let s_c = coeffs_conj.dot(&blocks.s_ii.dot(coeffs));
+    let s2 = scalar_real(ss_c) / scalar_real(s_c);
     if world.rank() == 0 {
         println!();
         println!("  NOCI state:         {}", root);

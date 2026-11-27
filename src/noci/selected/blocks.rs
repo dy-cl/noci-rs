@@ -1,7 +1,7 @@
 // noci/selected/blocks.rs
-//! Hamiltonian and overlap blocks of the selected space and its candidate pool.
+//! Hamiltonian, overlap and spin-squared blocks of the selected space and its candidate pool.
 //!
-//! `H` and `S` do not depend on the corrected NOCI state, so the selected-selected and
+//! `H`, `S` and `S^2` do not depend on the corrected NOCI state, so the selected-selected and
 //! candidate-selected blocks are built once and extended as determinants are promoted, rather than
 //! rebuilt every SNOCI iteration. A promoted candidate's row of `H_{ai}` and `S_{ai}` is already its
 //! row against the earlier selected determinants, so only the blocks involving the newly promoted
@@ -11,23 +11,25 @@
 use std::collections::{HashMap, HashSet};
 
 // External crate imports.
-use ndarray::{Array2, Axis, concatenate};
+use ndarray::{Array2, Axis, concatenate, s};
 
 // Crate-root imports.
 use crate::NOCIScalar;
 use crate::determinant::NOCIIndex;
-use crate::elements::NOCIData;
+use crate::elements::{NOCIData, build_noci_spin_square};
 use crate::maths::adjoint;
 use crate::noci::build_noci_hs;
 
-/// Hamiltonian and overlap blocks between the selected determinants, and between the candidate pool
-/// and the selected determinants. Rows of `h_ai` and `s_ai` follow the candidate pool order and
-/// columns follow the selected-space order.
+/// Hamiltonian, overlap and spin-squared blocks between the selected determinants, and Hamiltonian
+/// and overlap blocks between the candidate pool and the selected determinants. Rows of `h_ai` and
+/// `s_ai` follow the candidate pool order and columns follow the selected-space order.
 pub(in crate::noci::selected) struct SNOCIBlocks<T: NOCIScalar> {
     /// Selected-selected Hamiltonian `H_{ij}`.
     pub(in crate::noci::selected) h_ii: Array2<T>,
     /// Selected-selected overlap `S_{ij}`.
     pub(in crate::noci::selected) s_ii: Array2<T>,
+    /// Selected-selected spin-squared matrix `\langle i|S^2|j\rangle`.
+    pub(in crate::noci::selected) ss_ii: Array2<T>,
     /// Candidate-selected Hamiltonian `H_{ai}`.
     pub(in crate::noci::selected) h_ai: Array2<T>,
     /// Candidate-selected overlap `S_{ai}`.
@@ -35,7 +37,8 @@ pub(in crate::noci::selected) struct SNOCIBlocks<T: NOCIScalar> {
 }
 
 impl<T: NOCIScalar> SNOCIBlocks<T> {
-    /// Build `H_{ij}`, `S_{ij}`, `H_{ai}` and `S_{ai}` for a selected space and its candidate pool.
+    /// Build `H_{ij}`, `S_{ij}`, `\langle i|S^2|j\rangle`, `H_{ai}` and `S_{ai}` for a selected space
+    /// and its candidate pool.
     /// # Arguments:
     /// - `data`: Shared NOCI matrix-element data over the determinant space.
     /// - `selected`: Selected determinants, the column order of every block.
@@ -48,11 +51,13 @@ impl<T: NOCIScalar> SNOCIBlocks<T> {
         candidates: &[NOCIIndex],
     ) -> Self {
         let (h_ii, s_ii, _) = build_noci_hs(data, selected, selected, true);
+        let ss_ii = build_noci_spin_square(data.ao, data.space, selected, selected, data.tol);
         let (h_ai, s_ai, _) = build_noci_hs(data, candidates, selected, false);
 
         Self {
             h_ii,
             s_ii,
+            ss_ii,
             h_ai,
             s_ai,
         }
@@ -63,7 +68,8 @@ impl<T: NOCIScalar> SNOCIBlocks<T> {
     /// newly generated ones, so with `P` the promoted rows of the earlier `H_{ai}`,
     /// `H_{ij} \leftarrow [[H_{ij}, P^\dagger], [P, H_{pp}]]`, and
     /// `H_{ai} \leftarrow [[H_{ki}, H_{kp}], [H_{ni}]]` for kept candidates `k`, promoted
-    /// determinants `p` and new candidates `n`, and likewise for `S`.
+    /// determinants `p` and new candidates `n`, and likewise for `S`. The selected-selected `S^2`
+    /// block is bordered by the promoted rows evaluated against every selected determinant.
     /// # Arguments:
     /// - `data`: Shared NOCI matrix-element data over the extended determinant space.
     /// - `earlier`: Candidate pool before the update, the current row order of `h_ai` and `s_ai`.
@@ -111,6 +117,13 @@ impl<T: NOCIScalar> SNOCIBlocks<T> {
             &self.s_ai.select(Axis(0), &promoted_rows),
             &s_pp,
         );
+
+        // `S^2` is kept only between selected determinants, so the promoted rows are new.
+        let nold = selected.len() - promoted.len();
+        let ss_p = build_noci_spin_square(data.ao, data.space, promoted, selected, data.tol);
+        let ss_pi = ss_p.slice(s![.., ..nold]).to_owned();
+        let ss_pp = ss_p.slice(s![.., nold..]).to_owned();
+        self.ss_ii = border(&self.ss_ii, &ss_pi, &ss_pp);
 
         // Kept candidates gain the promoted columns, and new candidates need every column.
         let (h_kp, s_kp, _) = build_noci_hs(data, kept, promoted, false);

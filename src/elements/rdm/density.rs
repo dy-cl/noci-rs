@@ -78,74 +78,63 @@ pub(crate) fn noci_density<T: NOCIScalar>(
         )
 }
 
-/// Calculate the spin-squared expectation value `\langle S^2\rangle` of a multireference NOCI
-/// state `|\Psi\rangle = \sum_i c_i |i\rangle`.
+/// Build the spin-squared matrix `\langle l|S^2|r\rangle` between two determinant lists, from which
+/// a NOCI state `|\Psi\rangle = \sum_i c_i |i\rangle` has
+/// `\langle S^2\rangle = \sum_{ij} c_i^* c_j \langle i|S^2|j\rangle / \sum_{ij} c_i^* c_j S_{ij}`.
 /// Each determinant pair contributes
-/// `\langle i|S^2|j\rangle = S_z(S_z + 1) S^\alpha S^\beta + S^\alpha \mathrm{Tr}(\rho^\beta S)
+/// `\langle l|S^2|r\rangle = S_z(S_z + 1) S^\alpha S^\beta + S^\alpha \mathrm{Tr}(\rho^\beta S)
 /// - \mathrm{Tr}(\rho^\alpha S \rho^\beta S)`, where `\rho^\sigma = S^\sigma \gamma^\sigma` is the
 /// overlap-weighted transition density, so pairs with a zero spin overlap stay finite. For
-/// `i = j` this reduces to the single-determinant formula used for SCF states.
+/// `l = r` this reduces to the single-determinant formula used for SCF states.
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
 /// - `space`: Determinant space whose transition densities are combined.
-/// - `states`: Determinant basis of the NOCI wavefunction.
-/// - `c`: Coefficients of the NOCI wavefunction.
+/// - `left`: Bra determinants, the rows.
+/// - `right`: Ket determinants, the columns.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
-/// - `f64`: `\langle\Psi|S^2|\Psi\rangle / \langle\Psi|\Psi\rangle`.
-pub(crate) fn noci_spin_square<T: NOCIScalar>(
+/// - `Array2<T>`: Spin-squared matrix `\langle l|S^2|r\rangle`.
+pub(crate) fn build_noci_spin_square<T: NOCIScalar>(
     ao: &AoData,
     space: &crate::determinant::NOCISpace<T>,
-    states: &[crate::determinant::NOCIIndex],
-    c: &Array1<T>,
+    left: &[crate::determinant::NOCIIndex],
+    right: &[crate::determinant::NOCIIndex],
     tol: f64,
-) -> f64 {
+) -> Array2<T> {
     let nao = ao.h.nrows();
     let s = ao.s.mapv(<T as From<f64>>::from);
 
-    // Accumulate `\sum_{ij} c_i^* c_j \langle i|S^2|j\rangle` and the norm `\sum_{ij} c_i^* c_j S_{ij}`.
-    let (s2, norm) = (0..states.len())
-        .into_par_iter()
-        .map(|i| {
-            let mut s2 = <T as From<f64>>::from(0.0);
-            let mut norm = <T as From<f64>>::from(0.0);
-
-            let ldet = states[i];
+    // Each row `l` of `\langle l|S^2|r\rangle` is evaluated independently.
+    let rows: Vec<Vec<T>> = left
+        .par_iter()
+        .map(|&ldet| {
             let lparent = space.parent_determinant(ldet);
             let (loa, lob) = space.occupations(ldet);
             let l_ca_occ = occ_coeffs(&lparent.ca, loa);
             let l_cb_occ = occ_coeffs(&lparent.cb, lob);
             let sz = 0.5 * (loa.count_ones() as f64 - lob.count_ones() as f64);
 
-            for j in 0..states.len() {
-                let gdet = states[j];
-                let gparent = space.parent_determinant(gdet);
-                let (goa, gob) = space.occupations(gdet);
+            right
+                .iter()
+                .map(|&gdet| {
+                    let gparent = space.parent_determinant(gdet);
+                    let (goa, gob) = space.occupations(gdet);
 
-                let pa = build_s_pair(&l_ca_occ, &occ_coeffs(&gparent.ca, goa), &ao.s, tol);
-                let pb = build_s_pair(&l_cb_occ, &occ_coeffs(&gparent.cb, gob), &ao.s, tol);
+                    let pa = build_s_pair(&l_ca_occ, &occ_coeffs(&gparent.ca, goa), &ao.s, tol);
+                    let pb = build_s_pair(&l_cb_occ, &occ_coeffs(&gparent.cb, gob), &ao.s, tol);
 
-                let rhoa = pair_density(&pa, nao);
-                let rhob = pair_density(&pb, nao);
+                    let rhoa = pair_density(&pa, nao);
+                    let rhob = pair_density(&pb, nao);
 
-                // `S_z(S_z + 1) S^\alpha S^\beta + S^\alpha \mathrm{Tr}(\rho^\beta S)
-                //  - \mathrm{Tr}(\rho^\alpha S \rho^\beta S)`.
-                let nb = rhob.dot(&s).diag().sum();
-                let cross = rhoa.dot(&s).dot(&rhob).dot(&s).diag().sum();
-                let pair_s2 =
-                    <T as From<f64>>::from(sz * (sz + 1.0)) * pa.s * pb.s + pa.s * nb - cross;
-
-                let cij = c[i].conj() * c[j];
-                s2 += cij * pair_s2;
-                norm += cij * pa.s * pb.s;
-            }
-
-            (s2, norm)
+                    // `S_z(S_z + 1) S^\alpha S^\beta + S^\alpha \mathrm{Tr}(\rho^\beta S)
+                    //  - \mathrm{Tr}(\rho^\alpha S \rho^\beta S)`.
+                    let nb = rhob.dot(&s).diag().sum();
+                    let cross = rhoa.dot(&s).dot(&rhob).dot(&s).diag().sum();
+                    <T as From<f64>>::from(sz * (sz + 1.0)) * pa.s * pb.s + pa.s * nb - cross
+                })
+                .collect()
         })
-        .reduce(
-            || (<T as From<f64>>::from(0.0), <T as From<f64>>::from(0.0)),
-            |(s2_a, norm_a), (s2_b, norm_b)| (s2_a + s2_b, norm_a + norm_b),
-        );
+        .collect();
 
-    (s2 / norm).re()
+    Array2::from_shape_fn((left.len(), right.len()), |(l, r)| rows[l][r])
 }

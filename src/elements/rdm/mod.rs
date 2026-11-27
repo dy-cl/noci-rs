@@ -23,7 +23,7 @@ pub(crate) use rdm3::RDM3;
 pub(crate) use rdm4::RDM4;
 
 // Crate-visible function re-exports.
-pub(crate) use density::{noci_density, noci_spin_square};
+pub(crate) use density::{build_noci_spin_square, noci_density};
 #[cfg(feature = "gnocc")]
 pub(crate) use rdm1::rdm1;
 #[cfg(feature = "gnocc")]
