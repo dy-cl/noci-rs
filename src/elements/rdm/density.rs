@@ -27,6 +27,16 @@ pub(crate) fn noci_density<T: NOCIScalar>(
     let nao = ao.h.nrows();
     let nst = states.len();
 
+    // Occupied AO coefficients of every determinant, built once rather than for every pair.
+    let occ: Vec<(Array2<T>, Array2<T>)> = states
+        .par_iter()
+        .map(|&det| {
+            let parent = space.parent_determinant(det);
+            let (oa, ob) = space.occupations(det);
+            (occ_coeffs(&parent.ca, oa), occ_coeffs(&parent.cb, ob))
+        })
+        .collect();
+
     // `D^\sigma = \sum_{ij} c_i^* c_j \langle i|a_\sigma^\dagger a_\sigma|j\rangle`.
     // Partition bra states across threads and reduce their local AO densities.
     (0..nst)
@@ -34,23 +44,12 @@ pub(crate) fn noci_density<T: NOCIScalar>(
         .map(|i| {
             let mut da_loc = Array2::<T>::zeros((nao, nao));
             let mut db_loc = Array2::<T>::zeros((nao, nao));
-
-            let ldet = states[i];
-            let lparent = space.parent_determinant(ldet);
-            let (loa, lob) = space.occupations(ldet);
-            let l_ca_occ = occ_coeffs(&lparent.ca, loa);
-            let l_cb_occ = occ_coeffs(&lparent.cb, lob);
+            let (l_ca_occ, l_cb_occ) = &occ[i];
 
             for j in 0..nst {
-                let gdet = states[j];
-                let gparent = space.parent_determinant(gdet);
-                let (goa, gob) = space.occupations(gdet);
-
-                let g_ca_occ = occ_coeffs(&gparent.ca, goa);
-                let g_cb_occ = occ_coeffs(&gparent.cb, gob);
-
-                let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
-                let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
+                let (g_ca_occ, g_cb_occ) = &occ[j];
+                let pa = build_s_pair(l_ca_occ, g_ca_occ, &ao.s, tol);
+                let pb = build_s_pair(l_cb_occ, g_cb_occ, &ao.s, tol);
 
                 let rhoa = pair_density(&pa, nao);
                 let rhob = pair_density(&pb, nao);
