@@ -27,6 +27,9 @@ use super::{PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks};
 /// Number of diagonal candidate pairs evaluated per batched dispatch.
 const DIAGCHUNK: usize = 256;
 
+/// Relative score difference below which candidates are tied and selected together.
+const TIETOL: f64 = 1e-4;
+
 pub(in crate::noci::selected) enum CandidateM<T: NOCIScalar> {
     /// Packed candidate-candidate matrix stored in process memory.
     Ram(Vec<T>),
@@ -1030,11 +1033,15 @@ where
 }
 
 /// Select the highest-scoring candidates above the selection threshold.
+/// Symmetry-equivalent determinants have equal scores up to the GMRES tolerance, so a cut at
+/// `max_add` that falls within such a group would choose between them by solver noise. The cut is
+/// instead extended through every candidate whose score lies within a relative `TIETOL` of the last
+/// one taken, so tied candidates are selected together and `max_add` may be exceeded.
 /// # Arguments:
 /// - `candidates`: Candidate determinants currently present in the pool.
 /// - `candidate_scores`: Candidate importance scores.
 /// - `sigma`: Selection threshold.
-/// - `max_add`: Maximum number of candidates to add.
+/// - `max_add`: Number of candidates to add before completing the last tied group.
 /// # Returns:
 /// - `Vec<NOCIIndex>`: Selected candidates sorted by decreasing score.
 pub(in crate::noci::selected) fn select_candidates(
@@ -1051,9 +1058,15 @@ pub(in crate::noci::selected) fn select_candidates(
         .collect();
 
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-    ranked
-        .into_iter()
-        .take(max_add)
-        .map(|(state, _)| state)
-        .collect()
+
+    // Extend the cut through candidates tied with the last one taken.
+    let mut n = max_add.min(ranked.len());
+    if n > 0 {
+        let last = ranked[n - 1].1;
+        while n < ranked.len() && ranked[n].1 >= last * (1.0 - TIETOL) {
+            n += 1;
+        }
+    }
+
+    ranked.into_iter().take(n).map(|(state, _)| state).collect()
 }
