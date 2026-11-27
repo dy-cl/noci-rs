@@ -32,8 +32,8 @@ use super::{
     apply_factorised_omega_s, apply_factorised_shifted_omega_m,
     apply_factorised_shifted_omega_m_mpi, apply_omega_s, apply_omega_s_mpi, apply_shifted_omega_m,
     apply_shifted_omega_m_mpi, build_candidate_m, build_candidate_m_diag, build_candidate_m_disk,
-    build_candidate_s_diag, build_candidate_v, build_factorised_candidate_diags, build_omega_v,
-    build_preconditioner, build_snoci_focks, build_snoci_projection, select_candidates,
+    build_candidate_s_diag, build_factorised_candidate_diags, build_preconditioner,
+    build_snoci_couplings, select_candidates,
 };
 
 /// Return the real spin string of a scalar used for printed and stored energies.
@@ -253,31 +253,12 @@ where
         update_wicks_fock(&fa, &fb, &post.space.parents, &post.ao.s, post.tol, ws);
     }
 
-    // Build the candidate-current and candidate-candidate Fock matrix, alongside the shifted Fock `M`.
+    // Contract the candidate-current Hamiltonian, overlap and Fock blocks with the current state.
     let wview = wicks.as_ref().map(|ws| ws.view());
-    let candidate_data =
-        NOCIData::new(post.ao, space, input, post.tol, wview).withmocache(post.mocache);
-    let current_data =
-        NOCIData::new(post.ao, space, input, post.tol, wview).withmocache(post.mocache);
+    let data = NOCIData::new(post.ao, space, input, post.tol, wview).withmocache(post.mocache);
     let fock = FockData::new(&fock_mocache, &fa, &fb);
-    let focks = build_snoci_focks(
-        &current_data,
-        &candidate_data,
-        &fock,
-        selected_space,
-        candidates,
-    );
-
-    let fc = focks.f_ii.dot(coeffs);
-    let e0_z = coeffs
-        .iter()
-        .zip(fc.iter())
-        .fold(T::from_real(0.0), |acc, (&c, &x)| acc + c.conj() * x);
-    let e0 = scalar_real(e0_z);
-    let projection = build_snoci_projection(&blocks.s_ai, &focks, coeffs, e0);
-
-    let v_a = build_candidate_v(&blocks.h_ai, coeffs);
-    let v_omega = build_omega_v(&blocks.s_ai, coeffs, v_a, e_noci);
+    let (projection, v_omega) =
+        build_snoci_couplings(&data, &fock, selected_space, candidates, coeffs, e_noci);
 
     // `M^Omega(epsilon) a(epsilon) = -V^Omega` is solved in scalar `R`.
     // Chemistry-derived projection vectors and `V^Omega` cross the scalar boundary only here.
@@ -594,14 +575,14 @@ where
 
         let mut final_state: Option<SNOCIState<T>> = None;
 
-        // The candidate pool and the state-independent `H` and `S` blocks are built once and
+        // The candidate pool and the state-independent selected-space blocks are built once and
         // extended as determinants are promoted.
         let mut pool = CandidatePool::new(&mut space, &selected_space, input);
         let mut blocks = {
             let wview = wicks.as_ref().map(|ws| ws.view());
             let data =
                 NOCIData::new(post.ao, &space, input, post.tol, wview).withmocache(post.mocache);
-            SNOCIBlocks::new(&data, &selected_space, &pool.candidates)
+            SNOCIBlocks::new(&data, &selected_space)
         };
 
         // States corrected at the previous geometry, followed through this one when enabled. A
@@ -833,20 +814,13 @@ where
             }
 
             // Promote the selected candidates, regenerate the pool and extend the blocks.
-            let earlier = pool.candidates.clone();
             selected_space.extend(state.selected.iter().copied());
             pool.update(&mut space, &state.selected, input);
 
             let wview = wicks.as_ref().map(|ws| ws.view());
             let data =
                 NOCIData::new(post.ao, &space, input, post.tol, wview).withmocache(post.mocache);
-            blocks.extend(
-                &data,
-                &earlier,
-                &pool.candidates,
-                &selected_space,
-                &state.selected,
-            );
+            blocks.extend(&data, &selected_space, &state.selected);
 
             final_state = Some(state);
         }

@@ -38,4 +38,4 @@ pub(crate) use factorise::{
 };
 
 // Crate-visible function re-exports.
-pub(crate) use matrix::{build_noci_fock, build_noci_s};
+pub(crate) use matrix::{build_noci_s, contract_noci_rows};

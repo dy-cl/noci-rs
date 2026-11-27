@@ -7,22 +7,25 @@ use std::path::Path;
 // External crate imports.
 use memmap2::{MmapMut, MmapOptions};
 use mpi::topology::Communicator;
-use ndarray::{Array1, Array2};
+use ndarray::Array1;
 use num_complex::Complex64;
 use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::NOCIScalar;
 use crate::determinant::NOCIIndex;
+use crate::elements::calculate_pairs;
 use crate::elements::nonorthogonalwicks::WickScratchSpin;
-use crate::elements::{DetPair, Fock, FockData, NOCIData, Overlap, PairOperator, calculate_pairs};
+use crate::elements::{
+    DetPair, Fock, FockData, HamiltonianOverlap, NOCIData, Overlap, PairOperator,
+};
 use crate::mpiutils::all_reduce_array1;
-use crate::noci::build_noci_fock;
+use crate::noci::contract_noci_rows;
 use crate::noci::{OneBodyFactorisation, OneBodyScratch};
 use crate::time_call;
 
 // Parent/sibling imports.
-use super::{PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks};
+use super::{PT2ProjectedOperator, PT2Projection, Preconditioner};
 
 /// Number of diagonal candidate pairs evaluated per batched dispatch.
 const DIAGCHUNK: usize = 256;
@@ -77,65 +80,75 @@ impl<T: NOCIScalar> CandidateM<T> {
     }
 }
 
-/// Build current-current and candidate-current Fock matrices.
+/// Build the projection contractions and the projected coupling vector of the NOCI-PT2 problem
+/// from the current NOCI state `|\Psi_0\rangle = \sum_i c_i |i\rangle`, contracting every
+/// candidate-current block with `c` row by row rather than storing it:
+/// `E_0 = \langle \Psi_0|\hat F|\Psi_0\rangle`, `V_a = \sum_i H_{ai} c_i`,
+/// `S_{a0} = \sum_i S_{ai} c_i` and `F_{a0} = \sum_i F_{ai} c_i`. A projected candidate
+/// `|\Omega_a\rangle = |\Phi_a\rangle - |\Psi_0\rangle\langle\Psi_0|\Phi_a\rangle` then has
+/// `V_a^\Omega = V_a - E_{\text{NOCI}} S_{a0}`, and since `S` and `F` are Hermitian,
+/// `S_{0a} = S_{a0}^*` and `F_{0a} = F_{a0}^*`.
 /// # Arguments:
-/// - `current_data`: Shared NOCI matrix-element data for current-current matrix elements.
-/// - `candidate_data`: Shared NOCI matrix-element data for candidate-left matrix elements.
+/// - `data`: Shared NOCI matrix-element data over the selected and candidate determinants.
 /// - `fock`: Fock-specific matrix-element data.
 /// - `selected_space`: Current selected nonorthogonal determinant space.
 /// - `candidates`: Candidate determinant space.
+/// - `coeffs`: Current-space NOCI eigenvector.
+/// - `e_noci`: Current selected-space NOCI energy.
 /// # Returns:
-/// - `SNOCIFocks`: Current-current and candidate-current Fock blocks.
-pub(in crate::noci::selected) fn build_snoci_focks<T: NOCIScalar>(
-    current_data: &NOCIData<'_, T>,
-    candidate_data: &NOCIData<'_, T>,
+/// - `(PT2Projection<T>, Array1<T>)`: Projection contractions used to form `M^\Omega`, and the
+///   projected coupling vector `V^\Omega`.
+pub(in crate::noci::selected) fn build_snoci_couplings<T: NOCIScalar + Into<Complex64>>(
+    data: &NOCIData<'_, T>,
     fock: &FockData<'_, T>,
     selected_space: &[NOCIIndex],
     candidates: &[NOCIIndex],
-) -> SNOCIFocks<T> {
-    time_call!(crate::timers::selected::add_build_snoci_focks, {
-        let (f_ii, _) = build_noci_fock(current_data, fock, selected_space, selected_space, true);
-        let (f_ai, _) = build_noci_fock(candidate_data, fock, candidates, selected_space, false);
-
-        SNOCIFocks { f_ii, f_ai }
-    })
-}
-
-/// Build projection contractions required for the matrix-free NOCI-PT2 operator.
-/// # Arguments:
-/// - `s_ai`: Candidate-current overlap block `S_{ai}`.
-/// - `focks`: Current-current and candidate-current Fock blocks.
-/// - `coeffs`: Current-space NOCI eigenvector.
-/// - `e0`: Zeroth-order NOCI generalised-Fock energy.
-/// # Returns:
-/// - `PT2Projection`: Projection contractions used to form `M^Omega`.
-pub(in crate::noci::selected) fn build_snoci_projection<T: NOCIScalar>(
-    s_ai: &Array2<T>,
-    focks: &SNOCIFocks<T>,
     coeffs: &Array1<T>,
-    e0: f64,
-) -> PT2Projection<T> {
+    e_noci: f64,
+) -> (PT2Projection<T>, Array1<T>) {
     time_call!(crate::timers::selected::add_build_snoci_projection, {
-        // A projected candidate state is given by:
-        // | \Omega_a \rangle = | \Phi_a \rangle - | \Psi_0 \rangle \langle \Psi_0 | \Phi_a \rangle,
-        // where | \Psi_0 \rangle is the current NOCI state.
-        // We therefore require the following contractions:
-        // S_{a0} = \langle \Phi_a | \Psi_0 \rangle = \sum_i S_{ai} c_i,
-        let s_a0 = s_ai.dot(coeffs);
-        // F_{a0} = \langle \Phi_a | \hat F | \Psi_0 \rangle = \sum_i F_{ai} c_i.
-        let f_a0 = focks.f_ai.dot(coeffs);
+        let op = Fock { fock, shift: 0.0 };
+        let fock_row = |y: &mut T, f: T, c: T| *y += f * c;
 
-        // `S` and `F` are Hermitian, so `S_{0a} = S_{a0}^*` and `F_{0a} = F_{a0}^*`.
-        let s_0a = s_a0.mapv(|x| x.conj());
-        let f_0a = f_a0.mapv(|x| x.conj());
+        // `E_0 = \sum_{ij} c_i^* F_{ij} c_j` and `F_{a0}` from the Fock rows.
+        let (e0, f_a0) = time_call!(crate::timers::selected::add_build_snoci_focks, {
+            let f_i0 =
+                contract_noci_rows(data, &op, selected_space, selected_space, coeffs, fock_row);
+            let e0 = coeffs
+                .iter()
+                .zip(&f_i0)
+                .fold(T::from_real(0.0), |acc, (&c, &f)| acc + c.conj() * f);
+            let f_a0 = contract_noci_rows(data, &op, candidates, selected_space, coeffs, fock_row);
+            (e0.into().re, Array1::from(f_a0))
+        });
 
-        PT2Projection {
+        // `V_a` and `S_{a0}` from the fused Hamiltonian and overlap rows.
+        let (v_a, s_a0): (Vec<T>, Vec<T>) =
+            time_call!(crate::timers::selected::add_build_candidate_v, {
+                let hs = contract_noci_rows(
+                    data,
+                    &HamiltonianOverlap,
+                    candidates,
+                    selected_space,
+                    coeffs,
+                    |y: &mut (T, T), (h, s), c| {
+                        y.0 += h * c;
+                        y.1 += s * c;
+                    },
+                );
+                hs.into_iter().unzip()
+            });
+
+        let (v_a, s_a0) = (Array1::from(v_a), Array1::from(s_a0));
+        let v_omega = &v_a - &s_a0.mapv(|x| T::from_real(e_noci) * x);
+        let projection = PT2Projection {
             e0,
+            s_0a: s_a0.mapv(|x| x.conj()),
             s_a0,
-            s_0a,
+            f_0a: f_a0.mapv(|x| x.conj()),
             f_a0,
-            f_0a,
-        }
+        };
+        (projection, v_omega)
     })
 }
 
@@ -948,45 +961,6 @@ where
     };
 
     Preconditioner::new(&diag, p, kind, 0.0)
-}
-
-/// Build the unprojected candidate-current coupling vector `V`.
-/// # Arguments:
-/// - `h_ai`: Candidate-current Hamiltonian block.
-/// - `coeffs`: Current-space ground-state eigenvector.
-/// # Returns:
-/// - `Array1<T>`: Unprojected candidate coupling vector.
-pub(in crate::noci::selected) fn build_candidate_v<T: NOCIScalar>(
-    h_ai: &Array2<T>,
-    coeffs: &Array1<T>,
-) -> Array1<T> {
-    time_call!(crate::timers::selected::add_build_candidate_v, {
-        // V_a = \langle \Phi_a | \hat H | \Psi_0 \rangle = \sum_i H_{ai} c_i.
-        h_ai.dot(coeffs)
-    })
-}
-
-/// Build the NOCI-PT2 state-projected coupling vector.
-/// # Arguments:
-/// - `s_ai`: Candidate-current overlap block.
-/// - `coeffs`: Current-space NOCI eigenvector.
-/// - `v_a`: Unprojected candidate-current Hamiltonian coupling vector.
-/// - `ecurrent`: Current selected-space NOCI energy.
-/// # Returns:
-/// - `Array1<T>`: Omega-projected coupling vector.
-pub(in crate::noci::selected) fn build_omega_v<T: NOCIScalar>(
-    s_ai: &Array2<T>,
-    coeffs: &Array1<T>,
-    v_a: Array1<T>,
-    ecurrent: f64,
-) -> Array1<T> {
-    time_call!(crate::timers::selected::add_build_omega_v, {
-        // V_a^\Omega = \langle \Omega_a | \hat H | \Psi_0 \rangle.
-        // Expanding | \Omega_a \rangle gives:
-        // V_a^\Omega = V_a - E_\mathrm{NOCI} S_{a0}.
-        let s_a0 = s_ai.dot(coeffs);
-        v_a - s_a0.mapv(|x| T::from_real(ecurrent) * x)
-    })
 }
 
 /// Build the diagonal of the projected candidate-candidate shifted Fock matrix `M^Omega`.

@@ -233,9 +233,9 @@ pub(crate) fn noci_density<T: NOCIScalar>(
 /// a NOCI state `|\Psi\rangle = \sum_i c_i |i\rangle` has
 /// `\langle S^2\rangle = \sum_{ij} c_i^* c_j \langle i|S^2|j\rangle / \sum_{ij} c_i^* c_j S_{ij}`.
 /// With the raised densities `G^\sigma = \mathbf S^{-1}\tilde\Gamma^\sigma`, each determinant pair
-/// contributes `\langle l|S^2|r\rangle = S_z(S_z + 1) S^\alpha S^\beta + S^\alpha \mathrm{Tr}\,G^\beta
-/// - \mathrm{Tr}(G^\alpha G^\beta)` from its spin-resolved transition quantities, so pairs with a
-/// zero spin overlap stay finite. For `l = r` this reduces to the single-determinant formula used
+/// contributes
+/// `\langle l|S^2|r\rangle = S_z(S_z + 1) S^\alpha S^\beta + S^\alpha \mathrm{Tr}\,G^\beta - \mathrm{Tr}(G^\alpha G^\beta)`
+/// from its spin-resolved transition quantities, so pairs with a zero spin overlap stay finite. For `l = r` this reduces to the single-determinant formula used
 /// for SCF states.
 /// # Arguments:
 /// - `data`: Shared NOCI matrix-element data.
