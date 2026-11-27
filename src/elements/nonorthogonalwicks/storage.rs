@@ -17,7 +17,7 @@ use super::types::{PairBranches, PairMeta, PairOffset};
 use super::view::WicksView;
 
 /// Current Wick disk-cache metadata and slab-layout version.
-pub(crate) const WICKS_DISK_CACHE_VERSION: u32 = 3;
+pub(crate) const WICKS_DISK_CACHE_VERSION: u32 = 4;
 
 /// Backing allocation used by the contiguous slab of precomputed nonorthogonal Wick intermediates.
 #[allow(dead_code)]

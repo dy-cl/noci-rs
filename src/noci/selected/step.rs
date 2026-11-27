@@ -234,7 +234,11 @@ where
     }
 
     // Form multireference NOCI density and generalised AO Focks.
-    let (da, db) = noci_density(post.ao, space, selected_space, coeffs, post.tol);
+    let (da, db) = {
+        let wview = wicks.as_ref().map(|ws| ws.view());
+        let data = NOCIData::new(post.ao, space, input, post.tol, wview);
+        noci_density(&data, selected_space, coeffs)
+    };
     let (fa, fb) = time_call!(crate::timers::selected::add_build_generalised_fock, {
         fock(&post.ao.h, &post.ao.eri_coul, &da, &db)
     });

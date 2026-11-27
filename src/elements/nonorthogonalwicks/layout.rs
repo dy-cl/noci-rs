@@ -32,9 +32,6 @@ pub fn assign_offsets(
 ) -> (Vec<PairOffset>, Vec<PairBranches>, usize) {
     let nn2 = nmo * nmo;
 
-    #[cfg(not(feature = "gnocc"))]
-    let _ = nbas;
-
     let mut off = vec![PairOffset::default(); plans.len()];
     let mut i: usize = 0;
 
@@ -134,10 +131,7 @@ fn assign_same_spin(
     let nn2 = nmo * nmo;
     let nn4 = nn2 * nn2;
 
-    #[cfg(feature = "gnocc")]
     let nbas2 = nbas * nbas;
-    #[cfg(not(feature = "gnocc"))]
-    let _ = nbas;
 
     let mut o = SameSpinOffset {
         hcol0: usize::MAX,
@@ -153,17 +147,14 @@ fn assign_same_spin(
         o.y[mi] = *i;
         *i += nn2;
     }
-    #[cfg(feature = "gnocc")]
-    {
-        // Allocate the corresponding contractions in the external RDM basis.
-        for mi in 0..2 {
-            o.xrdm[mi] = *i;
-            *i += nbas2;
-        }
-        for mi in 0..2 {
-            o.yrdm[mi] = *i;
-            *i += nbas2;
-        }
+    // Allocate the corresponding contractions in the external RDM basis.
+    for mi in 0..2 {
+        o.xrdm[mi] = *i;
+        *i += nbas2;
+    }
+    for mi in 0..2 {
+        o.yrdm[mi] = *i;
+        *i += nbas2;
     }
     // Allocate the one-body `\mathcal F` and one-column `\mathcal V` intermediates.
     for mi in 0..2 {
@@ -280,13 +271,10 @@ pub fn write_same_spin<T: NOCIScalar>(
     write2(slab, o.x[1], &w.x[1]);
     write2(slab, o.y[0], &w.y[0]);
     write2(slab, o.y[1], &w.y[1]);
-    #[cfg(feature = "gnocc")]
-    {
-        write2(slab, o.xrdm[0], &w.xrdm[0]);
-        write2(slab, o.xrdm[1], &w.xrdm[1]);
-        write2(slab, o.yrdm[0], &w.yrdm[0]);
-        write2(slab, o.yrdm[1], &w.yrdm[1]);
-    }
+    write2(slab, o.xrdm[0], &w.xrdm[0]);
+    write2(slab, o.xrdm[1], &w.xrdm[1]);
+    write2(slab, o.yrdm[0], &w.yrdm[0]);
+    write2(slab, o.yrdm[1], &w.yrdm[1]);
 
     // Transpose the one-column matrices so a replacement column with fixed orbital label is contiguous.
     for mi in 0..2 {

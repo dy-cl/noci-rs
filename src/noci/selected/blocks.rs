@@ -51,7 +51,7 @@ impl<T: NOCIScalar> SNOCIBlocks<T> {
         candidates: &[NOCIIndex],
     ) -> Self {
         let (h_ii, s_ii, _) = build_noci_hs(data, selected, selected, true);
-        let ss_ii = build_noci_spin_square(data.ao, data.space, selected, selected, data.tol);
+        let ss_ii = build_noci_spin_square(data, selected, selected);
         let (h_ai, s_ai, _) = build_noci_hs(data, candidates, selected, false);
 
         Self {
@@ -120,7 +120,7 @@ impl<T: NOCIScalar> SNOCIBlocks<T> {
 
         // `S^2` is kept only between selected determinants, so the promoted rows are new.
         let nold = selected.len() - promoted.len();
-        let ss_p = build_noci_spin_square(data.ao, data.space, promoted, selected, data.tol);
+        let ss_p = build_noci_spin_square(data, promoted, selected);
         let ss_pi = ss_p.slice(s![.., ..nold]).to_owned();
         let ss_pp = ss_p.slice(s![.., nold..]).to_owned();
         self.ss_ii = border(&self.ss_ii, &ss_pi, &ss_pp);
