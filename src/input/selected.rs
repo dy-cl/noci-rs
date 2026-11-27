@@ -119,8 +119,11 @@ pub struct SNOCIOptions {
     pub follow: bool,
     /// Maximum SNOCI macro-iterations.
     pub max_iter: usize,
-    /// Maximum determinants added per iteration.
+    /// Determinants added per iteration, unless `growth` asks for more.
     pub max_add: usize,
+    /// Fraction of the selected space added per iteration, so that each iteration adds
+    /// `\max(\text{max\_add}, \lceil \text{growth}\, N_{\text{sel}} \rceil)` determinants.
+    pub growth: f64,
     /// Maximum adaptive-space dimension.
     pub max_dim: usize,
     /// Linear-solve preconditioner.
@@ -146,6 +149,7 @@ impl Default for SNOCIOptions {
             follow: true,
             max_iter: 100,
             max_add: 1,
+            growth: 0.0,
             max_dim: 100,
             preconditioner: SNOCIPreconditioner::default(),
             gmres: GMRESOptions::default(),

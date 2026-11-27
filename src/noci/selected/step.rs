@@ -762,11 +762,14 @@ where
                 .rfind(|r| r.root == roots[0])
                 .expect("At least one NOCI-PT2 shift must be evaluated.");
 
+            // Add `\max(\text{max\_add}, \lceil \text{growth}\, N_{\text{sel}} \rceil)` determinants,
+            // so `growth = 1` doubles the selected space every iteration.
+            let grown = (opts.growth * selected_space.len() as f64).ceil() as usize;
             let selected = select_candidates(
                 &pool.candidates,
                 &main_pt2.candidate_scores,
                 opts.sigma,
-                opts.max_add.min(remaining),
+                opts.max_add.max(grown).min(remaining),
             );
             let state = SNOCIState {
                 ecurrent,
