@@ -82,22 +82,12 @@ pub struct NOCIPT2Energy {
     pub s2: f64,
 }
 
-/// Candidate-space overlap blocks required for projection out of the current selected space.
-pub(in crate::noci::selected) struct SNOCIOverlaps<T: NOCIScalar> {
-    /// `Candidate-current overlap, S_ai.`
-    pub(in crate::noci::selected) s_ai: Array2<T>,
-    /// `Current-candidate overlap, S_ia.`
-    pub(in crate::noci::selected) s_ia: Array2<T>,
-}
-
 /// Fock matrix blocks required to build the SNOCI response problem.
 pub(in crate::noci::selected) struct SNOCIFocks<T: NOCIScalar> {
     /// `Current-current Fock matrix, F_ij.`
     pub(in crate::noci::selected) f_ii: Array2<T>,
     /// `Candidate-current Fock matrix, F_ai.`
     pub(in crate::noci::selected) f_ai: Array2<T>,
-    /// `Current-candidate Fock matrix, F_ia.`
-    pub(in crate::noci::selected) f_ia: Array2<T>,
 }
 
 /// Projector quantities required to remove the current selected-space NOCI state

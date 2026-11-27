@@ -16,6 +16,7 @@ use crate::elements::nonorthogonalwicks::WicksShared;
 use crate::elements::{FockData, NOCIData};
 use crate::elements::{build_fock_mo_cache, noci_density, noci_spin_square, update_wicks_fock};
 use crate::input::{SNOCIPreconditioner, SNOCIStorage, StateType};
+use crate::maths::general_evp;
 use crate::maths::gmres::{GMRESPrint, gmres};
 use crate::noci::{OneBodyFactorisation, OneBodyScratch};
 use crate::scf::fock;
@@ -25,15 +26,14 @@ use crate::{PostSCFData, input::Input};
 // Parent/sibling imports.
 use super::guess::FollowedStates;
 use super::{
-    CandidatePool, PT2Guess, PT2ProjectedOperator, SNOCIOverlaps, SNOCIPT2Result, SNOCIState,
+    CandidatePool, PT2Guess, PT2ProjectedOperator, SNOCIBlocks, SNOCIPT2Result, SNOCIState,
 };
 use super::{
     apply_factorised_omega_s, apply_factorised_shifted_omega_m,
     apply_factorised_shifted_omega_m_mpi, apply_omega_s, apply_omega_s_mpi, apply_shifted_omega_m,
-    apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
-    build_candidate_m_diag, build_candidate_m_disk, build_candidate_s_diag, build_candidate_v,
-    build_factorised_candidate_diags, build_omega_v, build_preconditioner, build_snoci_focks,
-    build_snoci_overlaps, build_snoci_projection, select_candidates, solve_current_space,
+    apply_shifted_omega_m_mpi, build_candidate_m, build_candidate_m_diag, build_candidate_m_disk,
+    build_candidate_s_diag, build_candidate_v, build_factorised_candidate_diags, build_omega_v,
+    build_preconditioner, build_snoci_focks, build_snoci_projection, select_candidates,
 };
 
 /// Return the real spin string of a scalar used for printed and stored energies.
@@ -185,14 +185,14 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
 /// NOCI state of the current space at every imaginary shift.
 /// The generalised Fock operator, `E_0`, the projector `Q = 1 - |\Psi\rangle\langle\Psi|` and
 /// `V^Omega` are all built from the chosen state, so each state needs its own Fock-dependent
-/// intermediates and GMRES solve. Candidate overlaps and `H_ai` do not depend on the state and are
-/// passed in.
+/// intermediates and GMRES solve. The candidate-selected `H_{ai}` and `S_{ai}` do not depend on the
+/// state and are passed in.
 /// # Arguments:
 /// - `post`: Data shared by post-SCF methods.
 /// - `input`: User-defined input options.
 /// - `spaces`: Determinant space, current selected space, candidate determinants and the candidate
 ///   subset of the determinant space.
-/// - `blocks`: Candidate-current overlaps and candidate-current Hamiltonian `H_ai`.
+/// - `blocks`: State-independent Hamiltonian and overlap blocks of the selected space.
 /// - `target`: Position in `snoci.roots`, energy-order index, NOCI energy and current-space
 ///   eigenvector of the corrected NOCI state.
 /// - `wicks`: Mutable Wick's intermediates, whose Fock intermediates are rebuilt for this state.
@@ -204,7 +204,7 @@ fn solve_pt2_state<T, R, C>(
     post: &PostSCFData<'_, T>,
     input: &Input,
     spaces: (&NOCISpace<T>, &[NOCIIndex], &[NOCIIndex], &NOCISpace<T>),
-    blocks: (&SNOCIOverlaps<T>, &Array2<T>),
+    blocks: &SNOCIBlocks<T>,
     target: (usize, usize, f64, &Array1<T>),
     mut wicks: Option<&mut WicksShared<T>>,
     run: (&C, usize, &PT2Guess),
@@ -216,7 +216,6 @@ where
 {
     let opts = input.snoci.as_ref().unwrap();
     let (space, selected_space, candidates, candidate_basis) = spaces;
-    let (overlaps, h_ai) = blocks;
     let (slot, root, e_noci, coeffs) = target;
     let (world, it, previous) = run;
 
@@ -266,10 +265,10 @@ where
         .zip(fc.iter())
         .fold(T::from_real(0.0), |acc, (&c, &x)| acc + c.conj() * x);
     let e0 = scalar_real(e0_z);
-    let projection = build_snoci_projection(overlaps, &focks, coeffs, e0);
+    let projection = build_snoci_projection(&blocks.s_ai, &focks, coeffs, e0);
 
-    let v_a = build_candidate_v(h_ai, coeffs);
-    let v_omega = build_omega_v(&overlaps.s_ai, coeffs, v_a, e_noci);
+    let v_a = build_candidate_v(&blocks.h_ai, coeffs);
+    let v_omega = build_omega_v(&blocks.s_ai, coeffs, v_a, e_noci);
 
     // `M^Omega(epsilon) a(epsilon) = -V^Omega` is solved in scalar `R`.
     // Chemistry-derived projection vectors and `V^Omega` cross the scalar boundary only here.
@@ -585,7 +584,16 @@ where
         let mut selected_space = (0..space.len()).map(NOCIIndex).collect::<Vec<_>>();
 
         let mut final_state: Option<SNOCIState<T>> = None;
-        let mut candidate_pool: Option<CandidatePool> = None;
+
+        // The candidate pool and the state-independent `H` and `S` blocks are built once and
+        // extended as determinants are promoted.
+        let mut pool = CandidatePool::new(&mut space, &selected_space, input);
+        let mut blocks = {
+            let wview = wicks.as_ref().map(|ws| ws.view());
+            let data =
+                NOCIData::new(post.ao, &space, input, post.tol, wview).withmocache(post.mocache);
+            SNOCIBlocks::new(&data, &selected_space, &pool.candidates)
+        };
 
         // States corrected at the previous geometry, followed through this one when enabled. A
         // holomorphic recipe continues its real partner, which it replaces in the NOCI basis.
@@ -604,16 +612,8 @@ where
         };
 
         for it in 0..opts.max_iter {
-            // Generate matrix elements for current space and solve GEVP for every NOCI state.
-            let (hcurrent, scurrent, evals, evecs) = solve_current_space(
-                post.ao,
-                &space,
-                &selected_space,
-                input,
-                wicks.as_deref(),
-                post.mocache,
-                post.tol,
-            );
+            // Solve the current-space GEVP `H c = S c E` for every NOCI state.
+            let (evals, evecs) = general_evp(&blocks.h_ii, &blocks.s_ii, true, post.tol);
 
             // Every requested state must exist after the overlap projection of the GEVP.
             if let Some(&root) = opts.roots.iter().find(|&&root| root >= evals.len()) {
@@ -648,7 +648,7 @@ where
                     .collect();
 
                 if !followed.coeffs.is_empty() {
-                    let s = scurrent.mapv(Into::<Complex64>::into);
+                    let s = blocks.s_ii.mapv(Into::<Complex64>::into);
                     let sc = s.dot(&evecs.mapv(Into::<Complex64>::into));
                     roots.clear();
                     for prev in &followed.coeffs {
@@ -687,27 +687,14 @@ where
             let ecurrent = evals[roots[0]];
             let coeffs = evecs.column(roots[0]).to_owned();
 
-            if candidate_pool.is_none() {
-                candidate_pool = Some(CandidatePool::new(&mut space, &selected_space, input));
-            }
-            let pool = candidate_pool.as_mut().unwrap();
+            let hcurrent = blocks.h_ii.clone();
+            let scurrent = blocks.s_ii.clone();
 
-            let wview = wicks.as_ref().map(|ws| ws.view());
-            let candidate_data =
-                NOCIData::new(post.ao, &space, input, post.tol, wview).withmocache(post.mocache);
-
-            // Build the current-candidate overlap and its transpose.
-            let overlaps = build_snoci_overlaps(&candidate_data, &pool.candidates, &selected_space);
-
-            // Filter out any determinants in the candidate space in redundant directions.
             let npoolpre = pool.candidates.len();
             let npoolpost = pool.candidates.len();
             if pool.candidates.is_empty() {
                 return empty_state(ecurrent, coeffs, hcurrent, scurrent);
             }
-
-            let h_ai =
-                build_candidate_current_h(&candidate_data, &pool.candidates, &selected_space);
 
             if it > 0 && world.rank() == 0 {
                 println!("{}", "=".repeat(100));
@@ -736,7 +723,7 @@ where
                     post,
                     input,
                     (&space, &selected_space, &pool.candidates, &candidate_basis),
-                    (&overlaps, &h_ai),
+                    &blocks,
                     (slot, root, evals[root], &state_coeffs),
                     wicks.as_deref_mut(),
                     (world, it, previous),
@@ -818,8 +805,22 @@ where
                 return state;
             }
 
+            // Promote the selected candidates, regenerate the pool and extend the blocks.
+            let earlier = pool.candidates.clone();
             selected_space.extend(state.selected.iter().copied());
             pool.update(&mut space, &state.selected, input);
+
+            let wview = wicks.as_ref().map(|ws| ws.view());
+            let data =
+                NOCIData::new(post.ao, &space, input, post.tol, wview).withmocache(post.mocache);
+            blocks.extend(
+                &data,
+                &earlier,
+                &pool.candidates,
+                &selected_space,
+                &state.selected,
+            );
+
             final_state = Some(state);
         }
 
@@ -831,17 +832,9 @@ where
         }
 
         final_state.unwrap_or_else(|| {
-            let (hcurrent, scurrent, evals, evecs) = solve_current_space(
-                post.ao,
-                &space,
-                &selected_space,
-                input,
-                wicks.as_deref(),
-                post.mocache,
-                post.tol,
-            );
+            let (evals, evecs) = general_evp(&blocks.h_ii, &blocks.s_ii, true, post.tol);
             let coeffs = evecs.column(opts.roots[0]).to_owned();
-            empty_state(evals[opts.roots[0]], coeffs, hcurrent, scurrent)
+            empty_state(evals[opts.roots[0]], coeffs, blocks.h_ii, blocks.s_ii)
         })
     })
 }

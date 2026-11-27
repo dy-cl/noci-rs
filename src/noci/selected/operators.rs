@@ -13,20 +13,16 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::determinant::{NOCIIndex, NOCISpace};
-use crate::elements::nonorthogonalwicks::{WickScratchSpin, WicksShared};
-use crate::elements::{
-    DetPair, Fock, FockData, MOCache, NOCIData, Overlap, PairOperator, calculate_pairs,
-};
-use crate::maths::{adjoint, general_evp};
+use crate::determinant::NOCIIndex;
+use crate::elements::nonorthogonalwicks::WickScratchSpin;
+use crate::elements::{DetPair, Fock, FockData, NOCIData, Overlap, PairOperator, calculate_pairs};
 use crate::mpiutils::all_reduce_array1;
+use crate::noci::build_noci_fock;
 use crate::noci::{OneBodyFactorisation, OneBodyScratch};
-use crate::noci::{build_noci_fock, build_noci_hs, build_noci_s};
 use crate::time_call;
-use crate::{AoData, input::Input};
 
 // Parent/sibling imports.
-use super::{PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks, SNOCIOverlaps};
+use super::{PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks};
 
 /// Number of diagonal candidate pairs evaluated per batched dispatch.
 const DIAGCHUNK: usize = 256;
@@ -78,58 +74,6 @@ impl<T: NOCIScalar> CandidateM<T> {
     }
 }
 
-/// Build Hamiltonian and overlap matrix elements for the current space and solve the resulting
-/// generalised eigenvalue problem.
-/// # Arguments:
-/// - `ao`: AO integrals and other system data.
-/// - `space`: Full determinant space containing the selected states.
-/// - `current_space`: Current selected nonorthogonal determinant space.
-/// - `input`: User-defined input options.
-/// - `wicks`: Optional shared Wick's intermediates.
-/// - `mocache`: MO-basis one and two-electron integral caches.
-/// - `tol`: Tolerance for whether a number is considered zero.
-/// # Returns:
-/// - `(Array2<T>, Array2<T>, Array1<f64>, Array2<T>)`: Hamiltonian matrix in the current space,
-///   overlap matrix in the current space, ascending eigenvalues, and eigenvectors as columns.
-pub(in crate::noci::selected) fn solve_current_space<T: NOCIScalar>(
-    ao: &AoData,
-    space: &NOCISpace<T>,
-    current_space: &[NOCIIndex],
-    input: &Input,
-    wicks: Option<&WicksShared<T>>,
-    mocache: &[MOCache<T>],
-    tol: f64,
-) -> (Array2<T>, Array2<T>, Array1<f64>, Array2<T>) {
-    time_call!(crate::timers::selected::add_solve_current_space, {
-        let wview = wicks.as_ref().map(|ws| ws.view());
-        let data = NOCIData::new(ao, space, input, tol, wview).withmocache(mocache);
-        let (hcurrent, scurrent, _) = build_noci_hs(&data, current_space, current_space, true);
-        let (evals, c) = general_evp(&hcurrent, &scurrent, true, tol);
-
-        (hcurrent, scurrent, evals, c)
-    })
-}
-
-/// Build candidate-current overlaps.
-/// # Arguments:
-/// - `data`: Shared NOCI matrix-element data for candidate-left matrix elements.
-/// - `candidates`: Candidate determinant space.
-/// - `selected_space`: Current selected nonorthogonal determinant space.
-/// # Returns:
-/// - `SNOCIOverlaps`: Candidate-current and current-candidate overlap blocks.
-pub(in crate::noci::selected) fn build_snoci_overlaps<T: NOCIScalar>(
-    data: &NOCIData<'_, T>,
-    candidates: &[NOCIIndex],
-    selected_space: &[NOCIIndex],
-) -> SNOCIOverlaps<T> {
-    time_call!(crate::timers::selected::add_build_snoci_overlaps, {
-        let (s_ai, _) = build_noci_s(data, candidates, selected_space, false);
-        let s_ia = adjoint(&s_ai);
-
-        SNOCIOverlaps { s_ai, s_ia }
-    })
-}
-
 /// Build current-current and candidate-current Fock matrices.
 /// # Arguments:
 /// - `current_data`: Shared NOCI matrix-element data for current-current matrix elements.
@@ -149,57 +93,38 @@ pub(in crate::noci::selected) fn build_snoci_focks<T: NOCIScalar>(
     time_call!(crate::timers::selected::add_build_snoci_focks, {
         let (f_ii, _) = build_noci_fock(current_data, fock, selected_space, selected_space, true);
         let (f_ai, _) = build_noci_fock(candidate_data, fock, candidates, selected_space, false);
-        let f_ia = adjoint(&f_ai);
 
-        SNOCIFocks { f_ii, f_ai, f_ia }
-    })
-}
-
-/// Build candidate-current Hamiltonian matrix elements.
-/// # Arguments:
-/// - `data`: Shared NOCI matrix-element data for candidate-left matrix elements.
-/// - `candidates`: Candidate determinant space.
-/// - `selected_space`: Current selected nonorthogonal determinant space.
-/// # Returns:
-/// - `Array2<T>`: Candidate-current Hamiltonian block `H_ai`.
-pub(in crate::noci::selected) fn build_candidate_current_h<T: NOCIScalar>(
-    data: &NOCIData<'_, T>,
-    candidates: &[NOCIIndex],
-    selected_space: &[NOCIIndex],
-) -> Array2<T> {
-    time_call!(crate::timers::selected::add_build_candidate_h_ai, {
-        build_noci_hs(data, candidates, selected_space, false).0
+        SNOCIFocks { f_ii, f_ai }
     })
 }
 
 /// Build projection contractions required for the matrix-free NOCI-PT2 operator.
 /// # Arguments:
-/// - `overlaps`: Candidate-current overlap blocks.
+/// - `s_ai`: Candidate-current overlap block `S_{ai}`.
 /// - `focks`: Current-current and candidate-current Fock blocks.
 /// - `coeffs`: Current-space NOCI eigenvector.
 /// - `e0`: Zeroth-order NOCI generalised-Fock energy.
 /// # Returns:
 /// - `PT2Projection`: Projection contractions used to form `M^Omega`.
 pub(in crate::noci::selected) fn build_snoci_projection<T: NOCIScalar>(
-    overlaps: &SNOCIOverlaps<T>,
+    s_ai: &Array2<T>,
     focks: &SNOCIFocks<T>,
     coeffs: &Array1<T>,
     e0: f64,
 ) -> PT2Projection<T> {
     time_call!(crate::timers::selected::add_build_snoci_projection, {
-        let coeffs_conj = coeffs.mapv(|x| x.conj());
         // A projected candidate state is given by:
         // | \Omega_a \rangle = | \Phi_a \rangle - | \Psi_0 \rangle \langle \Psi_0 | \Phi_a \rangle,
         // where | \Psi_0 \rangle is the current NOCI state.
         // We therefore require the following contractions:
         // S_{a0} = \langle \Phi_a | \Psi_0 \rangle = \sum_i S_{ai} c_i,
-        let s_a0 = overlaps.s_ai.dot(coeffs);
-        // S_{0a} = \langle \Psi_0 | \Phi_a \rangle = \sum_i S_{ia} c_i,
-        let s_0a = overlaps.s_ia.t().dot(&coeffs_conj);
-        // F_{a0} = \langle \Phi_a | \hat F | \Psi_0 \rangle = \sum_i F_{ai} c_i,
+        let s_a0 = s_ai.dot(coeffs);
+        // F_{a0} = \langle \Phi_a | \hat F | \Psi_0 \rangle = \sum_i F_{ai} c_i.
         let f_a0 = focks.f_ai.dot(coeffs);
-        // F_{0a} = \langle \Psi_0 | \hat F | \Phi_a \rangle = \sum_i F_{ia} c_i.
-        let f_0a = focks.f_ia.t().dot(&coeffs_conj);
+
+        // `S` and `F` are Hermitian, so `S_{0a} = S_{a0}^*` and `F_{0a} = F_{a0}^*`.
+        let s_0a = s_a0.mapv(|x| x.conj());
+        let f_0a = f_a0.mapv(|x| x.conj());
 
         PT2Projection {
             e0,
