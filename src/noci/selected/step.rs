@@ -740,12 +740,9 @@ where
             let guess = PT2Guess::new(&candidate_basis, &pt2, &roots, followed.clone());
 
             let remaining = opts.max_dim.saturating_sub(selected_space.len());
-            if remaining == 0 && world.rank() == 0 {
-                println!(
-                    "SNOCI stopped at iteration {}: selected space reached max_dim ({}).",
-                    it, opts.max_dim
-                );
-                return SNOCIState {
+            // Every rank stops once the selected space is full; rank zero reports the final result.
+            if remaining == 0 {
+                let state = SNOCIState {
                     ecurrent,
                     coeffs,
                     hcurrent,
@@ -754,6 +751,19 @@ where
                     pt2,
                     guess,
                 };
+                if world.rank() == 0 {
+                    print_snoci_iteration_result(
+                        it,
+                        selected_space.len(),
+                        scalar_real(post.space.parents[0].e),
+                        &state,
+                    );
+                    println!(
+                        "SNOCI stopped at iteration {}: selected space reached max_dim ({}).",
+                        it, opts.max_dim
+                    );
+                }
+                return state;
             }
 
             // Use the final imaginary shift of the first listed state as the main result for selection.
@@ -790,11 +800,13 @@ where
                 );
             }
 
-            if state.selected.is_empty() && world.rank() == 0 {
-                println!(
-                    "SNOCI stopped at iteration {}: no candidates satisfied the selection threshold ({}).",
-                    it, opts.sigma
-                );
+            if state.selected.is_empty() {
+                if world.rank() == 0 {
+                    println!(
+                        "SNOCI stopped at iteration {}: no candidates satisfied the selection threshold ({}).",
+                        it, opts.sigma
+                    );
+                }
                 return state;
             }
 
