@@ -794,7 +794,7 @@ where
             }
 
             selected_space.extend(state.selected.iter().copied());
-            pool.update(&mut space, &selected_space, &state.selected, input);
+            pool.update(&mut space, &state.selected, input);
             final_state = Some(state);
         }
 
