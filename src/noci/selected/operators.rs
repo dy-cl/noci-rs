@@ -844,6 +844,47 @@ where
     y
 }
 
+/// Apply the projected first-order-space overlap matrix `Q` with the factorised one-body tables.
+/// The tables apply `(F + \lambda S)x` for any scalar `\lambda`, so
+/// `S x = (F + S)x - F x`, and then `Q_{ab} = S_{ab} - S_{a0} S_{0b}`. Each rank applies its
+/// share of the target rows and the partial products are summed over ranks.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `p`: Projection contractions represented in Krylov scalar `R`.
+/// - `one_body`: Cached spin-factorised one-body operator.
+/// - `scratch`: Reusable one-body contraction buffers in scalar `R`.
+/// - `x`: Replicated Krylov vector to apply `Q` to.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `Array1<R>`: Globally reduced matrix-vector product `Q x`.
+pub(in crate::noci::selected) fn apply_factorised_omega_s<T, R>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    p: &PT2Projection<R>,
+    one_body: &OneBodyFactorisation<T>,
+    scratch: &mut OneBodyScratch<R>,
+    x: &Array1<R>,
+    world: &impl Communicator,
+) -> Array1<R>
+where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T> + Into<Complex64>,
+{
+    let partition = (world.rank() as usize, world.size() as usize);
+
+    // `S x` as the difference of the one-body products at `\lambda = 1` and `\lambda = 0`.
+    let fsx = one_body.apply_one_body(x, op.data, op.fock, R::from_real(1.0), scratch, partition);
+    let fx = one_body.apply_one_body(x, op.data, op.fock, R::from_real(0.0), scratch, partition);
+    let mut y = all_reduce_array1(world, fsx - fx);
+
+    // Remove the component along the zeroth-order state.
+    let sx = p.s_0a.dot(x);
+    for a in 0..y.len() {
+        y[a] -= p.s_a0[a] * sx;
+    }
+
+    y
+}
+
 /// Apply the explicit imaginary-shifted NOCI-PT2 matrix `M + i epsilon Q`.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.

@@ -46,6 +46,10 @@ pub struct SNOCIPT2Result {
     pub imag_shift: f64,
     /// Second-order correction for this imaginary shift.
     pub ept2: f64,
+    /// Norm `\langle\Psi^{(1)}|\Psi^{(1)}\rangle = a^\dagger Q a` of the first-order wavefunction.
+    pub norm_first_order: f64,
+    /// Renormalised second-order correction `E^{(2)} / (1 + \langle\Psi^{(1)}|\Psi^{(1)}\rangle)`.
+    pub erpt2: f64,
     /// Importance scores `|a_i v_i|` for this imaginary shift.
     pub candidate_scores: Vec<f64>,
     /// Converged first-order amplitudes `a_i`.

@@ -28,7 +28,8 @@ use super::{
     CandidatePool, PT2Guess, PT2ProjectedOperator, SNOCIOverlaps, SNOCIPT2Result, SNOCIState,
 };
 use super::{
-    apply_factorised_shifted_omega_m, apply_factorised_shifted_omega_m_mpi, apply_shifted_omega_m,
+    apply_factorised_omega_s, apply_factorised_shifted_omega_m,
+    apply_factorised_shifted_omega_m_mpi, apply_omega_s, apply_omega_s_mpi, apply_shifted_omega_m,
     apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
     build_candidate_m_diag, build_candidate_m_disk, build_candidate_s_diag, build_candidate_v,
     build_factorised_candidate_diags, build_omega_v, build_preconditioner, build_snoci_focks,
@@ -167,6 +168,9 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
         println!("  Imag shift:         {:.12}", r.imag_shift);
         println!("  EPT2:               {:.12}", r.ept2);
         println!("  E + EPT2:           {:.12}", r.e_noci + r.ept2);
+        println!("  <Psi1|Psi1>:        {:.12}", r.norm_first_order);
+        println!("  ErPT2:              {:.12}", r.erpt2);
+        println!("  E + ErPT2:          {:.12}", r.e_noci + r.erpt2);
         println!("  Max |a_i|:          {:.12}", r.max_abs_a);
         println!("  Max |v_i|:          {:.12}", r.max_abs_v);
         println!("  Max |a_i v_i|:      {:.12}", r.max_abs_av);
@@ -284,6 +288,7 @@ where
         candidates: &candidate_indices,
         projection: &projection,
     };
+
     if world.rank() == 0 {
         print_candidate_m_storage::<T>(op.candidates.len());
         print_factor_table_storage(&operator_data, &fock);
@@ -495,6 +500,24 @@ where
             .fold(R::from_real(0.0), |acc, (&v, &aa)| acc + v.conj() * aa);
         let ept2 = scalar_real(ama + av + va);
 
+        // `\langle\Psi^{(1)}|\Psi^{(1)}\rangle = a^\dagger Q a` renormalises the correction,
+        // `E^{(2)}_{\text{r}} = E^{(2)} / (1 + \langle\Psi^{(1)}|\Psi^{(1)}\rangle)`.
+        let qa = if let (Some(one_body), Some(scratch)) =
+            (one_body.as_ref(), one_body_scratch.as_mut())
+        {
+            apply_factorised_omega_s(&op, &krylov_projection, one_body, scratch, &a.x, world)
+        } else if world.size() > 1 {
+            apply_omega_s_mpi(&op, &krylov_projection, &a.x, world)
+        } else {
+            apply_omega_s(&op, &krylov_projection, &a.x)
+        };
+        let aqa =
+            a.x.iter()
+                .zip(qa.iter())
+                .fold(R::from_real(0.0), |acc, (&aa, &qaa)| acc + aa.conj() * qaa);
+        let norm_first_order = scalar_real(aqa);
+        let erpt2 = ept2 / (1.0 + norm_first_order);
+
         let candidate_scores: Vec<f64> =
             a.x.iter()
                 .zip(v_omega_krylov.iter())
@@ -511,6 +534,8 @@ where
             s2,
             imag_shift,
             ept2,
+            norm_first_order,
+            erpt2,
             candidate_scores,
             amplitudes: a.x.mapv(Into::into),
             rhs: rhs.mapv(Into::into),
