@@ -11,6 +11,7 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::basis::excitation_phase_bits;
 use crate::determinant::Bits;
 use crate::determinant::{NOCIIndex, NOCISpace, NOCISpinStringIndex, SpinStringData};
 use crate::elements::calculate_f_pair_orthogonal;
@@ -32,7 +33,7 @@ use super::{SpinFactorisation, ordered_parent_pair};
 enum OneBodyBlock<T: NOCIScalar> {
     /// Same-parent standard Slater-Condon sparse one-body action, for pairs outside the
     /// contraction form.
-    Orthogonal(OrthogonalOneBodyBlock),
+    Orthogonal(OrthogonalOneBodyBlock<T>),
     /// Spin-factorised nonorthogonal one-body action.
     Factorised(FactorisedOneBodyBlock<T>),
     /// Spin-factorised nonorthogonal one-body action with regenerated factor tables.
@@ -87,14 +88,19 @@ struct OrthogonalOccupationGroup {
     targets: Vec<OrthogonalTarget>,
 }
 
-/// Parent-local occupation lookup for same-parent orthogonal one-body application.
-struct OrthogonalOneBodyBlock {
+/// Parent-local occupation lookup and single-excitation couplings for same-parent orthogonal
+/// one-body application.
+struct OrthogonalOneBodyBlock<T: NOCIScalar> {
     /// Parent `P`.
     parent: usize,
     /// Numerical group keyed by canonical alpha/beta spin-string IDs.
     opos: FastMap<(NOCISpinStringIndex, NOCISpinStringIndex), usize>,
     /// Determinants grouped by the same canonical spin-string pair.
     groups: Vec<OrthogonalOccupationGroup>,
+    /// Offset of each parent entry's couplings in `singles`, followed by their total count.
+    starts: Vec<usize>,
+    /// Single-excitation Fock couplings `(s, F_{ts})` of every target `t`, in parent-entry order.
+    singles: Vec<(usize, T)>,
 }
 
 /// Reusable dense one-body contraction buffers.
@@ -169,6 +175,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     blocks.push(OneBodyBlock::Orthogonal(build_orthogonal_one_body_block(
                         &spin,
                         target_parent,
+                        data.space,
+                        &fock.fock_mocache[target_parent],
                     )));
                 } else if !wicks {
                     return None;
@@ -537,7 +545,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// - `()`: Adds this same-parent contribution into `y`.
     fn apply_one_body_orthogonal<R>(
         &self,
-        block: &OrthogonalOneBodyBlock,
+        block: &OrthogonalOneBodyBlock<T>,
         vectors: (&[R], &mut [R]),
         space: &NOCISpace<T>,
         cache: &FockMOCache<T>,
@@ -558,8 +566,9 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let rows: Vec<(usize, R)> = parent
             .entries
             .par_iter()
-            .filter(|entry| entry.a % nworker == worker)
-            .map(|entry| {
+            .enumerate()
+            .filter(|(_, entry)| entry.a % nworker == worker)
+            .map(|(k, entry)| {
                 let target = NOCIIndex(entry.det);
                 let mut value = zero;
 
@@ -581,8 +590,9 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                 }
 
                 // A one-body operator also connects `\alpha` or `\beta` single excitations.
-                value += gather_orthogonal_singles(block, target, x, space, cache, true);
-                value += gather_orthogonal_singles(block, target, x, space, cache, false);
+                for &(source, f) in &block.singles[block.starts[k]..block.starts[k + 1]] {
+                    value += <R as From<T>>::from(f) * x[source];
+                }
                 (entry.det, value)
             })
             .collect();
@@ -1202,16 +1212,22 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
     }
 }
 
-/// Build same-parent orthogonal one-body action metadata for parent `P`.
+/// Build same-parent orthogonal one-body action data for parent `P`: the occupation lookup and
+/// every target's single-excitation Fock couplings, which stay fixed while the operator is
+/// applied.
 /// # Arguments:
 /// - `spin`: Shared determinant-space factorisation.
 /// - `parent_id`: Parent `P`.
+/// - `space`: Candidate determinant space used for occupations and indices.
+/// - `cache`: MO-basis Fock cache for the parent.
 /// # Returns
-/// - `OrthogonalOneBodyBlock`: Orthogonal same-parent block with occupation lookup data.
-fn build_orthogonal_one_body_block(
+/// - `OrthogonalOneBodyBlock<T>`: Orthogonal same-parent block.
+fn build_orthogonal_one_body_block<T: NOCIScalar>(
     spin: &SpinFactorisation,
     parent_id: usize,
-) -> OrthogonalOneBodyBlock {
+    space: &NOCISpace<T>,
+    cache: &FockMOCache<T>,
+) -> OrthogonalOneBodyBlock<T> {
     // Group retained determinants by their exact parent-local alpha/beta spin-string pair.
     let parent = &spin.parents[parent_id];
     let mut opos = FastMap::default();
@@ -1232,44 +1248,64 @@ fn build_orthogonal_one_body_block(
     }
 
     // Store a direct occupation-pair lookup for same-parent Slater-Condon application.
-    OrthogonalOneBodyBlock {
+    let mut block = OrthogonalOneBodyBlock {
         parent: parent_id,
         opos,
         groups,
-    }
+        starts: Vec::new(),
+        singles: Vec::new(),
+    };
+
+    // Tabulate each target's `\alpha` and `\beta` single-excitation couplings in compressed rows.
+    let rows: Vec<Vec<(usize, T)>> = parent
+        .entries
+        .par_iter()
+        .map(|entry| {
+            let mut row = Vec::new();
+            orthogonal_singles(&block, NOCIIndex(entry.det), space, cache, true, &mut row);
+            orthogonal_singles(&block, NOCIIndex(entry.det), space, cache, false, &mut row);
+            row
+        })
+        .collect();
+    block.starts = std::iter::once(0)
+        .chain(rows.iter().scan(0, |end, row| {
+            *end += row.len();
+            Some(*end)
+        }))
+        .collect();
+    block.singles = rows.into_iter().flatten().collect();
+    block
 }
 
-/// Gather the same-parent single-excitation Fock couplings of one target row,
-/// `\sum_s F_{ts} x_s` over the sources `s` differing from `t` by one `\alpha` or one `\beta`
-/// replacement. Overlaps vanish between distinct determinants of one orthonormal parent.
+/// List the same-parent single-excitation Fock couplings `(s, F_{ts})` of one target row, over the
+/// retained sources `s` differing from `t` by one `\alpha` or one `\beta` replacement. Overlaps
+/// vanish between distinct determinants of one orthonormal parent.
 /// # Arguments:
 /// - `orthogonal`: Parent-local occupation lookup.
 /// - `target`: Target determinant `t`.
-/// - `x`: Source determinant vector.
 /// - `space`: Candidate determinant space used for occupations and indices.
 /// - `cache`: MO-basis Fock cache for the parent.
 /// - `alpha`: Whether to replace an `\alpha` orbital rather than a `\beta` orbital.
+/// - `out`: Couplings to extend.
 /// # Returns
-/// - `R`: Single-excitation contribution to row `t`.
-fn gather_orthogonal_singles<T, R>(
-    orthogonal: &OrthogonalOneBodyBlock,
+/// - `()`: Appends the couplings of row `t` to `out`.
+fn orthogonal_singles<T: NOCIScalar>(
+    orthogonal: &OrthogonalOneBodyBlock<T>,
     target: NOCIIndex,
-    x: &[R],
     space: &NOCISpace<T>,
     cache: &FockMOCache<T>,
     alpha: bool,
-) -> R
-where
-    T: NOCIScalar,
-    R: NOCIScalar + From<T>,
-{
-    let zero = R::from_real(0.0);
+    out: &mut Vec<(usize, T)>,
+) {
     let nmo = cache.fa.nrows();
     let state = space.spin_string_pair(target);
     let strings = space.parent_spin_strings(state.parent);
     let (oa, ob) = space.occupations(target);
-    let occ = if alpha { oa } else { ob };
-    let mut value = zero;
+    let (occ, f_sigma) = if alpha {
+        (oa, &cache.fa)
+    } else {
+        (ob, &cache.fb)
+    };
 
     // Enumerate replacements `i \to a` of the chosen spin, with `i` occupied and `a` virtual,
     // leaving the other spin unchanged.
@@ -1290,18 +1326,19 @@ where
                 continue;
             };
 
-            for source in &orthogonal.groups[opos].targets {
-                let xs = x[source.det];
-                if xs != zero {
-                    let f =
-                        calculate_f_pair_orthogonal(cache, space, target, NOCIIndex(source.det));
-                    value += <R as From<T>>::from(f) * xs;
-                }
-            }
+            // Measured from a source, the target replaces its `part` by `hole`, so by the
+            // Slater-Condon rules `F_{ts} = p F^\sigma_{\text{hole},\text{part}}` with the phase `p`
+            // of that replacement; it is shared by every source with this occupation.
+            let phase = excitation_phase_bits(source_occ, Bits::bit(part), Bits::bit(hole));
+            let f = T::from_real(phase) * f_sigma[(hole, part)];
+            out.extend(
+                orthogonal.groups[opos]
+                    .targets
+                    .iter()
+                    .map(|source| (source.det, f)),
+            );
         }
     }
-
-    value
 }
 
 /// Build same-spin `S` and `F` factor rows from prepared Wick pair batches.
