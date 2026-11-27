@@ -197,7 +197,8 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
 ///   eigenvector of the corrected NOCI state.
 /// - `wicks`: Mutable Wick's intermediates, whose Fock intermediates are rebuilt for this state.
 /// - `run`: MPI communicator, SNOCI iteration index and the converged amplitudes of the previous
-///   geometry, the GMRES initial guesses.
+///   SNOCI iteration, or of the previous geometry on the first iteration, the GMRES initial
+///   guesses.
 /// # Returns:
 /// - `Vec<SNOCIPT2Result>`: NOCI-PT2 results for this state, one per imaginary shift.
 fn solve_pt2_state<T, R, C>(
@@ -420,7 +421,7 @@ where
                 }
             };
 
-            // Start from the previous geometry's amplitudes of this state and shift.
+            // Start from the previous iteration's or geometry's amplitudes of this state and shift.
             let x0 = previous.continue_to(candidate_basis, slot, imag_shift, &rhs);
 
             let g = &opts.gmres;
@@ -715,7 +716,10 @@ where
             // depend on the corrected state.
             let candidate_basis = space.subset(&pool.candidates);
 
-            // Each listed NOCI state receives its own state-specific NOCI-PT2 correction.
+            // Each listed NOCI state receives its own state-specific NOCI-PT2 correction. Only a few
+            // determinants move between iterations, so GMRES starts from the previous iteration's
+            // amplitudes, or from the previous geometry's on the first iteration.
+            let initial = final_state.as_ref().map_or(previous, |state| &state.guess);
             let mut pt2 = Vec::new();
             for (slot, &root) in roots.iter().enumerate() {
                 let state_coeffs = evecs.column(root).to_owned();
@@ -726,7 +730,7 @@ where
                     &blocks,
                     (slot, root, evals[root], &state_coeffs),
                     wicks.as_deref_mut(),
-                    (world, it, previous),
+                    (world, it, initial),
                 ));
             }
             let guess = PT2Guess::new(&candidate_basis, &pt2, &roots, followed.clone());

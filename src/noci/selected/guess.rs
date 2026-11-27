@@ -1,5 +1,6 @@
 // noci/selected/guess.rs
-//! Continuation of converged NOCI-PT2 amplitudes to the next geometry of a scan.
+//! Continuation of converged NOCI-PT2 amplitudes to the next SNOCI iteration or the next geometry
+//! of a scan.
 
 // Standard library imports.
 use std::collections::HashMap;
@@ -16,11 +17,11 @@ use crate::{NOCIScalar, StateScalar};
 // Parent/sibling imports.
 use super::SNOCIPT2Result;
 
-/// Converged NOCI-PT2 amplitudes of one geometry, kept as the GMRES initial guesses of the next,
-/// with the corrected NOCI states that the next geometry follows. A candidate is identified by
-/// the label of its parent reference and its alpha and beta occupations, which the orbital
-/// alignment after SCF keeps comparable between geometries, so candidates of references added or
-/// removed between geometries simply start from zero.
+/// Converged NOCI-PT2 amplitudes of one SNOCI iteration or geometry, kept as the GMRES initial
+/// guesses of the next, with the corrected NOCI states that the next geometry follows. A candidate
+/// is identified by the label of its parent reference and its alpha and beta occupations, which the
+/// orbital alignment after SCF keeps comparable between geometries, so candidates new to the next
+/// iteration or geometry simply start from zero.
 #[derive(Clone, Default)]
 pub struct PT2Guess {
     /// Position of every candidate, keyed by its parent label and alpha and beta occupations.
@@ -78,8 +79,8 @@ impl PT2Guess {
         }
     }
 
-    /// Continue the amplitudes of one state and imaginary shift to the candidates of a new
-    /// geometry. Candidates absent from the previous geometry start from zero. The NOCI state
+    /// Continue the amplitudes of one state and imaginary shift to the candidates of the next
+    /// iteration or geometry. Candidates absent from the previous one start from zero. The NOCI state
     /// is fixed only up to a phase, which carries into both the right-hand side and the
     /// amplitudes, so the amplitudes are rescaled by
     /// `\phi = \langle b_{\text{prev}}, b\rangle / |\langle b_{\text{prev}}, b\rangle|`.
