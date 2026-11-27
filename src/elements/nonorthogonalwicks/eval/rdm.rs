@@ -17,7 +17,7 @@ use crate::time_call;
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 use super::dispatch::{dispatch_pair_ranks, dispatch_rdm_ranks, dispatch_spin_ranks};
-use super::helpers::{MCombinations, extend_rdm_d, mix_dets_same_const};
+use super::helpers::{MCombinations, extend_rdm_d, mix_dets_same_const, rdm_takes_x};
 use super::overlap::xw_overlap_prepared;
 use super::prepare::construct_determinant_indices;
 
@@ -414,13 +414,10 @@ unsafe fn xw_rdmk_same_m0_const<
 
     // Build packed augmented determinant `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
     // Entries use `X^{(0)}` where the column creator stands left of the row annihilator in the
-    // operator string, and `Y^{(0)}` otherwise. The external string is creators first,
-    // `a^\dagger_{p_1}\cdots a^\dagger_{p_K} a_{q_K}\cdots a_{q_1}`, so its whole `K x K` block uses
-    // `X^{(0)}`; the remaining entries take `X^{(0)}` on and below the diagonal.
-    // Thus `D_{ij}=X^{(0)}_{r_i c_j}` if `i\geq j` or `j<K`, and `Y^{(0)}_{r_i c_j}` otherwise.
+    // operator string, and `Y^{(0)}` otherwise, as decided by `rdm_takes_x`.
     for i in 0..D {
         for j in 0..D {
-            let matrix = if i >= j || j < K { x0 } else { y0 };
+            let matrix = if rdm_takes_x(i, j, K, RX) { x0 } else { y0 };
             let mut values = [T::from_real(0.0); LANES];
 
             for lane in 0..LANES {
@@ -516,13 +513,17 @@ unsafe fn xw_rdmk_same_m_const<
         }
     }
 
-    // Build both packed endpoints, with the creators-first external block entirely in `X`:
-    // `D^{(m)}_{ij}=X^{(m)}_{r_i c_j}` if `i\geq j` or `j<K`, and `Y^{(m)}_{r_i c_j}` otherwise.
+    // Build both packed endpoints, taking `X^{(m)}_{r_i c_j}` or `Y^{(m)}_{r_i c_j}` by operator
+    // order as in `rdm_takes_x`.
     let mut d0 = [V::zero(); DD];
     let mut d1 = [V::zero(); DD];
     for i in 0..D {
         for j in 0..D {
-            let (zero, one) = if i >= j || j < K { (x0, x1) } else { (y0, y1) };
+            let (zero, one) = if rdm_takes_x(i, j, K, RX) {
+                (x0, x1)
+            } else {
+                (y0, y1)
+            };
             let mut index = [0usize; LANES];
             for lane in 0..LANES {
                 index[lane] = rows[lane][i] * ext_n + cols[lane][j];
@@ -704,13 +705,13 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
             let (x0, y0, ext_n) = fundamental;
             let d = scratch.det0.as_mut_slice();
 
-            // Construct `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)` at runtime, with
-            // the creators-first external block entirely in `X^{(0)}`:
-            // `D_{ij}=X^{(0)}_{r_i c_j}` for `i\geq j` or `j<K`, and `Y^{(0)}_{r_i c_j}` otherwise.
+            // Construct `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)` at runtime, taking
+            // `X^{(0)}_{r_i c_j}` or `Y^{(0)}_{r_i c_j}` by operator order as in `rdm_takes_x`.
+            let rx = ex.0.holes.count_ones() as usize;
             for (i, &r) in rows.iter().enumerate().take(d_rank) {
                 let row = r * ext_n;
                 for j in 0..d_rank {
-                    d[i * d_rank + j] = if i >= j || j < K {
+                    d[i * d_rank + j] = if rdm_takes_x(i, j, K, rx) {
                         x0[row + cols[j]]
                     } else {
                         y0[row + cols[j]]
@@ -827,14 +828,14 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
             let (x1, y1) = one.unwrap_or((x0, y0));
 
             // Prepare all-`m_i=0` and all-`m_i=1` endpoint determinants. Each allowed distribution
-            // later selects whole columns from these endpoints. The creators-first external
-            // block lies entirely in `X`.
-            // `D^{(m)}_{ij}=X^{(m)}_{r_i c_j}` for `i\geq j` or `j<K`, and `Y^{(m)}_{r_i c_j}` otherwise.
+            // later selects whole columns from these endpoints, taking `X^{(m)}_{r_i c_j}` or
+            // `Y^{(m)}_{r_i c_j}` by operator order as in `rdm_takes_x`.
+            let rx = ex.0.holes.count_ones() as usize;
             for (i, &r) in rows.iter().enumerate().take(d_rank) {
                 let row = r * ext_n;
                 for j in 0..d_rank {
                     let index = i * d_rank + j;
-                    if i >= j || j < K {
+                    if rdm_takes_x(i, j, K, rx) {
                         scratch.det0.as_mut_slice()[index] = x0[row + cols[j]];
                         scratch.det1.as_mut_slice()[index] = x1[row + cols[j]];
                     } else {
