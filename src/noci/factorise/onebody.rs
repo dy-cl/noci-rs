@@ -1,6 +1,13 @@
 // noci/factorise/onebody.rs
 //! Spin-factorised one-body NOCI operator contractions.
 
+#[cfg(feature = "gpu")]
+mod device;
+
+// Crate-visible type re-exports.
+#[cfg(feature = "gpu")]
+pub(crate) use device::DeviceOneBody;
+
 // Standard library imports.
 use std::ops::Range;
 use std::path::Path;

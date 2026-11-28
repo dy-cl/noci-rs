@@ -496,36 +496,58 @@ fn generate_eval() {
         .unwrap_or_else(|e| panic!("failed to write generated dispatch.rs: {e}"));
 }
 
-/// Compile the CUDA kernels of `src/gpu/kernels.cu` into one fatbin under `OUT_DIR` for the `gpu`
-/// feature, with native code for compute capabilities 8.6 (RTX 30 series) and 9.0 (H100/H200)
-/// and compute 9.0 PTX that the driver compiles for newer GPUs. `NVCC` overrides the compiler.
+/// Compile every CUDA source under `src/` to PTX for the `gpu` feature, written under `OUT_DIR` at
+/// the source's path with the `.ptx` extension, so `src/x/device.cu` becomes `OUT_DIR/x/device.ptx`
+/// and the host module beside it includes the kernels by the same path. The PTX targets compute
+/// capability 8.6 (RTX 30 series), and the driver compiles it for that GPU or any newer one such as
+/// the H100/H200, caching the result. `NVCC` overrides the compiler.
 /// # Arguments:
 /// - None.
 /// # Returns:
-/// - `()`: Writes `kernels.fatbin` under `OUT_DIR`.
+/// - `()`: Writes one PTX file per CUDA source under `OUT_DIR`.
 #[cfg(feature = "gpu")]
 fn compile_gpu_kernels() {
-    println!("cargo:rerun-if-changed=src/gpu/kernels.cu");
     println!("cargo:rerun-if-env-changed=NVCC");
 
-    let out =
-        PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is not set")).join("kernels.fatbin");
+    let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is not set"));
     let nvcc = env::var("NVCC").unwrap_or_else(|_| "nvcc".to_string());
 
-    let status = Command::new(&nvcc)
-        .args(["--fatbin", "-O3", "-std=c++17"])
-        .args(["-gencode", "arch=compute_86,code=sm_86"])
-        .args(["-gencode", "arch=compute_90,code=[sm_90,compute_90]"])
-        .arg("-o")
-        .arg(&out)
-        .arg("src/gpu/kernels.cu")
-        .status()
-        .unwrap_or_else(|e| {
-            panic!("could not run {nvcc}: {e}; install the CUDA toolkit or set NVCC")
-        });
+    // Every `.cu` file below `src/`, searched depth first.
+    let mut sources = Vec::new();
+    let mut pending = vec![PathBuf::from("src")];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).expect("cannot read the source tree") {
+            let path = entry.expect("cannot read a source entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "cu") {
+                sources.push(path);
+            }
+        }
+    }
 
-    if !status.success() {
-        panic!("{nvcc} failed to compile src/gpu/kernels.cu");
+    for source in sources {
+        println!("cargo:rerun-if-changed={}", source.display());
+
+        let ptx = out
+            .join(source.strip_prefix("src").expect("CUDA source outside src"))
+            .with_extension("ptx");
+        fs::create_dir_all(ptx.parent().expect("PTX file has no directory"))
+            .expect("cannot create the PTX directory");
+
+        let status = Command::new(&nvcc)
+            .args(["--ptx", "-O3", "-std=c++17", "-arch=compute_86"])
+            .arg("-o")
+            .arg(&ptx)
+            .arg(&source)
+            .status()
+            .unwrap_or_else(|e| {
+                panic!("could not run {nvcc}: {e}; install the CUDA toolkit or set NVCC")
+            });
+
+        if !status.success() {
+            panic!("{nvcc} failed to compile {}", source.display());
+        }
     }
 }
 

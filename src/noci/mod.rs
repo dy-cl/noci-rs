@@ -32,6 +32,8 @@ mod matrix;
 pub use matrix::{build_noci_hs, calculate_noci_energy};
 
 // Crate-visible type re-exports.
+#[cfg(feature = "gpu")]
+pub(crate) use factorise::DeviceOneBody;
 pub(crate) use factorise::{
     AuxiliaryOverlapScratch, OneBodyFactorisation, OneBodyScratch, OverlapFactors, OverlapScratch,
     SpinFactorisation,

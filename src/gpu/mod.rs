@@ -1,7 +1,8 @@
 // gpu/mod.rs
-//! NVIDIA GPU support for the `gpu` feature: the device context and the CUDA kernels of
-//! `kernels.cu`, compiled by `build/build.rs` into one fatbin with native code for compute
-//! capabilities 8.6 and 9.0.
+//! NVIDIA GPU support for the `gpu` feature: the device context shared by every GPU counterpart of
+//! a host routine. Each counterpart sits beside its host module, its kernels in a `.cu` file that
+//! `build/build.rs` compiles to PTX at the same path under `OUT_DIR`, for example
+//! `noci/factorise/onebody/device.{rs,cu}` beside `noci/factorise/onebody.rs`.
 
 // Standard library imports.
 use std::sync::Arc;
@@ -10,19 +11,16 @@ use std::sync::Arc;
 use cudarc::driver::{CudaContext, CudaModule, CudaStream, DriverError};
 use cudarc::nvrtc::Ptx;
 
-/// Kernels compiled by `build/build.rs`.
-const KERNELS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kernels.fatbin"));
-
-/// One GPU with its default stream and the loaded kernels.
+/// One GPU with the stream on which its work is issued.
 pub(crate) struct Device {
+    /// Context of the GPU.
+    context: Arc<CudaContext>,
     /// Stream on which every transfer and kernel of this device is issued, in order.
     pub(crate) stream: Arc<CudaStream>,
-    /// Module holding the kernels of `kernels.cu`.
-    pub(crate) kernels: Arc<CudaModule>,
 }
 
 impl Device {
-    /// Open a GPU, take its default stream and load the kernels.
+    /// Open a GPU and take its default stream.
     /// # Arguments:
     /// - `ordinal`: Index of the GPU among the visible devices.
     /// # Returns:
@@ -30,8 +28,20 @@ impl Device {
     pub(crate) fn new(ordinal: usize) -> Result<Self, DriverError> {
         let context = CudaContext::new(ordinal)?;
         let stream = context.default_stream();
-        let kernels = context.load_module(Ptx::from_binary(KERNELS.to_vec()))?;
 
-        Ok(Self { stream, kernels })
+        Ok(Self { context, stream })
+    }
+
+    /// Load the kernels of one PTX module, which the driver compiles for this GPU.
+    /// # Arguments:
+    /// - `self`: Device.
+    /// - `ptx`: PTX compiled by `build/build.rs`.
+    /// # Returns:
+    /// - `Result<Arc<CudaModule>, DriverError>`: Module holding the PTX's kernels.
+    pub(crate) fn load(
+        &self,
+        ptx: &str,
+    ) -> Result<Arc<CudaModule>, DriverError> {
+        self.context.load_module(Ptx::from_src(ptx))
     }
 }

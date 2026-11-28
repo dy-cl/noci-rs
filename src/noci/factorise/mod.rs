@@ -7,6 +7,8 @@ mod overlap;
 mod storage;
 
 // Crate-visible type re-exports.
+#[cfg(feature = "gpu")]
+pub(crate) use onebody::DeviceOneBody;
 pub(crate) use onebody::{OneBodyFactorisation, OneBodyScratch};
 pub(crate) use overlap::{AuxiliaryOverlapScratch, OverlapFactors, OverlapScratch};
 
