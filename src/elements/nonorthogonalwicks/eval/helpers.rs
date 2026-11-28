@@ -128,40 +128,6 @@ impl Iterator for MCombinations {
     }
 }
 
-/// Decide whether entry `(i, j)` of an augmented RDM contraction determinant takes `X` rather
-/// than `Y`. The determinant lists the `K` external label pairs first, then the `R_x` bra and the
-/// ket excitation pairs, but in the operator string the bra excitations stand left of the external
-/// `a^\dagger_{p_1}\cdots a^\dagger_{p_K} a_{q_K}\cdots a_{q_1}` and the ket excitations right of
-/// it. An entry takes `X` when its column creator stands left of its row annihilator: throughout
-/// the creators-first external block, and otherwise when `o(j) \le o(i)` in operator order `o`.
-/// Listing the pairs out of operator order permutes rows and columns together, which leaves the
-/// determinant unchanged.
-/// # Arguments:
-/// - `i`: Row position in the augmented determinant.
-/// - `j`: Column position in the augmented determinant.
-/// - `k`: Number of external label pairs `K`.
-/// - `rx`: Number of bra excitation pairs `R_x`.
-/// # Returns
-/// - `bool`: Whether the entry takes `X`.
-#[inline(always)]
-pub(super) fn rdm_takes_x(
-    i: usize,
-    j: usize,
-    k: usize,
-    rx: usize,
-) -> bool {
-    let order = |p: usize| {
-        if p < k {
-            rx + p
-        } else if p < k + rx {
-            p - k
-        } else {
-            p
-        }
-    };
-    (i < k && j < k) || order(j) <= order(i)
-}
-
 /// Extend one fundamental-contraction matrix to include the external RDM basis:
 /// `\mathbf D_{\mathrm{ext}}^{(m)}` has upper-left block `\mathbf D^{(m)}`, upper-right block
 /// `\mathbf C_{\mathrm{row}}^\dagger\mathbf D_{\mathrm{RDM}}^{(m)}`, lower-left block

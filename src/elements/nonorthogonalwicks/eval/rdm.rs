@@ -17,7 +17,7 @@ use crate::time_call;
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 use super::dispatch::{dispatch_pair_ranks, dispatch_rdm_ranks, dispatch_spin_ranks};
-use super::helpers::{MCombinations, extend_rdm_d, mix_dets_same_const, rdm_takes_x};
+use super::helpers::{MCombinations, extend_rdm_d, mix_dets_same_const};
 use super::overlap::xw_overlap_prepared;
 use super::prepare::construct_determinant_indices;
 
@@ -346,7 +346,7 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
 /// Each lane evaluates
 /// `\Gamma^{\mathbf p}_{\mathbf q} = {}^{xw}\tilde S`
 /// `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)`, where the external RDM
-/// contractions precede the excitation contractions in the augmented determinant.
+/// contractions stand between the bra and ket excitation contractions, in operator order.
 /// # Arguments:
 /// - `w`: Same-spin Wick intermediates.
 /// - `ex`: Bra and ket excitations.
@@ -377,35 +377,36 @@ unsafe fn xw_rdmk_same_m0_const<
     tol: f64,
     out: &mut [T; LANES],
 ) {
-    // The augmented determinant has rank `D=K+R_x+R_w`. Its first `K` label pairs are
-    // `(r_i,c_i)=(p_i,q_i)` in the external basis, offset by `n_{\text{mo}}` in the slabs.
-    // Excitation labels occupy the remaining positions and are shared by every lane.
+    // The augmented determinant has rank `D=K+R_x+R_w`, its label pairs in operator order: the bra
+    // excitations, the external `(r_i,c_i)=(p_i,q_i)` pairs and the ket excitations. Only the
+    // external labels differ between lanes.
     let (x0, y0, ext_n) = fundamental;
     let mut rows = [[0usize; D]; LANES];
     let mut cols = [[0usize; D]; LANES];
 
-    for lane in 0..LANES {
-        for i in 0..K {
-            rows[lane][i] = w.nmo + requests[lane].0[i];
-            cols[lane][i] = w.nmo + requests[lane].1[i];
-        }
-    }
-
-    // Append bra `(a,i)` pairs in the compact `V_x \times O_x` orbital spaces.
+    // Bra `(a,i)` pairs in the compact `V_x \times O_x` orbital spaces come first.
     let nocc = w.nocc;
     let nvirt = w.nmo - nocc;
     for (i, (hole, part)) in ex.0.holes.ones().zip(ex.0.parts.ones()).enumerate() {
         for lane in 0..LANES {
-            cols[lane][K + i] = hole;
-            rows[lane][K + i] = part - nocc;
+            cols[lane][i] = hole;
+            rows[lane][i] = part - nocc;
         }
     }
 
-    // Append ket `(j,b)` pairs in `O_w \times V_w`, after all bra excitation labels.
+    // The external `(p_i,q_i)` pairs follow, offset by `n_{\text{mo}}` in the slabs.
+    for lane in 0..LANES {
+        for i in 0..K {
+            rows[lane][RX + i] = w.nmo + requests[lane].0[i];
+            cols[lane][RX + i] = w.nmo + requests[lane].1[i];
+        }
+    }
+
+    // Ket `(j,b)` pairs in `O_w \times V_w` come last.
     for (i, (hole, part)) in ex.1.holes.ones().zip(ex.1.parts.ones()).enumerate() {
         for lane in 0..LANES {
-            rows[lane][K + RX + i] = nvirt + hole;
-            cols[lane][K + RX + i] = part;
+            rows[lane][RX + K + i] = nvirt + hole;
+            cols[lane][RX + K + i] = part;
         }
     }
 
@@ -414,10 +415,15 @@ unsafe fn xw_rdmk_same_m0_const<
 
     // Build packed augmented determinant `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
     // Entries use `X^{(0)}` where the column creator stands left of the row annihilator in the
-    // operator string, and `Y^{(0)}` otherwise, as decided by `rdm_takes_x`.
+    // operator string, and `Y^{(0)}` otherwise. With the labels in operator order that is on and
+    // below the diagonal, and throughout the creators-first external block.
     for i in 0..D {
         for j in 0..D {
-            let matrix = if rdm_takes_x(i, j, K, RX) { x0 } else { y0 };
+            let matrix = if i >= j || (RX <= i && j < RX + K) {
+                x0
+            } else {
+                y0
+            };
             let mut values = [T::from_real(0.0); LANES];
 
             for lane in 0..LANES {
@@ -450,7 +456,8 @@ unsafe fn xw_rdmk_same_m0_const<
 /// `\Gamma^{\mathbf p}_{\mathbf q} = {}^{xw}\tilde S\sum_{m_1+\cdots+m_D=m}`
 /// `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(m_1,\ldots,m_D)`, keeping only the terms with
 /// `|\det\mathbf D_{\mathrm{RDM}}(\{m_i\})|>tol`. Column i of every term comes from the
-/// `m_i` endpoint, with the external RDM contractions preceding the excitation contractions.
+/// `m_i` endpoint, with the external RDM contractions between the bra and ket excitation
+/// contractions in operator order.
 /// # Arguments:
 /// - `w`: Same-spin Wick intermediates with `m > 0`.
 /// - `ex`: Bra and ket excitations.
@@ -488,38 +495,39 @@ unsafe fn xw_rdmk_same_m_const<
     let mut rows = [[0usize; D]; LANES];
     let mut cols = [[0usize; D]; LANES];
 
-    for lane in 0..LANES {
-        for i in 0..K {
-            rows[lane][i] = w.nmo + requests[lane].0[i];
-            cols[lane][i] = w.nmo + requests[lane].1[i];
-        }
-    }
-
-    // Append bra `(a,i)` pairs in the compact `V_x \times O_x` orbital spaces.
+    // Bra `(a,i)` pairs in the compact `V_x \times O_x` orbital spaces come first.
     let nocc = w.nocc;
     let nvirt = w.nmo - nocc;
     for (i, (hole, part)) in ex.0.holes.ones().zip(ex.0.parts.ones()).enumerate() {
         for lane in 0..LANES {
-            cols[lane][K + i] = hole;
-            rows[lane][K + i] = part - nocc;
+            cols[lane][i] = hole;
+            rows[lane][i] = part - nocc;
         }
     }
 
-    // Append ket `(j,b)` pairs in `O_w \times V_w`, after all bra excitation labels.
+    // The external `(p_i,q_i)` pairs follow, offset by `n_{\text{mo}}` in the slabs.
+    for lane in 0..LANES {
+        for i in 0..K {
+            rows[lane][RX + i] = w.nmo + requests[lane].0[i];
+            cols[lane][RX + i] = w.nmo + requests[lane].1[i];
+        }
+    }
+
+    // Ket `(j,b)` pairs in `O_w \times V_w` come last.
     for (i, (hole, part)) in ex.1.holes.ones().zip(ex.1.parts.ones()).enumerate() {
         for lane in 0..LANES {
-            rows[lane][K + RX + i] = nvirt + hole;
-            cols[lane][K + RX + i] = part;
+            rows[lane][RX + K + i] = nvirt + hole;
+            cols[lane][RX + K + i] = part;
         }
     }
 
-    // Build both packed endpoints, taking `X^{(m)}_{r_i c_j}` or `Y^{(m)}_{r_i c_j}` by operator
-    // order as in `rdm_takes_x`.
+    // Build both packed endpoints, taking `X^{(m)}_{r_i c_j}` on and below the diagonal and
+    // throughout the external block, and `Y^{(m)}_{r_i c_j}` otherwise.
     let mut d0 = [V::zero(); DD];
     let mut d1 = [V::zero(); DD];
     for i in 0..D {
         for j in 0..D {
-            let (zero, one) = if rdm_takes_x(i, j, K, RX) {
+            let (zero, one) = if i >= j || (RX <= i && j < RX + K) {
                 (x0, x1)
             } else {
                 (y0, y1)
@@ -689,29 +697,33 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_gen_prepared,
         {
-            // `D=K+R_x+R_w`: put external `(p,q)` labels first, followed by the compact
-            // bra `(a,i)` and ket `(j,b)` excitation labels.
+            // `D=K+R_x+R_w` labels in operator order: the compact bra `(a,i)` pairs, the external
+            // `(p,q)` pairs and the compact ket `(j,b)` pairs.
             let l = ex.0.holes.count_ones() as usize + ex.1.holes.count_ones() as usize;
             let d_rank = K + l;
             scratch.ensure_same(d_rank);
             let rows = scratch.rows.as_mut_slice();
             let cols = scratch.cols.as_mut_slice();
+            let rx = ex.0.holes.count_ones() as usize;
+            construct_determinant_indices(ex.0, ex.1, w, &mut rows[..l], &mut cols[..l]);
+
+            // Move the ket labels up to leave the external pairs between the bra and ket labels.
+            rows.copy_within(rx..l, rx + K);
+            cols.copy_within(rx..l, rx + K);
             for i in 0..K {
-                rows[i] = w.nmo + request.0[i];
-                cols[i] = w.nmo + request.1[i];
+                rows[rx + i] = w.nmo + request.0[i];
+                cols[rx + i] = w.nmo + request.1[i];
             }
-            construct_determinant_indices(ex.0, ex.1, w, &mut rows[K..], &mut cols[K..]);
 
             let (x0, y0, ext_n) = fundamental;
             let d = scratch.det0.as_mut_slice();
 
             // Construct `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)` at runtime, taking
-            // `X^{(0)}_{r_i c_j}` or `Y^{(0)}_{r_i c_j}` by operator order as in `rdm_takes_x`.
-            let rx = ex.0.holes.count_ones() as usize;
+            // `X^{(0)}_{r_i c_j}` on and below the diagonal and throughout the external block.
             for (i, &r) in rows.iter().enumerate().take(d_rank) {
                 let row = r * ext_n;
                 for j in 0..d_rank {
-                    d[i * d_rank + j] = if rdm_takes_x(i, j, K, rx) {
+                    d[i * d_rank + j] = if i >= j || (rx <= i && j < rx + K) {
                         x0[row + cols[j]]
                     } else {
                         y0[row + cols[j]]
@@ -811,31 +823,35 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_gen_prepared,
         {
-            // Build external-first labels for augmented rank `D = K + L`:
-            // `(p,q)` external pairs, then `(a,i)` bra pairs and `(j,b)` ket pairs.
+            // Labels of augmented rank `D = K + L` in operator order: `(a,i)` bra pairs, `(p,q)`
+            // external pairs and `(j,b)` ket pairs.
             let l = ex.0.holes.count_ones() as usize + ex.1.holes.count_ones() as usize;
             let d_rank = K + l;
             scratch.ensure_same(d_rank);
             let rows = scratch.rows.as_mut_slice();
             let cols = scratch.cols.as_mut_slice();
+            let rx = ex.0.holes.count_ones() as usize;
+            construct_determinant_indices(ex.0, ex.1, w, &mut rows[..l], &mut cols[..l]);
+
+            // Move the ket labels up to leave the external pairs between the bra and ket labels.
+            rows.copy_within(rx..l, rx + K);
+            cols.copy_within(rx..l, rx + K);
             for i in 0..K {
-                rows[i] = w.nmo + request.0[i];
-                cols[i] = w.nmo + request.1[i];
+                rows[rx + i] = w.nmo + request.0[i];
+                cols[rx + i] = w.nmo + request.1[i];
             }
-            construct_determinant_indices(ex.0, ex.1, w, &mut rows[K..], &mut cols[K..]);
 
             let (x0, y0, one, ext_n) = fundamental;
             let (x1, y1) = one.unwrap_or((x0, y0));
 
             // Prepare all-`m_i=0` and all-`m_i=1` endpoint determinants. Each allowed distribution
-            // later selects whole columns from these endpoints, taking `X^{(m)}_{r_i c_j}` or
-            // `Y^{(m)}_{r_i c_j}` by operator order as in `rdm_takes_x`.
-            let rx = ex.0.holes.count_ones() as usize;
+            // later selects whole columns from these endpoints, taking `X^{(m)}_{r_i c_j}` on and
+            // below the diagonal and throughout the external block, `Y^{(m)}_{r_i c_j}` otherwise.
             for (i, &r) in rows.iter().enumerate().take(d_rank) {
                 let row = r * ext_n;
                 for j in 0..d_rank {
                     let index = i * d_rank + j;
-                    if rdm_takes_x(i, j, K, rx) {
+                    if i >= j || (rx <= i && j < rx + K) {
                         scratch.det0.as_mut_slice()[index] = x0[row + cols[j]];
                         scratch.det1.as_mut_slice()[index] = x1[row + cols[j]];
                     } else {
