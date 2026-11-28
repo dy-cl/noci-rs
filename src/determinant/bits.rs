@@ -73,6 +73,7 @@ impl Bits {
 
     /// Whether orbital `p` is in the set.
     /// # Arguments:
+    /// - `self`: Bitstring.
     /// - `p`: Orbital index, below [`Bits::CAPACITY`].
     /// # Returns
     /// - `bool`: Whether bit `p` is set.
@@ -85,6 +86,8 @@ impl Bits {
     }
 
     /// Number of orbitals in the set.
+    /// # Arguments:
+    /// - `self`: Bitstring.
     /// # Returns
     /// - `u32`: Population count.
     #[inline(always)]
@@ -95,6 +98,7 @@ impl Bits {
     /// Number of orbitals in the set below `p`, `|\{q \in self : q < p\}|`, whose parity is the
     /// fermionic sign of moving an operator past them.
     /// # Arguments:
+    /// - `self`: Bitstring.
     /// - `p`: Exclusive upper bound, below [`Bits::CAPACITY`].
     /// # Returns
     /// - `u32`: Population count below `p`.
@@ -112,6 +116,8 @@ impl Bits {
     }
 
     /// Whether the set is empty.
+    /// # Arguments:
+    /// - `self`: Bitstring.
     /// # Returns
     /// - `bool`: Whether no bit is set.
     #[inline(always)]
@@ -120,6 +126,8 @@ impl Bits {
     }
 
     /// Lowest orbital of a non-empty set.
+    /// # Arguments:
+    /// - `self`: Bitstring.
     /// # Returns
     /// - `usize`: Index of the lowest set bit.
     /// # Panics
@@ -135,6 +143,8 @@ impl Bits {
     }
 
     /// Highest orbital of a non-empty set.
+    /// # Arguments:
+    /// - `self`: Bitstring.
     /// # Returns
     /// - `usize`: Index of the highest set bit.
     /// # Panics
@@ -150,6 +160,8 @@ impl Bits {
     }
 
     /// The set without its lowest orbital, `x \& (x - 1)`.
+    /// # Arguments:
+    /// - `self`: Bitstring.
     /// # Returns
     /// - `Bits`: Bitstring with the lowest set bit cleared.
     #[inline(always)]
@@ -163,6 +175,8 @@ impl Bits {
 
     /// The 64-bit words from the lowest orbital up, without trailing zero words beyond the first
     /// two, so fingerprints match those of a `u128` and do not depend on the width of the build.
+    /// # Arguments:
+    /// - `self`: Bitstring.
     /// # Returns
     /// - `&[u64]`: Significant words of the bitstring.
     #[inline(always)]
@@ -177,6 +191,8 @@ impl Bits {
     }
 
     /// Orbitals of the set in increasing order.
+    /// # Arguments:
+    /// - `self`: Bitstring.
     /// # Returns
     /// - `Ones`: Iterator over the set bits.
     #[inline(always)]
@@ -189,6 +205,8 @@ impl Iterator for Ones {
     type Item = usize;
 
     /// Next orbital of the set.
+    /// # Arguments:
+    /// - `self`: Iterator holding the orbitals not yet returned.
     /// # Returns
     /// - `Option<usize>`: Lowest remaining orbital, or `None` once the set is exhausted.
     #[inline(always)]
@@ -205,7 +223,10 @@ impl Iterator for Ones {
 impl Hash for Bits {
     /// Hash the words from the lowest orbital up, as a `u128` is hashed.
     /// # Arguments:
+    /// - `self`: Bitstring.
     /// - `state`: Hasher receiving the words.
+    /// # Returns
+    /// - `()`: Writes the words into `state`.
     fn hash<H: Hasher>(
         &self,
         state: &mut H,
@@ -219,6 +240,7 @@ impl Hash for Bits {
 impl Ord for Bits {
     /// Compare as unsigned integers, from the highest orbital down, as `u128`s compare.
     /// # Arguments:
+    /// - `self`: Bitstring.
     /// - `other`: Bitstring to compare with.
     /// # Returns
     /// - `Ordering`: Integer ordering of the two bitstrings.
@@ -249,6 +271,7 @@ impl Ord for Bits {
 impl PartialOrd for Bits {
     /// Compare as unsigned integers, from the highest orbital down.
     /// # Arguments:
+    /// - `self`: Bitstring.
     /// - `other`: Bitstring to compare with.
     /// # Returns
     /// - `Option<Ordering>`: Integer ordering of the two bitstrings.
@@ -266,6 +289,12 @@ macro_rules! wordwise {
         impl $trait for Bits {
             type Output = Bits;
 
+            /// Combine two bitstrings word by word.
+            /// # Arguments:
+            /// - `self`: Left bitstring.
+            /// - `rhs`: Right bitstring.
+            /// # Returns
+            /// - `Bits`: Word-wise result.
             #[inline(always)]
             fn $method(
                 mut self,
@@ -277,6 +306,12 @@ macro_rules! wordwise {
         }
 
         impl $assign for Bits {
+            /// Combine another bitstring into this one word by word.
+            /// # Arguments:
+            /// - `self`: Bitstring updated in place.
+            /// - `rhs`: Right bitstring.
+            /// # Returns
+            /// - `()`: Updates `self` in place.
             #[inline(always)]
             fn $assign_method(
                 &mut self,
@@ -298,6 +333,8 @@ impl Not for Bits {
     type Output = Bits;
 
     /// Complement over all [`Bits::CAPACITY`] orbitals.
+    /// # Arguments:
+    /// - `self`: Bitstring.
     /// # Returns
     /// - `Bits`: Bitstring with every bit flipped.
     #[inline(always)]
