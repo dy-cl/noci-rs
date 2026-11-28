@@ -1,7 +1,12 @@
 // noci/selected/types.rs
 //! SNOCI projected operators and their low-rank preconditioners.
 
-// Standard library imports.
+#[cfg(feature = "gpu")]
+mod device;
+
+// Restricted type re-exports.
+#[cfg(feature = "gpu")]
+pub(in crate::noci::selected) use device::{DevicePT2Projection, DevicePreconditioner};
 
 // External crate imports.
 use ndarray::{Array1, Array2};
@@ -63,7 +68,7 @@ pub struct SNOCIPT2Result {
     pub max_abs_av: f64,
     /// GMRES solve for this imaginary shift: the first-order amplitudes `a_i` with the residual,
     /// iteration count and convergence of the solve.
-    pub gmres: GMRESResult<Complex64>,
+    pub gmres: GMRESResult<Array1<Complex64>>,
 }
 
 /// Total NOCI-PT2 energy of one corrected NOCI state at one imaginary shift.

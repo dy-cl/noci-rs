@@ -30,8 +30,8 @@
 /// @param x Source determinant vector.
 /// @param n_t1 Number of target first-spin strings.
 /// @param n_s2 Number of source second-spin strings.
-/// @param tf Output `T^F`, row-major `n_t1 x n_s2`.
-/// @param ts Output `T^S`, row-major `n_t1 x n_s2`.
+/// @param first_f Output `T^F`, row-major `n_t1 x n_s2`.
+/// @param first_s Output `T^S`, row-major `n_t1 x n_s2`.
 extern "C" __global__ void apply_one_body_factorised_first(
     const double *f1,
     const double *s1,
@@ -42,8 +42,8 @@ extern "C" __global__ void apply_one_body_factorised_first(
     const double *x,
     unsigned long long n_t1,
     unsigned long long n_s2,
-    double *tf,
-    double *ts
+    double *first_f,
+    double *first_s
 ) {
     unsigned long long idx = blockIdx.x * (unsigned long long)blockDim.x + threadIdx.x;
     if (idx >= n_t1 * n_s2) {
@@ -64,8 +64,8 @@ extern "C" __global__ void apply_one_body_factorised_first(
         as += s1row[first[k]] * xe;
     }
 
-    tf[idx] = af;
-    ts[idx] = as;
+    first_f[idx] = af;
+    first_s[idx] = as;
 }
 
 /// @brief Second contraction of a factorised parent pair, accumulated into the target vector.
@@ -74,8 +74,8 @@ extern "C" __global__ void apply_one_body_factorised_first(
 /// `y += \sum_{s_2} T^F_{t_1 s_2} S_{2, t_2 s_2} + T^S_{t_1 s_2} (F_{2, t_2 s_2} + \lambda S_{2, t_2 s_2})`.
 /// Each target appears once per pair, so no two warps write the same element.
 ///
-/// @param tf First contraction `T^F`, row-major `n_t1 x n_s2`.
-/// @param ts First contraction `T^S`, row-major `n_t1 x n_s2`.
+/// @param first_f First contraction `T^F`, row-major `n_t1 x n_s2`.
+/// @param first_s First contraction `T^S`, row-major `n_t1 x n_s2`.
 /// @param f2 Second-spin Fock factors, row-major `n_t2 x n_s2`.
 /// @param s2 Second-spin overlap factors, row-major `n_t2 x n_s2`.
 /// @param n_s2 Number of source second-spin strings.
@@ -86,8 +86,8 @@ extern "C" __global__ void apply_one_body_factorised_first(
 /// @param lambda Overlap shift `\lambda`.
 /// @param y Target determinant vector to accumulate into.
 extern "C" __global__ void apply_one_body_factorised_second(
-    const double *tf,
-    const double *ts,
+    const double *first_f,
+    const double *first_s,
     const double *f2,
     const double *s2,
     unsigned long long n_s2,
@@ -104,15 +104,15 @@ extern "C" __global__ void apply_one_body_factorised_second(
         return;
     }
 
-    const double *tfrow = tf + t1[warp] * n_s2;
-    const double *tsrow = ts + t1[warp] * n_s2;
+    const double *first_frow = first_f + t1[warp] * n_s2;
+    const double *first_srow = first_s + t1[warp] * n_s2;
     const double *f2row = f2 + t2[warp] * n_s2;
     const double *s2row = s2 + t2[warp] * n_s2;
 
     // Each lane sums a strided share of the second-spin strings.
     double value = 0.0;
     for (unsigned long long j = lane; j < n_s2; j += WARP) {
-        value += tfrow[j] * s2row[j] + tsrow[j] * (f2row[j] + lambda * s2row[j]);
+        value += first_frow[j] * s2row[j] + first_srow[j] * (f2row[j] + lambda * s2row[j]);
     }
 
     // Reduce the lanes' partial sums into lane zero.

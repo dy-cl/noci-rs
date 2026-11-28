@@ -1,12 +1,12 @@
 // noci/factorise/onebody/device.rs
 //! `DeviceOneBody`, the GPU counterpart of `OneBodyFactorisation` in `onebody.rs`, with its kernels
 //! in `device.cu`. Each type and method mirrors the host one of the same name: `DeviceOneBodyBlock`
-//! for `OneBodyBlock`, and `apply_one_body`, `apply_one_body_factorised` and
-//! `apply_one_body_orthogonal` for the host methods. Its factor tables, the index arrays of
-//! its source and target determinants and its work buffers are uploaded once, so applying
-//! `(F + \lambda S)` to a vector moves only that vector and the result. Real operators and vectors
-//! only; a factorisation with contraction-form or transient pairs, or with complex factors, stays
-//! on the host.
+//! for `OneBodyBlock`, `DeviceOneBodyScratch` for `OneBodyScratch`, and `apply_one_body`,
+//! `apply_one_body_factorised` and `apply_one_body_orthogonal` for the host methods. The factor
+//! tables and the index arrays of the source and target determinants are uploaded once per
+//! factorisation, and `apply_one_body` takes and returns vectors resident on the same GPU. Real
+//! operators and vectors only; a factorisation with contraction-form or transient pairs, or with
+//! complex factors, stays on the host.
 
 // External crate imports.
 use cudarc::driver::{CudaFunction, CudaSlice, DriverError, LaunchConfig, PushKernelArg};
@@ -28,9 +28,6 @@ const KERNELS: &str = include_str!(concat!(
     env!("OUT_DIR"),
     "/noci/factorise/onebody/device.ptx"
 ));
-
-/// Threads per block of every kernel launch.
-const THREADS: u32 = 256;
 
 /// Threads per warp, matching `WARP` in `device.cu`.
 const WARP: u64 = 32;
@@ -99,38 +96,30 @@ enum DeviceOneBodyBlock {
     Orthogonal(Box<DeviceOrthogonalOneBodyBlock>),
 }
 
-/// The kernels of `device.cu` on the GPU that runs them.
-struct DeviceOneBodyKernels {
-    /// GPU and the stream every launch is issued on.
-    device: Device,
+/// First-contraction buffers, the counterpart of `OneBodyScratch`.
+pub(crate) struct DeviceOneBodyScratch {
+    /// First contraction `T^F` of the current factorised pair, sized for the largest pair.
+    first_f: CudaSlice<f64>,
+    /// First contraction `T^S` of the current factorised pair, sized for the largest pair.
+    first_s: CudaSlice<f64>,
+}
+
+/// The spin-factorised one-body operator on a GPU.
+pub(crate) struct DeviceOneBody {
+    /// GPU and the stream every transfer and launch is issued on.
+    pub(crate) device: Device,
+    /// Parent pairs in the host factorisation's order.
+    blocks: Vec<DeviceOneBodyBlock>,
+    /// Length of the determinant vectors.
+    n: usize,
+    /// Largest first contraction `n_t1 x n_s2` of any factorised pair.
+    nscratch: usize,
     /// Kernel `apply_one_body_factorised_first`.
     first: CudaFunction,
     /// Kernel `apply_one_body_factorised_second`.
     second: CudaFunction,
     /// Kernel `apply_one_body_orthogonal`.
     orthogonal: CudaFunction,
-}
-
-/// Device vectors of one application, the counterpart of the host's vectors and scratch.
-struct DeviceOneBodyScratch {
-    /// Source vector.
-    x: CudaSlice<f64>,
-    /// Output vector.
-    y: CudaSlice<f64>,
-    /// First contraction `T^F` of the current factorised pair, sized for the largest pair.
-    tf: CudaSlice<f64>,
-    /// First contraction `T^S` of the current factorised pair, sized for the largest pair.
-    ts: CudaSlice<f64>,
-}
-
-/// The spin-factorised one-body operator on a GPU, with its source and output vectors.
-pub(crate) struct DeviceOneBody {
-    /// Kernels and the GPU that runs them.
-    kernels: DeviceOneBodyKernels,
-    /// Parent pairs in the host factorisation's order.
-    blocks: Vec<DeviceOneBodyBlock>,
-    /// Vectors and scratch.
-    scratch: DeviceOneBodyScratch,
 }
 
 impl DeviceOneBody {
@@ -143,7 +132,7 @@ impl DeviceOneBody {
     /// # Returns:
     /// - `Option<Result<DeviceOneBody, DriverError>>`: The device operator, a driver error, or
     ///   `None` when the factorisation stays on the host.
-    pub(crate) fn new<T: NOCIScalar>(
+    pub(super) fn new<T: NOCIScalar>(
         one_body: &OneBodyFactorisation<T>,
         data: &NOCIData<'_, T>,
         fock: &FockData<'_, T>,
@@ -163,7 +152,7 @@ impl DeviceOneBody {
         Some(Self::upload(one_body, data, fock))
     }
 
-    /// Upload every parent pair, allocate the vectors and scratch and load the kernels.
+    /// Upload every parent pair and load the kernels.
     /// # Arguments:
     /// - `one_body`: Host factorisation of real pairs in factorised or orthogonal form.
     /// - `data`: Shared NOCI data over the determinant space the factorisation was built on.
@@ -301,25 +290,30 @@ impl DeviceOneBody {
             }
         }
 
-        let scratch = DeviceOneBodyScratch {
-            x: stream.alloc_zeros(n)?,
-            y: stream.alloc_zeros(n)?,
-            tf: stream.alloc_zeros(nscratch.max(1))?,
-            ts: stream.alloc_zeros(nscratch.max(1))?,
-        };
-
         let module = device.load(KERNELS)?;
-        let kernels = DeviceOneBodyKernels {
+
+        Ok(Self {
             first: module.load_function("apply_one_body_factorised_first")?,
             second: module.load_function("apply_one_body_factorised_second")?,
             orthogonal: module.load_function("apply_one_body_orthogonal")?,
             device,
-        };
-
-        Ok(Self {
-            kernels,
             blocks,
-            scratch,
+            n,
+            nscratch,
+        })
+    }
+
+    /// Allocate the first-contraction buffers, the counterpart of `OneBodyFactorisation::scratch`.
+    /// # Arguments:
+    /// - `self`: Device operator.
+    /// # Returns:
+    /// - `Result<DeviceOneBodyScratch, DriverError>`: Zeroed buffers.
+    pub(super) fn scratch(&self) -> Result<DeviceOneBodyScratch, DriverError> {
+        let stream = &self.device.stream;
+
+        Ok(DeviceOneBodyScratch {
+            first_f: stream.alloc_zeros(self.nscratch.max(1))?,
+            first_s: stream.alloc_zeros(self.nscratch.max(1))?,
         })
     }
 
@@ -327,53 +321,53 @@ impl DeviceOneBody {
     /// `OneBodyFactorisation::apply_one_body`.
     /// # Arguments:
     /// - `self`: Device operator.
-    /// - `x`: Source determinant vector.
+    /// - `x`: Source determinant vector on the GPU.
     /// - `lambda`: Overlap shift `\lambda`.
+    /// - `scratch`: First-contraction buffers.
     /// # Returns:
-    /// - `Result<Vec<f64>, DriverError>`: The product `y`.
+    /// - `Result<CudaSlice<f64>, DriverError>`: The product `y` on the GPU.
     pub(crate) fn apply_one_body(
-        &mut self,
-        x: &[f64],
+        &self,
+        x: &CudaSlice<f64>,
         lambda: f64,
-    ) -> Result<Vec<f64>, DriverError> {
-        let stream = &self.kernels.device.stream;
-        let scratch = &mut self.scratch;
-        stream.memcpy_htod(x, &mut scratch.x)?;
-        stream.memset_zeros(&mut scratch.y)?;
+        scratch: &mut DeviceOneBodyScratch,
+    ) -> Result<CudaSlice<f64>, DriverError> {
+        let mut y = self.device.stream.alloc_zeros(self.n)?;
 
         // Launches run in order on one stream, so the pairs' additions into `y` never overlap.
         for block in &self.blocks {
             match block {
-                DeviceOneBodyBlock::Factorised(block) => self
-                    .kernels
-                    .apply_one_body_factorised(block, scratch, lambda)?,
-                DeviceOneBodyBlock::Orthogonal(block) => self
-                    .kernels
-                    .apply_one_body_orthogonal(block, scratch, lambda)?,
+                DeviceOneBodyBlock::Factorised(block) => {
+                    self.apply_one_body_factorised(block, (x, &mut y), lambda, scratch)?
+                }
+                DeviceOneBodyBlock::Orthogonal(block) => {
+                    self.apply_one_body_orthogonal(block, (x, &mut y), lambda)?
+                }
             }
         }
 
-        stream.clone_dtoh(&scratch.y)
+        Ok(y)
     }
-}
 
-impl DeviceOneBodyKernels {
     /// Apply one factorised parent pair, the counterpart of
     /// `OneBodyFactorisation::apply_one_body_factorised`: the first contractions `T^F = F_1 D`
     /// and `T^S = S_1 D`, then the second contraction added into `y`, one warp per target.
     /// # Arguments:
-    /// - `self`: Kernels.
+    /// - `self`: Device operator.
     /// - `block`: Factorised parent pair.
-    /// - `scratch`: Vectors and scratch; `x` holds the source vector.
+    /// - `vectors`: Source vector `x` and the product `y` being accumulated.
     /// - `lambda`: Overlap shift `\lambda`.
+    /// - `scratch`: First-contraction buffers.
     /// # Returns:
-    /// - `Result<(), DriverError>`: Adds this pair's contribution into `scratch.y`.
+    /// - `Result<(), DriverError>`: Adds this pair's contribution into `y`.
     fn apply_one_body_factorised(
         &self,
         block: &DeviceFactorisedOneBodyBlock,
-        scratch: &mut DeviceOneBodyScratch,
+        vectors: (&CudaSlice<f64>, &mut CudaSlice<f64>),
         lambda: f64,
+        scratch: &mut DeviceOneBodyScratch,
     ) -> Result<(), DriverError> {
+        let (x, y) = vectors;
         let stream = &self.device.stream;
 
         let mut launch = stream.launch_builder(&self.first);
@@ -382,20 +376,22 @@ impl DeviceOneBodyKernels {
             .arg(&block.offsets)
             .arg(&block.first)
             .arg(&block.sources);
-        launch.arg(&scratch.x).arg(&block.n_t1).arg(&block.n_s2);
-        launch.arg(&mut scratch.tf).arg(&mut scratch.ts);
-        unsafe { launch.launch(grid(block.n_t1 * block.n_s2)) }?;
+        launch.arg(x).arg(&block.n_t1).arg(&block.n_s2);
+        launch.arg(&mut scratch.first_f).arg(&mut scratch.first_s);
+        let threads = (block.n_t1 * block.n_s2).max(1) as u32;
+        unsafe { launch.launch(LaunchConfig::for_num_elems(threads)) }?;
 
         let mut launch = stream.launch_builder(&self.second);
-        launch.arg(&scratch.tf).arg(&scratch.ts);
+        launch.arg(&scratch.first_f).arg(&scratch.first_s);
         launch.arg(&block.f2).arg(&block.s2).arg(&block.n_s2);
         launch
             .arg(&block.targets)
             .arg(&block.t1)
             .arg(&block.t2)
             .arg(&block.ntarget);
-        launch.arg(&lambda).arg(&mut scratch.y);
-        unsafe { launch.launch(grid(WARP * block.ntarget)) }?;
+        launch.arg(&lambda).arg(y);
+        let threads = (WARP * block.ntarget).max(1) as u32;
+        unsafe { launch.launch(LaunchConfig::for_num_elems(threads)) }?;
 
         Ok(())
     }
@@ -403,18 +399,19 @@ impl DeviceOneBodyKernels {
     /// Apply one same-parent orthogonal pair, the counterpart of
     /// `OneBodyFactorisation::apply_one_body_orthogonal`, one thread per target.
     /// # Arguments:
-    /// - `self`: Kernels.
+    /// - `self`: Device operator.
     /// - `block`: Same-parent orthogonal pair.
-    /// - `scratch`: Vectors and scratch; `x` holds the source vector.
+    /// - `vectors`: Source vector `x` and the product `y` being accumulated.
     /// - `lambda`: Overlap shift `\lambda`.
     /// # Returns:
-    /// - `Result<(), DriverError>`: Adds this pair's contribution into `scratch.y`.
+    /// - `Result<(), DriverError>`: Adds this pair's contribution into `y`.
     fn apply_one_body_orthogonal(
         &self,
         block: &DeviceOrthogonalOneBodyBlock,
-        scratch: &mut DeviceOneBodyScratch,
+        vectors: (&CudaSlice<f64>, &mut CudaSlice<f64>),
         lambda: f64,
     ) -> Result<(), DriverError> {
+        let (x, y) = vectors;
         let stream = &self.device.stream;
 
         let mut launch = stream.launch_builder(&self.orthogonal);
@@ -424,26 +421,11 @@ impl DeviceOneBodyKernels {
             .arg(&block.single_f);
         launch.arg(&block.same_offsets).arg(&block.same_source);
         launch.arg(&block.same_f).arg(&block.same_s);
-        launch
-            .arg(&block.targets)
-            .arg(&block.ntarget)
-            .arg(&scratch.x);
-        launch.arg(&lambda).arg(&mut scratch.y);
-        unsafe { launch.launch(grid(block.ntarget)) }?;
+        launch.arg(&block.targets).arg(&block.ntarget).arg(x);
+        launch.arg(&lambda).arg(y);
+        let threads = block.ntarget.max(1) as u32;
+        unsafe { launch.launch(LaunchConfig::for_num_elems(threads)) }?;
 
         Ok(())
-    }
-}
-
-/// Launch configuration with one thread per work item in blocks of `THREADS`.
-/// # Arguments:
-/// - `items`: Number of threads needed.
-/// # Returns:
-/// - `LaunchConfig`: Grid of enough blocks to cover `items`.
-fn grid(items: u64) -> LaunchConfig {
-    LaunchConfig {
-        grid_dim: (items.div_ceil(THREADS as u64).max(1) as u32, 1, 1),
-        block_dim: (THREADS, 1, 1),
-        shared_mem_bytes: 0,
     }
 }

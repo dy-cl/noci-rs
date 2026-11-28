@@ -6,6 +6,13 @@
 //! - Saad and Schultz, *SIAM J. Sci. Stat. Comput.* **7**, 856 (1986),
 //!   [doi:10.1137/0907058](https://doi.org/10.1137/0907058).
 
+#[cfg(feature = "gpu")]
+mod device;
+
+// Crate-visible type re-exports.
+#[cfg(feature = "gpu")]
+pub(crate) use device::DeviceKrylov;
+
 // Standard library imports.
 use std::time::Instant;
 
@@ -24,9 +31,9 @@ const PRINT_STRIDE: usize = 1usize;
 const CHUNK: usize = 4096;
 
 /// Result of a GMRES linear solve.
-pub struct GMRESResult<T: NOCIScalar> {
+pub struct GMRESResult<V> {
     /// Approximate solution vector.
-    pub x: Array1<T>,
+    pub x: V,
     /// Root-mean-square residual norm.
     pub residual_rms: f64,
     /// Number of GMRES iterations performed.
@@ -35,12 +42,189 @@ pub struct GMRESResult<T: NOCIScalar> {
     pub converged: bool,
 }
 
+/// Vector storage and arithmetic on which GMRES runs: host arrays, or vectors resident on a GPU.
+/// Every operation GMRES performs on a vector of the system's length goes through this trait;
+/// the small Hessenberg least-squares problem always stays on the host.
+pub trait KrylovSpace<T: NOCIScalar> {
+    /// Vector of the system's length.
+    type Vector;
+    /// Orthonormal Arnoldi basis of one restart cycle.
+    type Basis;
+
+    /// Zero vector.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `n`: Vector length.
+    /// # Returns:
+    /// - `Self::Vector`: Zero vector of length `n`.
+    fn zeros(
+        &self,
+        n: usize,
+    ) -> Self::Vector;
+
+    /// Length of a vector.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `v`: Vector.
+    /// # Returns:
+    /// - `usize`: Number of entries of `v`.
+    fn length(
+        &self,
+        v: &Self::Vector,
+    ) -> usize;
+
+    /// Copy of a vector.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `v`: Vector to copy.
+    /// # Returns:
+    /// - `Self::Vector`: Independent copy of `v`.
+    fn copy(
+        &self,
+        v: &Self::Vector,
+    ) -> Self::Vector;
+
+    /// Conjugated inner product `x^\dagger y`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `x`: Left vector.
+    /// - `y`: Right vector.
+    /// # Returns:
+    /// - `T`: Inner product `x^\dagger y`.
+    fn inner_product(
+        &self,
+        x: &Self::Vector,
+        y: &Self::Vector,
+    ) -> T;
+
+    /// Euclidean norm.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `v`: Vector to norm.
+    /// # Returns:
+    /// - `f64`: Euclidean norm of `v`.
+    fn vector_norm(
+        &self,
+        v: &Self::Vector,
+    ) -> f64;
+
+    /// Scale a vector in place, `v \leftarrow a v`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `a`: Scale factor.
+    /// - `v`: Vector to scale.
+    /// # Returns:
+    /// - `()`: Scales `v` in place.
+    fn scale(
+        &self,
+        a: T,
+        v: &mut Self::Vector,
+    );
+
+    /// Add a scaled vector in place, `y \leftarrow y + a x`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `a`: Scale factor.
+    /// - `x`: Vector to add.
+    /// - `y`: Vector to update.
+    /// # Returns:
+    /// - `()`: Updates `y` in place.
+    fn scaled_add(
+        &self,
+        a: T,
+        x: &Self::Vector,
+        y: &mut Self::Vector,
+    );
+
+    /// Start the Arnoldi basis of a restart cycle with `q_0 = r / \beta`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `r`: Residual at the start of the cycle.
+    /// - `beta`: Norm of `r`.
+    /// - `capacity`: Largest number of basis vectors the cycle can hold.
+    /// # Returns:
+    /// - `Self::Basis`: Basis holding `q_0`.
+    fn basis(
+        &self,
+        r: &Self::Vector,
+        beta: f64,
+        capacity: usize,
+    ) -> Self::Basis;
+
+    /// Normalise an orthogonalised Arnoldi vector and append it to the basis,
+    /// `q_{k+1} = w / \lVert w\rVert`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `q`: Arnoldi basis.
+    /// - `w`: Orthogonalised Arnoldi vector.
+    /// - `norm`: Norm of `w`.
+    /// # Returns:
+    /// - `()`: Appends `q_{k+1}` to `q`.
+    fn extend(
+        &self,
+        q: &mut Self::Basis,
+        w: Self::Vector,
+        norm: f64,
+    );
+
+    /// Apply the right preconditioner to one basis vector, `z_k = M^{-1} q_k`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `q`: Arnoldi basis.
+    /// - `k`: Index of the basis vector.
+    /// - `precondition`: Right preconditioner `M^{-1}`.
+    /// # Returns:
+    /// - `Self::Vector`: Preconditioned vector `z_k`.
+    fn precondition<P>(
+        &self,
+        q: &Self::Basis,
+        k: usize,
+        precondition: &P,
+    ) -> Self::Vector
+    where
+        P: Fn(&Self::Vector) -> Self::Vector;
+
+    /// Orthogonalise an Arnoldi vector against the first `k + 1` basis vectors by classical
+    /// Gram-Schmidt applied twice, `h = Q^\dagger w`, `w \leftarrow w - Q h`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `q`: Arnoldi basis.
+    /// - `w`: Arnoldi vector to orthogonalise in place.
+    /// - `k`: Current Arnoldi iteration in the restart cycle.
+    /// # Returns:
+    /// - `Vec<T>`: Hessenberg column `h_{jk}`, `j \le k`, the sum of both passes.
+    fn orthogonalise(
+        &self,
+        q: &Self::Basis,
+        w: &mut Self::Vector,
+        k: usize,
+    ) -> Vec<T>;
+
+    /// Combine basis vectors, `u = \sum_j y_j q_j`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `q`: Arnoldi basis.
+    /// - `y`: Expansion coefficients, one per leading basis vector.
+    /// - `n`: Vector length.
+    /// # Returns:
+    /// - `Self::Vector`: Combination `u`.
+    fn combine(
+        &self,
+        q: &Self::Basis,
+        y: &[T],
+        n: usize,
+    ) -> Self::Vector;
+}
+
+/// Host vectors `Array1<T>`, with every reduction summed over fixed chunks in parallel.
+pub struct HostKrylov;
+
 /// Storage for a single restarted Arnoldi cycle. The preconditioned directions
 /// `z_j = M^{-1} q_j` are not stored: the preconditioner is linear, so a correction
 /// `\sum_j y_j z_j` is formed as `M^{-1} \sum_j y_j q_j`.
-struct ArnoldiCycle<T: NOCIScalar> {
+struct ArnoldiCycle<T: NOCIScalar, S: KrylovSpace<T>> {
     /// Orthonormal Arnoldi basis `q_j`.
-    q: Vec<Array1<T>>,
+    q: S::Basis,
     /// Upper Hessenberg matrix after Givens rotations.
     h: Array2<T>,
     /// Rotated residual right-hand side.
@@ -139,6 +323,7 @@ fn print_gmres_iteration(
 /// Print a single GMRES restart summary line using the true residual, with the Hylleraas
 /// functional of the solution in the `Hylleraas` layout.
 /// # Arguments:
+/// - `space`: Vector space of the solve.
 /// - `print`: Table layout.
 /// - `restart_id`: GMRES restart cycle index.
 /// - `iter`: Total GMRES iteration index after the restart.
@@ -147,16 +332,20 @@ fn print_gmres_iteration(
 /// - `elapsed_secs`: Total elapsed GMRES wall time.
 /// # Returns:
 /// - `()`: Prints the GMRES restart summary to standard output.
-fn print_gmres_restart_summary<T: NOCIScalar + Into<Complex64>>(
+fn print_gmres_restart_summary<S, T>(
+    space: &S,
     print: GMRESPrint,
     restart_id: usize,
     iter: usize,
-    system: (&Array1<T>, &Array1<T>, &Array1<T>),
+    system: (&S::Vector, &S::Vector, &S::Vector),
     rms: f64,
     elapsed_secs: f64,
-) {
+) where
+    S: KrylovSpace<T>,
+    T: NOCIScalar + Into<Complex64>,
+{
     let (b, x, r) = system;
-    let residual_true = calculate_residual_rms(r, rms);
+    let residual_true = space.vector_norm(r) / rms;
     match print {
         GMRESPrint::Silent => {}
         GMRESPrint::Residual => println!(
@@ -166,8 +355,8 @@ fn print_gmres_restart_summary<T: NOCIScalar + Into<Complex64>>(
         GMRESPrint::Hylleraas => {
             // `E_{2,\text{Hyl}} = -\Re(b^\dagger x) - \Re(x^\dagger r)`; the residual term is the
             // difference from the projected second-order energy.
-            let b_dot_x: Complex64 = inner_product(b, x).into();
-            let x_dot_r: Complex64 = inner_product(x, r).into();
+            let b_dot_x: Complex64 = space.inner_product(b, x).into();
+            let x_dot_r: Complex64 = space.inner_product(x, r).into();
             let delta_hyl_proj = -x_dot_r.re;
             println!(
                 "  {:>8} {:>8} {:>16} {:>16.8e} {:>18.10e} {:>18.10e} {:>16} {:>16.6}",
@@ -186,173 +375,303 @@ fn print_gmres_restart_summary<T: NOCIScalar + Into<Complex64>>(
 
 /// Build the true residual `b - A x`.
 /// # Arguments:
+/// - `space`: Vector space of the solve.
 /// - `apply`: Matrix-vector product callback.
 /// - `b`: Right-hand side vector.
 /// - `x`: Current solution vector.
 /// # Returns:
-/// - `Array1<T>`: True residual vector.
-fn true_residual<F, T>(
+/// - `S::Vector`: True residual vector.
+fn true_residual<S, F, T>(
+    space: &S,
     apply: &mut F,
-    b: &Array1<T>,
-    x: &Array1<T>,
-) -> Array1<T>
+    b: &S::Vector,
+    x: &S::Vector,
+) -> S::Vector
 where
-    F: FnMut(&Array1<T>) -> Array1<T>,
+    S: KrylovSpace<T>,
+    F: FnMut(&S::Vector) -> S::Vector,
     T: NOCIScalar,
 {
     let mut r = apply(x);
-    r.par_mapv_inplace(|axi| -axi);
-    r.zip_mut_with(b, |ri, &bi| *ri += bi);
+    space.scale(T::from_real(-1.0), &mut r);
+    space.scaled_add(T::from_real(1.0), b, &mut r);
     r
 }
 
-/// Compute the conjugated inner product of two scalar vectors, `x^\dagger y`, summing fixed
-/// chunks in parallel and the chunk sums in order.
-/// # Arguments:
-/// - `x`: Left vector.
-/// - `y`: Right vector.
-/// # Returns:
-/// - `T`: Inner product `x^H y`.
-/// # Panics
-/// - Panics if either vector is not contiguous, which no GMRES vector is.
-pub fn inner_product<T: NOCIScalar>(
-    x: &Array1<T>,
-    y: &Array1<T>,
-) -> T {
-    let zero = T::from_real(0.0);
+impl<T: NOCIScalar> KrylovSpace<T> for HostKrylov {
+    type Vector = Array1<T>;
+    type Basis = Vec<Array1<T>>;
 
-    // `\sum_c \sum_{i \in c} x_i^* y_i`, one partial sum per fixed chunk `c`.
-    let parts = x
-        .as_slice()
-        .unwrap()
-        .par_chunks(CHUNK)
-        .zip(y.as_slice().unwrap().par_chunks(CHUNK))
-        .map(|(xc, yc)| {
-            xc.iter()
-                .zip(yc)
-                .fold(zero, |acc, (&xi, &yi)| acc + xi.conj() * yi)
-        })
-        .collect::<Vec<_>>();
+    /// Zero vector.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `n`: Vector length.
+    /// # Returns:
+    /// - `Array1<T>`: Zero vector of length `n`.
+    fn zeros(
+        &self,
+        n: usize,
+    ) -> Array1<T> {
+        Array1::from_elem(n, T::from_real(0.0))
+    }
 
-    parts.into_iter().fold(zero, |acc, part| acc + part)
-}
+    /// Length of a vector.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `v`: Vector.
+    /// # Returns:
+    /// - `usize`: Number of entries of `v`.
+    fn length(
+        &self,
+        v: &Array1<T>,
+    ) -> usize {
+        v.len()
+    }
 
-/// Compute the Euclidean norm of a scalar vector, summing fixed chunks in parallel and the chunk
-/// sums in order.
-/// # Arguments:
-/// - `v`: Vector to norm.
-/// # Returns:
-/// - `f64`: Euclidean norm.
-/// # Panics
-/// - Panics if `v` is not contiguous, which no GMRES vector is.
-fn vector_norm<T: NOCIScalar>(v: &Array1<T>) -> f64 {
-    // `\lVert v\rVert^2 = \sum_c \sum_{i \in c} |v_i|^2`, one partial sum per fixed chunk `c`.
-    let parts = v
-        .as_slice()
-        .unwrap()
-        .par_chunks(CHUNK)
-        .map(|c| c.iter().map(|&x| x.abs() * x.abs()).sum::<f64>())
-        .collect::<Vec<_>>();
+    /// Copy of a vector.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `v`: Vector to copy.
+    /// # Returns:
+    /// - `Array1<T>`: Independent copy of `v`.
+    fn copy(
+        &self,
+        v: &Array1<T>,
+    ) -> Array1<T> {
+        v.clone()
+    }
 
-    parts.into_iter().sum::<f64>().sqrt()
-}
+    /// Conjugated inner product `x^\dagger y`, summing fixed chunks in parallel and the chunk sums in order.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `x`: Left vector.
+    /// - `y`: Right vector.
+    /// # Returns:
+    /// - `T`: Inner product `x^\dagger y`.
+    /// # Panics
+    /// - If either vector is not contiguous, which no GMRES vector is.
+    fn inner_product(
+        &self,
+        x: &Array1<T>,
+        y: &Array1<T>,
+    ) -> T {
+        let zero = T::from_real(0.0);
 
-/// Compute the RMS norm of a residual vector.
-/// # Arguments:
-/// - `r`: Residual vector.
-/// - `rms`: Square-root of the vector length.
-/// # Returns:
-/// - `f64`: RMS residual norm.
-fn calculate_residual_rms<T: NOCIScalar>(
-    r: &Array1<T>,
-    rms: f64,
-) -> f64 {
-    vector_norm(r) / rms
-}
-
-/// Orthogonalise an Arnoldi vector against the existing Krylov basis by classical Gram-Schmidt
-/// applied twice, `h = Q^\dagger w`, `w \leftarrow w - Q h`, accumulating both passes in the same
-/// Hessenberg column. Each pass is one sweep for every product and one for the update.
-/// # Arguments:
-/// - `q`: Existing Krylov basis vectors.
-/// - `h`: Hessenberg matrix to update.
-/// - `w`: Arnoldi vector to orthogonalise in place.
-/// - `k`: Current Arnoldi iteration in the restart cycle.
-/// # Returns:
-/// - `()`: Updates `h` and `w` in place.
-fn orthogonalise_arnoldi_vector<T: NOCIScalar>(
-    q: &[Array1<T>],
-    h: &mut Array2<T>,
-    w: &mut Array1<T>,
-    k: usize,
-) {
-    for _ in 0..2 {
-        // `h = Q^\dagger w` in one sweep over fixed chunks of `w`, each read once against the same
-        // chunk of every basis vector, `p_{cj} = (\sum_{i \in c} q_{ji} w_i^*)^*`.
-        let parts = w
-            .axis_chunks_iter(Axis(0), CHUNK)
-            .into_par_iter()
-            .enumerate()
-            .map(|(c, wc)| {
-                let start = c * CHUNK;
-                let wc = wc.mapv(|wi| wi.conj());
-                q[..=k]
-                    .iter()
-                    .map(|qj| qj.slice(s![start..start + wc.len()]).dot(&wc).conj())
-                    .collect::<Vec<_>>()
+        // `\sum_c \sum_{i \in c} x_i^* y_i`, one partial sum per fixed chunk `c`.
+        let parts = x
+            .as_slice()
+            .unwrap()
+            .par_chunks(CHUNK)
+            .zip(y.as_slice().unwrap().par_chunks(CHUNK))
+            .map(|(xc, yc)| {
+                xc.iter()
+                    .zip(yc)
+                    .fold(zero, |acc, (&xi, &yi)| acc + xi.conj() * yi)
             })
             .collect::<Vec<_>>();
 
-        // `h_j = \sum_c p_{cj}`, summed in chunk order whatever the thread count.
-        let mut hk = vec![T::from_real(0.0); k + 1];
-        for part in parts {
-            for (hj, pj) in hk.iter_mut().zip(part) {
-                *hj += pj;
-            }
-        }
-
-        // `w \leftarrow w - Q h` in a second sweep, each chunk of `w` updated in place by the same
-        // chunk of every basis vector.
-        w.axis_chunks_iter_mut(Axis(0), CHUNK)
-            .into_par_iter()
-            .enumerate()
-            .for_each(|(c, mut wc)| {
-                let start = c * CHUNK;
-                for (qj, &hj) in q[..=k].iter().zip(&hk) {
-                    wc.scaled_add(-hj, &qj.slice(s![start..start + wc.len()]));
-                }
-            });
-
-        for (j, &hjk) in hk.iter().enumerate() {
-            h[(j, k)] += hjk;
-        }
+        parts.into_iter().fold(zero, |acc, part| acc + part)
     }
-}
 
-/// Normalise and append a new Arnoldi vector if it is non-zero.
-/// # Arguments:
-/// - `q`: Krylov basis vectors.
-/// - `h`: Hessenberg matrix to update.
-/// - `w`: Orthogonalised Arnoldi vector.
-/// - `k`: Current Arnoldi iteration in the restart cycle.
-/// # Returns:
-/// - `f64`: Norm of the candidate next Arnoldi vector.
-fn extend_arnoldi_basis<T: NOCIScalar>(
-    q: &mut Vec<Array1<T>>,
-    h: &mut Array2<T>,
-    w: Array1<T>,
-    k: usize,
-) -> f64 {
-    let h_next = vector_norm(&w);
-    h[(k + 1, k)] = T::from_real(h_next);
+    /// Euclidean norm, summing fixed chunks in parallel and the chunk sums in order.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `v`: Vector to norm.
+    /// # Returns:
+    /// - `f64`: Euclidean norm of `v`.
+    /// # Panics
+    /// - If `v` is not contiguous, which no GMRES vector is.
+    fn vector_norm(
+        &self,
+        v: &Array1<T>,
+    ) -> f64 {
+        // `\lVert v\rVert^2 = \sum_c \sum_{i \in c} |v_i|^2`, one partial sum per fixed chunk `c`.
+        let parts = v
+            .as_slice()
+            .unwrap()
+            .par_chunks(CHUNK)
+            .map(|c| c.iter().map(|&x| x.abs() * x.abs()).sum::<f64>())
+            .collect::<Vec<_>>();
 
-    if h_next > SMALL {
-        let mut w = w;
-        w.par_mapv_inplace(|wi| wi / T::from_real(h_next));
+        parts.into_iter().sum::<f64>().sqrt()
+    }
+
+    /// Scale a vector in place, `v \leftarrow a v`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `a`: Scale factor.
+    /// - `v`: Vector to scale.
+    /// # Returns:
+    /// - `()`: Scales `v` in place.
+    fn scale(
+        &self,
+        a: T,
+        v: &mut Array1<T>,
+    ) {
+        v.par_mapv_inplace(|vi| a * vi);
+    }
+
+    /// Add a scaled vector in place, `y \leftarrow y + a x`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `a`: Scale factor.
+    /// - `x`: Vector to add.
+    /// - `y`: Vector to update.
+    /// # Returns:
+    /// - `()`: Updates `y` in place.
+    fn scaled_add(
+        &self,
+        a: T,
+        x: &Array1<T>,
+        y: &mut Array1<T>,
+    ) {
+        y.scaled_add(a, x);
+    }
+
+    /// Start the Arnoldi basis of a restart cycle with `q_0 = r / \beta`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `r`: Residual at the start of the cycle.
+    /// - `beta`: Norm of `r`.
+    /// - `capacity`: Largest number of basis vectors the cycle can hold.
+    /// # Returns:
+    /// - `Vec<Array1<T>>`: Basis holding `q_0`.
+    fn basis(
+        &self,
+        r: &Array1<T>,
+        beta: f64,
+        capacity: usize,
+    ) -> Vec<Array1<T>> {
+        let mut q = Vec::with_capacity(capacity);
+        q.push(r.mapv(|ri| ri / T::from_real(beta)));
+        q
+    }
+
+    /// Normalise an orthogonalised Arnoldi vector and append it to the basis.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `q`: Arnoldi basis.
+    /// - `w`: Orthogonalised Arnoldi vector.
+    /// - `norm`: Norm of `w`.
+    /// # Returns:
+    /// - `()`: Appends `w / norm` to `q`.
+    fn extend(
+        &self,
+        q: &mut Vec<Array1<T>>,
+        mut w: Array1<T>,
+        norm: f64,
+    ) {
+        w.par_mapv_inplace(|wi| wi / T::from_real(norm));
         q.push(w);
     }
 
-    h_next
+    /// Apply the right preconditioner to one basis vector, `z_k = M^{-1} q_k`.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `q`: Arnoldi basis.
+    /// - `k`: Index of the basis vector.
+    /// - `precondition`: Right preconditioner `M^{-1}`.
+    /// # Returns:
+    /// - `Array1<T>`: Preconditioned vector `z_k`.
+    fn precondition<P>(
+        &self,
+        q: &Vec<Array1<T>>,
+        k: usize,
+        precondition: &P,
+    ) -> Array1<T>
+    where
+        P: Fn(&Array1<T>) -> Array1<T>,
+    {
+        precondition(&q[k])
+    }
+
+    /// Orthogonalise an Arnoldi vector against the first `k + 1` basis vectors by classical Gram-Schmidt applied twice; each pass is one sweep for every product and one for the update.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `q`: Arnoldi basis.
+    /// - `w`: Arnoldi vector to orthogonalise in place.
+    /// - `k`: Current Arnoldi iteration in the restart cycle.
+    /// # Returns:
+    /// - `Vec<T>`: Hessenberg column `h_{jk}`, `j \le k`, the sum of both passes.
+    fn orthogonalise(
+        &self,
+        q: &Vec<Array1<T>>,
+        w: &mut Array1<T>,
+        k: usize,
+    ) -> Vec<T> {
+        let mut h = vec![T::from_real(0.0); k + 1];
+
+        for _ in 0..2 {
+            // `h = Q^\dagger w` in one sweep over fixed chunks of `w`, each read once against the
+            // same chunk of every basis vector, `p_{cj} = (\sum_{i \in c} q_{ji} w_i^*)^*`.
+            let parts = w
+                .axis_chunks_iter(Axis(0), CHUNK)
+                .into_par_iter()
+                .enumerate()
+                .map(|(c, wc)| {
+                    let start = c * CHUNK;
+                    let wc = wc.mapv(|wi| wi.conj());
+                    q[..=k]
+                        .iter()
+                        .map(|qj| qj.slice(s![start..start + wc.len()]).dot(&wc).conj())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+
+            // `h_j = \sum_c p_{cj}`, summed in chunk order whatever the thread count.
+            let mut hk = vec![T::from_real(0.0); k + 1];
+            for part in parts {
+                for (hj, pj) in hk.iter_mut().zip(part) {
+                    *hj += pj;
+                }
+            }
+
+            // `w \leftarrow w - Q h` in a second sweep, each chunk of `w` updated in place by the
+            // same chunk of every basis vector.
+            w.axis_chunks_iter_mut(Axis(0), CHUNK)
+                .into_par_iter()
+                .enumerate()
+                .for_each(|(c, mut wc)| {
+                    let start = c * CHUNK;
+                    for (qj, &hj) in q[..=k].iter().zip(&hk) {
+                        wc.scaled_add(-hj, &qj.slice(s![start..start + wc.len()]));
+                    }
+                });
+
+            for (hj, &pass) in h.iter_mut().zip(&hk) {
+                *hj += pass;
+            }
+        }
+
+        h
+    }
+
+    /// Combine basis vectors, `u = \sum_j y_j q_j`; each fixed chunk of `u` accumulates the same chunk of every basis vector.
+    /// # Arguments:
+    /// - `self`: Vector space.
+    /// - `q`: Arnoldi basis.
+    /// - `y`: Expansion coefficients, one per leading basis vector.
+    /// - `n`: Vector length.
+    /// # Returns:
+    /// - `Array1<T>`: Combination `u`.
+    fn combine(
+        &self,
+        q: &Vec<Array1<T>>,
+        y: &[T],
+        n: usize,
+    ) -> Array1<T> {
+        let mut u = Array1::from_elem(n, T::from_real(0.0));
+        u.axis_chunks_iter_mut(Axis(0), CHUNK)
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(c, mut uc)| {
+                let start = c * CHUNK;
+                for (qj, &yj) in q.iter().zip(y) {
+                    uc.scaled_add(yj, &qj.slice(s![start..start + uc.len()]));
+                }
+            });
+        u
+    }
 }
 
 /// Apply all previous Givens rotations to the current Hessenberg column.
@@ -431,6 +750,7 @@ fn apply_current_givens<T: NOCIScalar>(
 
 /// Run one restarted Arnoldi cycle for a callback-defined right-preconditioned GMRES operator.
 /// # Arguments:
+/// - `space`: Vector space of the solve.
 /// - `apply`: Matrix-vector product callback.
 /// - `precondition`: Right-preconditioner callback.
 /// - `rtrue`: True residual at the start of the restart cycle.
@@ -439,23 +759,23 @@ fn apply_current_givens<T: NOCIScalar>(
 /// - `print`: Table layout of each printed Arnoldi iteration.
 /// # Returns:
 /// - `ArnoldiCycle`: Krylov basis, Hessenberg matrix, rotated residual vector, and final inner iteration count.
-fn run_arnoldi_cycle<F, P, T>(
+fn run_arnoldi_cycle<S, F, P, T>(
+    space: &S,
     apply: &mut F,
     precondition: &P,
-    rtrue: &Array1<T>,
+    rtrue: &S::Vector,
     params: &ArnoldiParams<'_>,
     tol: f64,
     print: GMRESPrint,
-) -> ArnoldiCycle<T>
+) -> ArnoldiCycle<T, S>
 where
-    F: FnMut(&Array1<T>) -> Array1<T>,
-    P: Fn(&Array1<T>) -> Array1<T>,
+    S: KrylovSpace<T>,
+    F: FnMut(&S::Vector) -> S::Vector,
+    P: Fn(&S::Vector) -> S::Vector,
     T: NOCIScalar + Into<Complex64>,
 {
-    let beta = vector_norm(rtrue);
-
-    let mut q: Vec<Array1<T>> = Vec::with_capacity(params.inner_max + 1);
-    q.push(rtrue.mapv(|ri| ri / T::from_real(beta)));
+    let beta = space.vector_norm(rtrue);
+    let mut q = space.basis(rtrue, beta, params.inner_max + 1);
 
     let mut h_rot =
         Array2::<T>::from_elem((params.inner_max + 1, params.inner_max), T::from_real(0.0));
@@ -468,20 +788,25 @@ where
 
     for k in 0..params.inner_max {
         // Apply the right preconditioner first so Arnoldi sees A P^{-1}.
-        let z = precondition(&q[k]);
+        let z = space.precondition(&q, k, precondition);
 
         // Apply the expensive matrix-free operator.
         let t_apply = Instant::now();
-        let aq = apply(&z);
+        let mut w = apply(&z);
         let apply_secs = t_apply.elapsed().as_secs_f64();
 
-        let mut w = aq;
-
         // Orthogonalise `A M^{-1} q_k` against the basis, filling the raw Hessenberg column.
-        orthogonalise_arnoldi_vector(&q, &mut h_rot, &mut w, k);
+        let column = space.orthogonalise(&q, &mut w, k);
+        for (j, &hjk) in column.iter().enumerate() {
+            h_rot[(j, k)] += hjk;
+        }
 
         // Normalise the new direction and append it to the Krylov basis if non-zero.
-        let h_next = extend_arnoldi_basis(&mut q, &mut h_rot, w, k);
+        let h_next = space.vector_norm(&w);
+        h_rot[(k + 1, k)] = T::from_real(h_next);
+        if h_next > SMALL {
+            space.extend(&mut q, w, h_next);
+        }
 
         // Update the small least-squares problem with Givens rotations.
         apply_previous_givens(&mut h_rot, &cs, &sn, k);
@@ -521,40 +846,33 @@ where
 /// Update the solution vector with the right-preconditioned Krylov correction,
 /// `x \leftarrow x + M^{-1} \sum_j y_j q_j`.
 /// # Arguments:
+/// - `space`: Vector space of the solve.
 /// - `x`: Solution vector to update in place.
 /// - `q`: Arnoldi basis vectors.
 /// - `y`: Krylov expansion coefficients.
 /// - `precondition`: Right preconditioner `M^{-1}`.
+/// - `n`: Vector length.
 /// # Returns:
 /// - `()`: Updates `x` in place.
-fn update_solution<T, P>(
-    x: &mut Array1<T>,
-    q: &[Array1<T>],
+fn update_solution<S, P, T>(
+    space: &S,
+    x: &mut S::Vector,
+    q: &S::Basis,
     y: &Array1<T>,
     precondition: &P,
+    n: usize,
 ) where
+    S: KrylovSpace<T>,
+    P: Fn(&S::Vector) -> S::Vector,
     T: NOCIScalar,
-    P: Fn(&Array1<T>) -> Array1<T>,
 {
     if y.is_empty() {
         return;
     }
 
-    // `u = \sum_j y_j q_j`, each fixed chunk of `u` accumulating the same chunk of every basis
-    // vector.
-    let mut u = Array1::from_elem(x.len(), T::from_real(0.0));
-    u.axis_chunks_iter_mut(Axis(0), CHUNK)
-        .into_par_iter()
-        .enumerate()
-        .for_each(|(c, mut uc)| {
-            let start = c * CHUNK;
-            for (qj, &yj) in q.iter().zip(y) {
-                uc.scaled_add(yj, &qj.slice(s![start..start + uc.len()]));
-            }
-        });
-
+    let u = space.combine(q, y.as_slice().expect("coefficients are contiguous"), n);
     let correction = precondition(&u);
-    x.zip_mut_with(&correction, |xi, &ci| *xi += ci);
+    space.scaled_add(T::from_real(1.0), &correction, x);
 }
 
 /// Solve the small upper-triangular least-squares problem after Arnoldi.
@@ -593,6 +911,7 @@ fn back_solve<T: NOCIScalar>(
 
 /// Solve a linear system using restarted GMRES with a callback-defined right preconditioner.
 /// # Arguments:
+/// - `space`: Vector space of the solve, such as `HostKrylov` for host arrays.
 /// - `apply`: Matrix-vector product callback.
 /// - `precondition`: Linear right preconditioner `M^{-1}`. Linearity lets each cycle keep only
 ///   the Arnoldi basis and precondition the combined correction once.
@@ -602,28 +921,31 @@ fn back_solve<T: NOCIScalar>(
 /// - `tol`: Residual RMS tolerance, accepted only on the true residual.
 /// - `print`: Iteration table to print, if any.
 /// # Returns:
-/// - `GMRESResult<T>`: Approximate solution vector together with final residual RMS, number of
-///   iterations performed, and convergence flag.
-pub fn gmres<F, P, T>(
+/// - `GMRESResult<S::Vector>`: Approximate solution vector together with final residual RMS,
+///   number of iterations performed, and convergence flag.
+#[allow(clippy::too_many_arguments)]
+pub fn gmres<S, F, P, T>(
+    space: &S,
     mut apply: F,
     precondition: P,
-    system: (&Array1<T>, Option<&Array1<T>>),
+    system: (&S::Vector, Option<&S::Vector>),
     restart: usize,
     max_iter: usize,
     tol: f64,
     print: GMRESPrint,
-) -> GMRESResult<T>
+) -> GMRESResult<S::Vector>
 where
-    F: FnMut(&Array1<T>) -> Array1<T>,
-    P: Fn(&Array1<T>) -> Array1<T>,
+    S: KrylovSpace<T>,
+    F: FnMut(&S::Vector) -> S::Vector,
+    P: Fn(&S::Vector) -> S::Vector,
     T: NOCIScalar + Into<Complex64>,
 {
     let gmres_start = Instant::now();
     let (b, x0) = system;
-    let n = b.len();
+    let n = space.length(b);
     let mut x = match x0 {
-        Some(x0) => x0.clone(),
-        None => Array1::<T>::from_elem(n, T::from_real(0.0)),
+        Some(x0) => space.copy(x0),
+        None => space.zeros(n),
     };
 
     if print != GMRESPrint::Silent {
@@ -644,13 +966,14 @@ where
 
     // The true residual of the initial guess is `b - A x_0`, which is `b` itself for `x_0 = 0`.
     let mut rtrue = match x0 {
-        Some(_) => true_residual(&mut apply, b, &x),
-        None => b.clone(),
+        Some(_) => true_residual(space, &mut apply, b, &x),
+        None => space.copy(b),
     };
-    let mut residual_rms = calculate_residual_rms(&rtrue, rms);
+    let mut residual_rms = space.vector_norm(&rtrue) / rms;
 
     if print != GMRESPrint::Silent {
         print_gmres_restart_summary(
+            space,
             print,
             0,
             0,
@@ -674,7 +997,7 @@ where
     let mut restart_id = 0usize;
 
     while total_iter < max_iter {
-        let beta = vector_norm(&rtrue);
+        let beta = space.vector_norm(&rtrue);
 
         // Stop if the residual is numerically zero.
         if beta <= SMALL {
@@ -682,6 +1005,7 @@ where
 
             if print != GMRESPrint::Silent {
                 print_gmres_restart_summary(
+                    space,
                     print,
                     restart_id,
                     total_iter,
@@ -710,6 +1034,7 @@ where
         };
 
         let cycle = run_arnoldi_cycle(
+            space,
             &mut apply,
             &precondition,
             &rtrue,
@@ -722,16 +1047,17 @@ where
         let y = back_solve(&cycle.h, &cycle.g, cycle.kfinal);
 
         // Apply the right-preconditioned Krylov correction.
-        update_solution(&mut x, &cycle.q, &y, &precondition);
+        update_solution(space, &mut x, &cycle.q, &y, &precondition, n);
 
         total_iter += cycle.kfinal;
 
         // Recompute the true residual after each restart as the Arnoldi residual is only an estimate.
-        rtrue = true_residual(&mut apply, b, &x);
-        residual_rms = calculate_residual_rms(&rtrue, rms);
+        rtrue = true_residual(space, &mut apply, b, &x);
+        residual_rms = space.vector_norm(&rtrue) / rms;
 
         if print != GMRESPrint::Silent {
             print_gmres_restart_summary(
+                space,
                 print,
                 restart_id,
                 total_iter,

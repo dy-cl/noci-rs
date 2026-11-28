@@ -34,7 +34,7 @@ use num_complex::Complex64;
 // Crate-root imports.
 use crate::NOCIScalar;
 use crate::input::{GNOCCMCOptions, NOCCNewton, NOCCPreconditioner};
-use crate::maths::gmres::{GMRESPrint, gmres};
+use crate::maths::gmres::{GMRESPrint, HostKrylov, gmres};
 use crate::maths::parallel_matvec;
 use crate::nocc::equations::{
     COLUMNS, correlation_energy, jacobian_columns, orbital_denominators, residual_vector,
@@ -383,6 +383,7 @@ fn newton_step<T: NOCIScalar + Into<Complex64>>(
     let tol = (FORCING * vector_norm(rfois) / rms).max(options.gmres.res_tol);
     let b = rfois.mapv(|x| -x);
     let result = gmres(
+        &HostKrylov,
         jacobian,
         precondition,
         (&b, None),

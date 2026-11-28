@@ -6,7 +6,7 @@ mod device;
 
 // Crate-visible type re-exports.
 #[cfg(feature = "gpu")]
-pub(crate) use device::DeviceOneBody;
+pub(crate) use device::{DeviceOneBody, DeviceOneBodyScratch};
 
 // Standard library imports.
 use std::ops::Range;
@@ -14,6 +14,8 @@ use std::path::Path;
 
 // External crate imports.
 use ndarray::Array1;
+#[cfg(feature = "gpu")]
+use num_complex::Complex64;
 use rayon::prelude::*;
 
 // Crate-root imports.
@@ -116,6 +118,9 @@ pub(crate) struct OneBodyScratch<T: NOCIScalar> {
     first_f: Vec<T>,
     /// Temporary `T^S_{\bar a b}` or `U^S_{a\bar b}` table.
     first_s: Vec<T>,
+    /// First-contraction buffers on the GPU when the factorisation is resident there.
+    #[cfg(feature = "gpu")]
+    pub(crate) device: Option<DeviceOneBodyScratch>,
 }
 
 /// Dense one-body contraction order for one parent pair.
@@ -135,12 +140,17 @@ pub(crate) struct OneBodyFactorisation<T: NOCIScalar> {
     blocks: Vec<OneBodyBlock<T>>,
     /// Number of parent references.
     nparent: usize,
+    /// The same operator resident on a GPU, when every pair is supported there.
+    #[cfg(feature = "gpu")]
+    pub(crate) device: Option<DeviceOneBody>,
 }
 
 impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// Build `F^{QP}_{\bar a\bar b,ab}` spin factors for the current generalised Fock operator.
     /// Pairs in contraction form, same-parent or not, and the remaining same-parent orthonormal
-    /// pairs need no Wick intermediates; every other pair uses Wick factor rows.
+    /// pairs need no Wick intermediates; every other pair uses Wick factor rows. With the `gpu`
+    /// feature, real factorisations whose pairs are all factorised or orthogonal are also uploaded
+    /// to the first GPU, falling back to the host when no GPU can take them.
     /// # Arguments:
     /// - `data`: Shared NOCI data, with Wick intermediates when a pair needs factor rows.
     /// - `fock`: Current generalised-Fock data, already reflected in Wick intermediates.
@@ -216,11 +226,33 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             }
         }
 
-        Some(Self {
+        let one_body = Self {
             spin,
             blocks,
             nparent,
-        })
+            #[cfg(feature = "gpu")]
+            device: None,
+        };
+
+        // Upload the finished host operator, keeping it on the host if no GPU can take it.
+        #[cfg(feature = "gpu")]
+        let one_body = {
+            let device = match DeviceOneBody::new(&one_body, data, fock) {
+                Some(Ok(device)) => Some(device),
+                Some(Err(e)) => {
+                    if rank == 0 {
+                        println!(
+                            "  GPU unavailable for the one-body operator ({e}); using the host."
+                        );
+                    }
+                    None
+                }
+                None => None,
+            };
+            Self { device, ..one_body }
+        };
+
+        Some(one_body)
     }
 
     /// Construct reusable storage for a one-body application in scalar `R`.
@@ -232,6 +264,12 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         OneBodyScratch {
             first_f: Vec::new(),
             first_s: Vec::new(),
+            #[cfg(feature = "gpu")]
+            device: self.device.as_ref().map(|device| {
+                device
+                    .scratch()
+                    .expect("failed to allocate the GPU one-body buffers")
+            }),
         }
     }
 
@@ -294,7 +332,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             .expect("one-body factor byte size overflow")
     }
 
-    /// Apply `Y = (F + \lambda S)x` using cached spin factors.
+    /// Apply `Y = (F + \lambda S)x` using cached spin factors. A factorisation resident on a GPU
+    /// applies a real `x` and `\lambda` there when one worker holds every target row.
     /// # Arguments:
     /// - `x`: Source vector over actual candidate determinants.
     /// - `data`: Shared NOCI data used by same-parent orthogonal blocks.
@@ -316,6 +355,26 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     where
         R: NOCIScalar + From<T>,
     {
+        // A real Krylov scalar keeps only the real part of `i`.
+        #[cfg(feature = "gpu")]
+        if let (Some(device), Some(scratch)) = (self.device.as_ref(), scratch.device.as_mut())
+            && partition == (0, 1)
+            && R::from_complex(Complex64::i()).im() == 0.0
+        {
+            let stream = &device.device.stream;
+            let x = x.iter().map(|v| v.re()).collect::<Vec<f64>>();
+            let x = stream
+                .clone_htod(&x)
+                .expect("failed to copy a vector to the GPU");
+            let y = device
+                .apply_one_body(&x, lambda.re(), scratch)
+                .expect("GPU one-body product failed");
+            let y = stream
+                .clone_dtoh(&y)
+                .expect("failed to copy a vector from the GPU");
+            return y.into_iter().map(R::from_real).collect();
+        }
+
         let zero = R::from_real(0.0);
         let mut y = vec![zero; x.len()];
 

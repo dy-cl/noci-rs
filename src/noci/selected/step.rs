@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 
 // External crate imports.
+#[cfg(feature = "gpu")]
+use cudarc::driver::CudaSlice;
 use mpi::topology::Communicator;
 use ndarray::{Array1, Array2, Axis, concatenate, s};
 use num_complex::Complex64;
@@ -18,7 +20,9 @@ use crate::elements::{
     build_fock_mo_cache, build_noci_spin_square, noci_density, update_wicks_fock,
 };
 use crate::input::{SNOCIPreconditioner, SNOCIStorage, StateType};
-use crate::maths::gmres::{GMRESPrint, GMRESResult, gmres};
+#[cfg(feature = "gpu")]
+use crate::maths::gmres::{DeviceKrylov, KrylovSpace};
+use crate::maths::gmres::{GMRESPrint, GMRESResult, HostKrylov, gmres};
 use crate::maths::{adjoint, general_evp};
 use crate::noci::{OneBodyFactorisation, OneBodyScratch, build_noci_hs};
 use crate::scf::fock;
@@ -28,6 +32,8 @@ use crate::{PostSCFData, input::Input};
 // Parent/sibling imports.
 use super::guess::FollowedStates;
 use super::{CandidatePool, PT2Guess, PT2ProjectedOperator, SNOCIPT2Result, SNOCIState};
+#[cfg(feature = "gpu")]
+use super::{DevicePT2Projection, DevicePreconditioner, apply_device_factorised_shifted_omega_m};
 use super::{
     apply_factorised_omega_s, apply_factorised_shifted_omega_m,
     apply_factorised_shifted_omega_m_mpi, apply_omega_s, apply_omega_s_mpi, apply_shifted_omega_m,
@@ -432,6 +438,19 @@ where
         .as_ref()
         .map(|factorisation| factorisation.scratch());
 
+    // With a real Krylov scalar on one rank, GMRES runs on the GPU that holds the one-body
+    // operator, so no Krylov vector leaves it during the solve.
+    #[cfg(feature = "gpu")]
+    let device = one_body
+        .as_ref()
+        .and_then(|one_body| one_body.device.as_ref())
+        .filter(|_| world.size() == 1 && R::from_complex(Complex64::i()).im() == 0.0)
+        .map(|one_body| {
+            let space = DeviceKrylov::new(&one_body.device).expect("failed to start cuBLAS");
+            let projection = DevicePT2Projection::new(&space, &krylov_projection);
+            (space, projection, one_body)
+        });
+
     // Evaluate NOCI-PT2 energies, scores and diagnostics for each imaginary shift.
     let mut pt2 = Vec::new();
     for &imag_shift in &shifts {
@@ -445,77 +464,143 @@ where
             )
         });
 
-        let a = {
-            let mut apply = |x: &Array1<R>| {
-                if let (Some(one_body), Some(scratch)) =
-                    (one_body.as_ref(), one_body_scratch.as_mut())
-                {
-                    if world.size() > 1 {
-                        apply_factorised_shifted_omega_m_mpi(
+        // The GPU solve leaves the block early with its amplitudes.
+        #[cfg_attr(not(feature = "gpu"), allow(unused_labels))]
+        // Start from the previous iteration's or geometry's amplitudes of this state and shift.
+        let x0 = previous.continue_to(candidate_basis, slot, imag_shift, &rhs);
+        let g = &opts.gmres;
+        let print = if world.rank() == 0 {
+            GMRESPrint::Hylleraas
+        } else {
+            GMRESPrint::Silent
+        };
+
+        // The GPU solves the amplitude equation whenever it holds the operator.
+        #[cfg(feature = "gpu")]
+        let solved =
+            device
+                .as_ref()
+                .filter(|_| imag_shift == 0.0)
+                .map(|(space, projection, one_body)| {
+                    let real = |v: &Array1<R>| v.iter().map(|x| x.re()).collect::<Vec<f64>>();
+                    let b = space.upload(&real(&rhs));
+                    let x0 = x0.as_ref().map(|x0| space.upload(&real(x0)));
+                    let prec = prec
+                        .as_ref()
+                        .map(|prec| DevicePreconditioner::new(space, prec));
+                    let scratch = one_body_scratch
+                        .as_mut()
+                        .and_then(|scratch| scratch.device.as_mut())
+                        .expect("GPU one-body buffers are allocated with the operator");
+                    let apply = |x: &CudaSlice<f64>| {
+                        apply_device_factorised_shifted_omega_m(
+                            space, projection, one_body, scratch, x,
+                        )
+                    };
+
+                    let result = time_call!(crate::timers::selected::add_gmres, {
+                        if let Some(prec) = prec.as_ref() {
+                            gmres(
+                                space,
+                                apply,
+                                |x: &CudaSlice<f64>| prec.apply(space, x),
+                                (&b, x0.as_ref()),
+                                g.restart,
+                                g.max_iter,
+                                g.res_tol,
+                                print,
+                            )
+                        } else {
+                            gmres(
+                                space,
+                                apply,
+                                |x: &CudaSlice<f64>| space.copy(x),
+                                (&b, x0.as_ref()),
+                                g.restart,
+                                g.max_iter,
+                                g.res_tol,
+                                print,
+                            )
+                        }
+                    });
+
+                    GMRESResult {
+                        x: Array1::from(space.download(&result.x)).mapv(R::from_real),
+                        residual_rms: result.residual_rms,
+                        iterations: result.iterations,
+                        converged: result.converged,
+                    }
+                });
+        #[cfg(not(feature = "gpu"))]
+        let solved = None;
+
+        let a = match solved {
+            Some(a) => a,
+            None => {
+                let mut apply = |x: &Array1<R>| {
+                    if let (Some(one_body), Some(scratch)) =
+                        (one_body.as_ref(), one_body_scratch.as_mut())
+                    {
+                        if world.size() > 1 {
+                            apply_factorised_shifted_omega_m_mpi(
+                                &op,
+                                &krylov_projection,
+                                one_body,
+                                scratch,
+                                x,
+                                world,
+                                imag_shift,
+                            )
+                        } else {
+                            apply_factorised_shifted_omega_m(
+                                &op,
+                                &krylov_projection,
+                                one_body,
+                                scratch,
+                                x,
+                                imag_shift,
+                            )
+                        }
+                    } else if world.size() > 1 {
+                        apply_shifted_omega_m_mpi(
                             &op,
                             &krylov_projection,
-                            one_body,
-                            scratch,
                             x,
+                            m_slice,
                             world,
                             imag_shift,
                         )
                     } else {
-                        apply_factorised_shifted_omega_m(
-                            &op,
-                            &krylov_projection,
-                            one_body,
-                            scratch,
-                            x,
-                            imag_shift,
+                        apply_shifted_omega_m(&op, &krylov_projection, x, m_slice, imag_shift)
+                    }
+                };
+
+                time_call!(crate::timers::selected::add_gmres, {
+                    if let Some(prec) = prec.as_ref() {
+                        gmres(
+                            &HostKrylov,
+                            &mut apply,
+                            |x| prec.apply(x),
+                            (&rhs, x0.as_ref()),
+                            g.restart,
+                            g.max_iter,
+                            g.res_tol,
+                            print,
+                        )
+                    } else {
+                        gmres(
+                            &HostKrylov,
+                            &mut apply,
+                            |x| x.clone(),
+                            (&rhs, x0.as_ref()),
+                            g.restart,
+                            g.max_iter,
+                            g.res_tol,
+                            print,
                         )
                     }
-                } else if world.size() > 1 {
-                    apply_shifted_omega_m_mpi(
-                        &op,
-                        &krylov_projection,
-                        x,
-                        m_slice,
-                        world,
-                        imag_shift,
-                    )
-                } else {
-                    apply_shifted_omega_m(&op, &krylov_projection, x, m_slice, imag_shift)
-                }
-            };
-
-            // Start from the previous iteration's or geometry's amplitudes of this state and shift.
-            let x0 = previous.continue_to(candidate_basis, slot, imag_shift, &rhs);
-
-            let g = &opts.gmres;
-            let print = if world.rank() == 0 {
-                GMRESPrint::Hylleraas
-            } else {
-                GMRESPrint::Silent
-            };
-            time_call!(crate::timers::selected::add_gmres, {
-                if let Some(prec) = prec.as_ref() {
-                    gmres(
-                        &mut apply,
-                        |x| prec.apply(x),
-                        (&rhs, x0.as_ref()),
-                        g.restart,
-                        g.max_iter,
-                        g.res_tol,
-                        print,
-                    )
-                } else {
-                    gmres(
-                        &mut apply,
-                        |x| x.clone(),
-                        (&rhs, x0.as_ref()),
-                        g.restart,
-                        g.max_iter,
-                        g.res_tol,
-                        print,
-                    )
-                }
-            })
+                })
+            }
         };
 
         let ma = if let (Some(one_body), Some(scratch)) =

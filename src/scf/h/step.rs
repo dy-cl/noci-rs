@@ -7,7 +7,7 @@ use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::AoData;
-use crate::maths::gmres::{GMRESPrint, gmres};
+use crate::maths::gmres::{GMRESPrint, HostKrylov, gmres};
 use crate::scf::DensityMode;
 use crate::scf::{density, fock_lambda, orbital_gradient};
 
@@ -241,6 +241,7 @@ pub(crate) fn finite_difference_newton_step(
 
     let rhs = g0.mapv(|z| -z);
     let result = gmres(
+        &HostKrylov,
         hessian,
         precondition,
         (&rhs, None),

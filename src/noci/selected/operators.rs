@@ -1,5 +1,12 @@
 // noci/selected/operators.rs
 
+#[cfg(feature = "gpu")]
+mod device;
+
+// Restricted function re-exports.
+#[cfg(feature = "gpu")]
+pub(in crate::noci::selected) use device::apply_device_factorised_shifted_omega_m;
+
 // Standard library imports.
 use std::fs::OpenOptions;
 use std::path::Path;

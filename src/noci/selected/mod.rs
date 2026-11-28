@@ -49,9 +49,13 @@ pub use step::snoci_step;
 
 // Restricted type re-exports.
 pub(in crate::noci::selected) use candidate::CandidatePool;
+#[cfg(feature = "gpu")]
+pub(in crate::noci::selected) use types::{DevicePT2Projection, DevicePreconditioner};
 pub(in crate::noci::selected) use types::{PT2ProjectedOperator, PT2Projection, Preconditioner};
 
 // Restricted function re-exports.
+#[cfg(feature = "gpu")]
+pub(in crate::noci::selected) use operators::apply_device_factorised_shifted_omega_m;
 pub(in crate::noci::selected) use operators::{
     apply_factorised_omega_s, apply_factorised_shifted_omega_m,
     apply_factorised_shifted_omega_m_mpi, apply_omega_s, apply_omega_s_mpi, apply_shifted_omega_m,
