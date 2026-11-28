@@ -48,7 +48,8 @@ pub(crate) fn det_occupied_minor_dynamic<T: NOCIScalar>(
 
     // NOCC supplies `nel` at runtime, so this composed helper deliberately uses the dynamic
     // determinant path rather than introducing a rank dispatcher here.
-    det_dynamic(matrix.as_slice(), nel).unwrap_or_else(|| T::from_real(0.0))
+    let mut lu = vec![T::from_real(0.0); nel * nel];
+    det_dynamic(&mut lu, matrix.as_slice(), nel).unwrap_or_else(|| T::from_real(0.0))
 }
 
 /// Construct the rank-`L` contraction determinant.
@@ -465,18 +466,20 @@ pub(crate) fn det_const<V: Simd<LANES>, const LANES: usize, const N: usize, cons
 /// Compute a determinant for a runtime-rank square matrix using partial-pivot LU and SVD fallback.
 /// This path evaluates one scalar matrix because packed lanes cannot share pivot decisions.
 /// # Arguments:
+/// - `lu`: Scratch matrix used by the LU path.
 /// - `matrix`: Input row-major square matrix.
 /// - `n`: Runtime matrix rank.
 /// # Returns
 /// - `Option<T>`: Determinant when evaluation succeeds.
 pub fn det_dynamic<T: NOCIScalar>(
+    lu: &mut [T],
     matrix: &[T],
     n: usize,
 ) -> Option<T> {
-    // Validate the runtime shape before slicing caller storage.
+    // Validate the runtime shape and caller-owned scratch before slicing.
     let nn = n.checked_mul(n)?;
 
-    if matrix.len() < nn {
+    if matrix.len() < nn || lu.len() < nn {
         return None;
     }
 
@@ -486,9 +489,10 @@ pub fn det_dynamic<T: NOCIScalar>(
     }
 
     // Partial-pivot LU is the normal runtime path and avoids the higher cost of an SVD.
-    let mut lu = matrix[..nn].to_vec();
+    let lu = &mut lu[..nn];
+    lu.copy_from_slice(&matrix[..nn]);
 
-    if let Some(determinant) = det_lu_in_place(&mut lu, n) {
+    if let Some(determinant) = det_lu_in_place(lu, n) {
         return Some(determinant);
     }
 

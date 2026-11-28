@@ -1464,7 +1464,8 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                 (value, true)
             } else {
                 (
-                    det_dynamic(scratch.aa.det0.as_slice(), la).unwrap_or(zero),
+                    det_dynamic(scratch.aa.lu.as_mut_slice(), scratch.aa.det0.as_slice(), la)
+                        .unwrap_or(zero),
                     false,
                 )
             };
@@ -1483,7 +1484,8 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                 (value, true)
             } else {
                 (
-                    det_dynamic(scratch.bb.det0.as_slice(), lb).unwrap_or(zero),
+                    det_dynamic(scratch.bb.lu.as_mut_slice(), scratch.bb.det0.as_slice(), lb)
+                        .unwrap_or(zero),
                     false,
                 )
             };
@@ -1542,7 +1544,9 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                             for z in 0..la {
                                 for y in (z + 1)..la {
                                     second_minor_dynamic(&mut minor, d, la, eta, xi, z, y);
-                                    let second = det_dynamic(&minor, la - 2).unwrap_or(zero);
+                                    let second =
+                                        det_dynamic(scratch.aa.lu.as_mut_slice(), &minor, la - 2)
+                                            .unwrap_or(zero);
                                     let n2 = n * n;
                                     let n3 = n2 * n;
                                     let row_eta_n3 = rows[eta] * n3;
@@ -1616,7 +1620,9 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                             for z in 0..lb {
                                 for y in (z + 1)..lb {
                                     second_minor_dynamic(&mut minor, d, lb, eta, xi, z, y);
-                                    let second = det_dynamic(&minor, lb - 2).unwrap_or(zero);
+                                    let second =
+                                        det_dynamic(scratch.bb.lu.as_mut_slice(), &minor, lb - 2)
+                                            .unwrap_or(zero);
                                     let n2 = n * n;
                                     let n3 = n2 * n;
                                     let row_eta_n3 = rows[eta] * n3;
@@ -1880,7 +1886,8 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
                     h2aa += contrib;
                 } else if m1 == 0 && m2 == 0 {
                     // Preserve the overlap determinant if the adjugate evaluation fails.
-                    sa += det_dynamic(scratch.det_mix.as_slice(), la).unwrap_or(zero);
+                    sa += det_dynamic(scratch.lu.as_mut_slice(), scratch.det_mix.as_slice(), la)
+                        .unwrap_or(zero);
                 }
             });
 
@@ -2027,7 +2034,8 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
 
                     h2bb += contrib;
                 } else if m1 == 0 && m2 == 0 {
-                    sb += det_dynamic(scratch.det_mix.as_slice(), lb).unwrap_or(zero);
+                    sb += det_dynamic(scratch.lu.as_mut_slice(), scratch.det_mix.as_slice(), lb)
+                        .unwrap_or(zero);
                 }
             });
 

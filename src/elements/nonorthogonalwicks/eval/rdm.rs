@@ -722,7 +722,7 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
             // The runtime path thresholds the unscaled determinant, `|\det\mathbf D|>tol`,
             // then restores `\Gamma^{\mathbf p}_{\mathbf q}={}^{xw}\tilde S\det\mathbf D`.
             let zero = <T as From<f64>>::from(0.0);
-            if let Some(value) = det_dynamic(d, d_rank)
+            if let Some(value) = det_dynamic(scratch.lu.as_mut_slice(), d, d_rank)
                 && value.abs() > tol
             {
                 w.phase * <T as From<f64>>::from(w.tilde_s_prod) * value
@@ -860,8 +860,11 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
                 );
 
                 // Retain each term with `|\det\mathbf D(\{m_i\})|>tol` before summing.
-                if let Some(value) = det_dynamic(scratch.det_mix.as_slice(), d_rank)
-                    && value.abs() > tol
+                if let Some(value) = det_dynamic(
+                    scratch.lu.as_mut_slice(),
+                    scratch.det_mix.as_slice(),
+                    d_rank,
+                ) && value.abs() > tol
                 {
                     acc += value;
                 }
