@@ -106,40 +106,38 @@ pub(in crate::noci::selected) fn build_snoci_couplings<T: NOCIScalar + Into<Comp
     coeffs: &Array1<T>,
     e_noci: f64,
 ) -> (PT2Projection<T>, Array1<T>) {
-    time_call!(crate::timers::selected::add_build_snoci_projection, {
+    time_call!(crate::timers::selected::add_build_snoci_couplings, {
         let op = Fock { fock, shift: 0.0 };
         let fock_row = |y: &mut T, f: T, c: T| *y += f * c;
 
         // `E_0 = \sum_{ij} c_i^* F_{ij} c_j` and `F_{a0}` from the Fock rows.
-        let (e0, f_a0) = time_call!(crate::timers::selected::add_build_snoci_focks, {
-            let f_i0 =
-                contract_noci_rows(data, &op, selected_space, selected_space, coeffs, fock_row);
-            let e0 = coeffs
-                .iter()
-                .zip(&f_i0)
-                .fold(T::from_real(0.0), |acc, (&c, &f)| acc + c.conj() * f);
-            let f_a0 = contract_noci_rows(data, &op, candidates, selected_space, coeffs, fock_row);
-            (e0.into().re, Array1::from(f_a0))
-        });
+        let f_i0 = contract_noci_rows(data, &op, selected_space, selected_space, coeffs, fock_row);
+        let e0 = coeffs
+            .iter()
+            .zip(&f_i0)
+            .fold(T::from_real(0.0), |acc, (&c, &f)| acc + c.conj() * f);
+        let e0 = e0.into().re;
+
+        let f_a0 = contract_noci_rows(data, &op, candidates, selected_space, coeffs, fock_row);
+        let f_a0 = Array1::from(f_a0);
 
         // `V_a` and `S_{a0}` from the fused Hamiltonian and overlap rows.
-        let (v_a, s_a0): (Vec<T>, Vec<T>) =
-            time_call!(crate::timers::selected::add_build_candidate_v, {
-                let hs = contract_noci_rows(
-                    data,
-                    &HamiltonianOverlap,
-                    candidates,
-                    selected_space,
-                    coeffs,
-                    |y: &mut (T, T), (h, s), c| {
-                        y.0 += h * c;
-                        y.1 += s * c;
-                    },
-                );
-                hs.into_iter().unzip()
-            });
-
+        let hs = contract_noci_rows(
+            data,
+            &HamiltonianOverlap,
+            candidates,
+            selected_space,
+            coeffs,
+            |y: &mut (T, T), (h, s), c| {
+                y.0 += h * c;
+                y.1 += s * c;
+            },
+        );
+        let (v_a, s_a0): (Vec<T>, Vec<T>) = hs.into_iter().unzip();
         let (v_a, s_a0) = (Array1::from(v_a), Array1::from(s_a0));
+
+        // `V^\Omega_a = V_a - E_{\text{NOCI}} S_{a0}`, and the projection with
+        // `S_{0a} = S_{a0}^*` and `F_{0a} = F_{a0}^*`.
         let v_omega = &v_a - &s_a0.mapv(|x| T::from_real(e_noci) * x);
         let projection = PT2Projection {
             e0,
@@ -148,6 +146,7 @@ pub(in crate::noci::selected) fn build_snoci_couplings<T: NOCIScalar + Into<Comp
             f_0a: f_a0.mapv(|x| x.conj()),
             f_a0,
         };
+
         (projection, v_omega)
     })
 }

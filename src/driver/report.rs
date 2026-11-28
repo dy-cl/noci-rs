@@ -204,11 +204,6 @@ pub fn print_report(
         print_counter("Total SNOCI time", res.timings.selected.run_snoci, 0);
         print_counter("Full SNOCI step", res.timings.selected.snoci_step, 2);
         print_counter(
-            "Current space H, S and GEVP",
-            res.timings.selected.solve_current_space,
-            2,
-        );
-        print_counter(
             "Initial candidate pool generation",
             res.timings.selected.candidate_pool_new,
             2,
@@ -222,23 +217,8 @@ pub fn print_report(
         println!("{}", "-".repeat(100));
 
         print_counter(
-            "Candidate-current overlaps",
-            res.timings.selected.build_snoci_overlaps,
-            2,
-        );
-        print_counter(
-            "Candidate-current space H",
-            res.timings.selected.build_candidate_h_ai,
-            2,
-        );
-        print_counter(
             "Generalised Fock build",
             res.timings.selected.build_generalised_fock,
-            2,
-        );
-        print_counter(
-            "Current-current and candidate-current Fock blocks",
-            res.timings.selected.build_snoci_focks,
             2,
         );
         print_counter(
@@ -252,18 +232,8 @@ pub fn print_report(
             2,
         );
         print_counter(
-            "PT2 projection contractions",
-            res.timings.selected.build_snoci_projection,
-            2,
-        );
-        print_counter(
-            "Candidate coupling vector",
-            res.timings.selected.build_candidate_v,
-            2,
-        );
-        print_counter(
-            "Projected coupling vector",
-            res.timings.selected.build_omega_v,
+            "Candidate couplings and PT2 projection",
+            res.timings.selected.build_snoci_couplings,
             2,
         );
         print_counter(
