@@ -99,9 +99,9 @@ fn run_pt2_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
         .expect("NOCI-PT2 did not produce a PT2 result");
 
     assert!(
-        pt2.gmres_converged,
+        pt2.gmres.converged,
         "NOCI-PT2 GMRES failed to converge: residual {}",
-        pt2.gmres_residual,
+        pt2.gmres.residual_rms,
     );
 
     let e_pt2 = result.ecurrent + pt2.ept2;
@@ -193,9 +193,9 @@ fn run_pt2_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
         .expect("NOCI-PT2 did not produce a PT2 result");
 
     assert!(
-        pt2.gmres_converged,
+        pt2.gmres.converged,
         "NOCI-PT2 GMRES failed to converge: residual {}",
-        pt2.gmres_residual,
+        pt2.gmres.residual_rms,
     );
 
     let e_pt2 = result.ecurrent + pt2.ept2;
@@ -256,9 +256,9 @@ fn run_complex_pt2_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
         .expect("complex NOCI-PT2 did not produce a PT2 result");
 
     assert!(
-        pt2.gmres_converged,
+        pt2.gmres.converged,
         "complex NOCI-PT2 GMRES failed to converge: residual {}",
-        pt2.gmres_residual,
+        pt2.gmres.residual_rms,
     );
 
     let e_pt2 = result.ecurrent + pt2.ept2;
@@ -533,9 +533,9 @@ fn pt2_h2_3_21g_1_5_ang_energies_wicks_roots() {
     assert_eq!(result.pt2.len(), expected.noci_pt2_energies.len());
     for (i, pt2) in result.pt2.iter().enumerate() {
         assert!(
-            pt2.gmres_converged,
+            pt2.gmres.converged,
             "NOCI-PT2 GMRES failed to converge for state {i}: residual {}",
-            pt2.gmres_residual,
+            pt2.gmres.residual_rms,
         );
         assert_eq!(pt2.root, i);
         assert_close(

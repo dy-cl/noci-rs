@@ -85,9 +85,9 @@ fn run_snoci_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     );
     for pt2 in &result.pt2 {
         assert!(
-            pt2.gmres_converged,
+            pt2.gmres.converged,
             "SNOCI GMRES failed to converge: residual {}",
-            pt2.gmres_residual,
+            pt2.gmres.residual_rms,
         );
     }
 
@@ -165,9 +165,9 @@ fn run_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     );
     for pt2 in &result.pt2 {
         assert!(
-            pt2.gmres_converged,
+            pt2.gmres.converged,
             "SNOCI GMRES failed to converge: residual {}",
-            pt2.gmres_residual,
+            pt2.gmres.residual_rms,
         );
     }
 
@@ -228,9 +228,9 @@ fn run_complex_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     );
     for pt2 in &result.pt2 {
         assert!(
-            pt2.gmres_converged,
+            pt2.gmres.converged,
             "complex SNOCI GMRES failed to converge: residual {}",
-            pt2.gmres_residual,
+            pt2.gmres.residual_rms,
         );
     }
 

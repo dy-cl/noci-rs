@@ -72,7 +72,7 @@ impl PT2Guess {
                 .iter()
                 .map(|r| {
                     let slot = roots.iter().position(|&root| root == r.root).unwrap();
-                    (slot, r.imag_shift, r.amplitudes.clone(), r.rhs.clone())
+                    (slot, r.imag_shift, r.gmres.x.clone(), r.rhs.clone())
                 })
                 .collect(),
             followed,

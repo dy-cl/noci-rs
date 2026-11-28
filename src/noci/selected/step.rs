@@ -17,7 +17,7 @@ use crate::elements::{FockData, NOCIData};
 use crate::elements::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::input::{SNOCIPreconditioner, SNOCIStorage, StateType};
 use crate::maths::general_evp;
-use crate::maths::gmres::{GMRESPrint, gmres};
+use crate::maths::gmres::{GMRESPrint, GMRESResult, gmres};
 use crate::noci::{OneBodyFactorisation, OneBodyScratch};
 use crate::scf::fock;
 use crate::time_call;
@@ -168,15 +168,15 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
         println!("  Imag shift:         {:.12}", r.imag_shift);
         println!("  EPT2:               {:.12}", r.ept2);
         println!("  E + EPT2:           {:.12}", r.e_noci + r.ept2);
-        println!("  <Psi1|Psi1>:        {:.12}", r.norm_first_order);
-        println!("  ErPT2:              {:.12}", r.erpt2);
-        println!("  E + ErPT2:          {:.12}", r.e_noci + r.erpt2);
+        println!("  <Psi1|Psi1>:        {:.12}", r.norm);
+        println!("  ErPT2:              {:.12}", r.rpt2);
+        println!("  E + ErPT2:          {:.12}", r.e_noci + r.rpt2);
         println!("  Max |a_i|:          {:.12}", r.max_abs_a);
         println!("  Max |v_i|:          {:.12}", r.max_abs_v);
         println!("  Max |a_i v_i|:      {:.12}", r.max_abs_av);
-        println!("  GMRES residual:     {:.12}", r.gmres_residual);
-        println!("  GMRES iterations:   {}", r.gmres_iterations);
-        println!("  GMRES converged:    {}", r.gmres_converged);
+        println!("  GMRES residual:     {:.12}", r.gmres.residual_rms);
+        println!("  GMRES iterations:   {}", r.gmres.iterations);
+        println!("  GMRES converged:    {}", r.gmres.converged);
         println!("  {}", "-".repeat(98));
     }
 }
@@ -504,8 +504,8 @@ where
             a.x.iter()
                 .zip(qa.iter())
                 .fold(R::from_real(0.0), |acc, (&aa, &qaa)| acc + aa.conj() * qaa);
-        let norm_first_order = scalar_real(aqa);
-        let erpt2 = ept2 / (1.0 + norm_first_order);
+        let norm = scalar_real(aqa);
+        let rpt2 = ept2 / (1.0 + norm);
 
         let candidate_scores: Vec<f64> =
             a.x.iter()
@@ -523,17 +523,19 @@ where
             s2,
             imag_shift,
             ept2,
-            norm_first_order,
-            erpt2,
+            norm,
+            rpt2,
             candidate_scores,
-            amplitudes: a.x.mapv(Into::into),
             rhs: rhs.mapv(Into::into),
             max_abs_a,
             max_abs_v,
             max_abs_av,
-            gmres_residual: a.residual_rms,
-            gmres_iterations: a.iterations,
-            gmres_converged: a.converged,
+            gmres: GMRESResult {
+                x: a.x.mapv(Into::into),
+                residual_rms: a.residual_rms,
+                iterations: a.iterations,
+                converged: a.converged,
+            },
         });
     }
 

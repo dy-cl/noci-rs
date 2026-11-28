@@ -12,6 +12,7 @@ use crate::NOCIScalar;
 use crate::determinant::NOCIIndex;
 use crate::elements::{FockData, NOCIData};
 use crate::input::SNOCIPreconditioner;
+use crate::maths::gmres::GMRESResult;
 
 // Parent/sibling imports.
 use super::PT2Guess;
@@ -47,13 +48,11 @@ pub struct SNOCIPT2Result {
     /// Second-order correction for this imaginary shift.
     pub ept2: f64,
     /// Norm `\langle\Psi^{(1)}|\Psi^{(1)}\rangle = a^\dagger Q a` of the first-order wavefunction.
-    pub norm_first_order: f64,
+    pub norm: f64,
     /// Renormalised second-order correction `E^{(2)} / (1 + \langle\Psi^{(1)}|\Psi^{(1)}\rangle)`.
-    pub erpt2: f64,
+    pub rpt2: f64,
     /// Importance scores `|a_i v_i|` for this imaginary shift.
     pub candidate_scores: Vec<f64>,
-    /// Converged first-order amplitudes `a_i`.
-    pub amplitudes: Array1<Complex64>,
     /// Right-hand side `b_i = -V_i` of the amplitude equation.
     pub rhs: Array1<Complex64>,
     /// Largest first-order amplitude magnitude.
@@ -62,12 +61,9 @@ pub struct SNOCIPT2Result {
     pub max_abs_v: f64,
     /// Largest amplitude-coupling product.
     pub max_abs_av: f64,
-    /// GMRES residual for this shifted solve.
-    pub gmres_residual: f64,
-    /// GMRES iterations for this shifted solve.
-    pub gmres_iterations: usize,
-    /// Whether GMRES converged for this shifted solve.
-    pub gmres_converged: bool,
+    /// GMRES solve for this imaginary shift: the first-order amplitudes `a_i` with the residual,
+    /// iteration count and convergence of the solve.
+    pub gmres: GMRESResult<Complex64>,
 }
 
 /// Total NOCI-PT2 energy of one corrected NOCI state at one imaginary shift.
