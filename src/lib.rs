@@ -53,6 +53,8 @@ pub mod utils;
 pub mod write;
 
 mod config;
+#[cfg(feature = "gpu")]
+mod gpu;
 mod hash;
 
 // External crate imports.

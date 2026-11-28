@@ -10,6 +10,7 @@ bincode = {version = "1"}
 serde = {version = "1", features = ["derive", "rc"]}
 
 [dependencies]
+cudarc = {version = "0.19.10", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "cublas", "cusparse", "cuda-version-from-build-system", "dynamic-loading"]}
 rlua = {version = "0.20.1"}
 rand = {version = "0.8", default-features = false}
 rand_xoshiro = {version = "0.6"}
@@ -52,6 +53,8 @@ timings = []
 # Orbital bitstrings of 256 rather than 128 orbitals.
 wide = []
 gnocc = ["dep:wick-build"]
+# CUDA kernels and cuBLAS/cuSPARSE products on an NVIDIA GPU.
+gpu = ["dep:cudarc"]
 
 [profile.release]
 opt-level = 3

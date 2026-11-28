@@ -5,6 +5,8 @@ use std::env;
 use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
+#[cfg(feature = "gpu")]
+use std::process::Command;
 
 #[cfg(feature = "gnocc")]
 mod nocc {
@@ -494,6 +496,39 @@ fn generate_eval() {
         .unwrap_or_else(|e| panic!("failed to write generated dispatch.rs: {e}"));
 }
 
+/// Compile the CUDA kernels of `src/gpu/kernels.cu` into one fatbin under `OUT_DIR` for the `gpu`
+/// feature, with native code for compute capabilities 8.6 (RTX 30 series) and 9.0 (H100/H200)
+/// and compute 9.0 PTX that the driver compiles for newer GPUs. `NVCC` overrides the compiler.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `()`: Writes `kernels.fatbin` under `OUT_DIR`.
+#[cfg(feature = "gpu")]
+fn compile_gpu_kernels() {
+    println!("cargo:rerun-if-changed=src/gpu/kernels.cu");
+    println!("cargo:rerun-if-env-changed=NVCC");
+
+    let out =
+        PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is not set")).join("kernels.fatbin");
+    let nvcc = env::var("NVCC").unwrap_or_else(|_| "nvcc".to_string());
+
+    let status = Command::new(&nvcc)
+        .args(["--fatbin", "-O3", "-std=c++17"])
+        .args(["-gencode", "arch=compute_86,code=sm_86"])
+        .args(["-gencode", "arch=compute_90,code=[sm_90,compute_90]"])
+        .arg("-o")
+        .arg(&out)
+        .arg("src/gpu/kernels.cu")
+        .status()
+        .unwrap_or_else(|e| {
+            panic!("could not run {nvcc}: {e}; install the CUDA toolkit or set NVCC")
+        });
+
+    if !status.success() {
+        panic!("{nvcc} failed to compile src/gpu/kernels.cu");
+    }
+}
+
 /// Generate fixed-rank Wick source and optional NOCC term data.
 /// # Arguments:
 /// - None.
@@ -506,4 +541,7 @@ fn main() {
 
     #[cfg(feature = "gnocc")]
     nocc::run();
+
+    #[cfg(feature = "gpu")]
+    compile_gpu_kernels();
 }
