@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 // External crate imports.
 use mpi::topology::Communicator;
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Axis, concatenate, s};
 use num_complex::Complex64;
 
 // Crate-root imports.
@@ -14,20 +14,20 @@ use crate::determinant::Bits;
 use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::elements::nonorthogonalwicks::WicksShared;
 use crate::elements::{FockData, NOCIData};
-use crate::elements::{build_fock_mo_cache, noci_density, update_wicks_fock};
+use crate::elements::{
+    build_fock_mo_cache, build_noci_spin_square, noci_density, update_wicks_fock,
+};
 use crate::input::{SNOCIPreconditioner, SNOCIStorage, StateType};
-use crate::maths::general_evp;
 use crate::maths::gmres::{GMRESPrint, GMRESResult, gmres};
-use crate::noci::{OneBodyFactorisation, OneBodyScratch};
+use crate::maths::{adjoint, general_evp};
+use crate::noci::{OneBodyFactorisation, OneBodyScratch, build_noci_hs};
 use crate::scf::fock;
 use crate::time_call;
 use crate::{PostSCFData, input::Input};
 
 // Parent/sibling imports.
 use super::guess::FollowedStates;
-use super::{
-    CandidatePool, PT2Guess, PT2ProjectedOperator, SNOCIBlocks, SNOCIPT2Result, SNOCIState,
-};
+use super::{CandidatePool, PT2Guess, PT2ProjectedOperator, SNOCIPT2Result, SNOCIState};
 use super::{
     apply_factorised_omega_s, apply_factorised_shifted_omega_m,
     apply_factorised_shifted_omega_m_mpi, apply_omega_s, apply_omega_s_mpi, apply_shifted_omega_m,
@@ -35,6 +35,72 @@ use super::{
     build_candidate_s_diag, build_factorised_candidate_diags, build_preconditioner,
     build_snoci_couplings, select_candidates,
 };
+
+/// Hamiltonian, overlap and spin-squared blocks between the selected determinants, in
+/// selected-space order.
+/// `H`, `S` and `S^2` do not depend on the corrected NOCI state, so these blocks are built once and
+/// bordered as determinants are promoted, rather than rebuilt every SNOCI iteration. The
+/// candidate-current blocks are never stored: the NOCI-PT2 problem needs them only contracted
+/// with the current state, which `build_snoci_couplings` evaluates row by row.
+struct SNOCIBlocks<T: NOCIScalar> {
+    /// Selected-selected Hamiltonian `H_{ij}`.
+    h_ii: Array2<T>,
+    /// Selected-selected overlap `S_{ij}`.
+    s_ii: Array2<T>,
+    /// Selected-selected spin-squared matrix `\langle i|S^2|j\rangle`.
+    ss_ii: Array2<T>,
+}
+
+impl<T: NOCIScalar> SNOCIBlocks<T> {
+    /// Build `H_{ij}`, `S_{ij}` and `\langle i|S^2|j\rangle` for a selected space.
+    /// # Arguments:
+    /// - `data`: Shared NOCI matrix-element data over the determinant space.
+    /// - `selected`: Selected determinants.
+    /// # Returns:
+    /// - `SNOCIBlocks<T>`: Selected-selected blocks.
+    fn new(
+        data: &NOCIData<'_, T>,
+        selected: &[NOCIIndex],
+    ) -> Self {
+        let (h_ii, s_ii, _) = build_noci_hs(data, selected, selected, true);
+        let ss_ii = build_noci_spin_square(data, selected, selected);
+
+        Self { h_ii, s_ii, ss_ii }
+    }
+
+    /// Border the blocks with the `promoted` determinants that have joined the selected space,
+    /// `A \leftarrow [[A, P^\dagger], [P, D]]`, where `P` holds the promoted rows against the earlier
+    /// selected determinants and `D` the promoted-promoted block.
+    /// # Arguments:
+    /// - `data`: Shared NOCI matrix-element data over the extended determinant space.
+    /// - `selected`: Selected space after the promotion, ending with `promoted`.
+    /// - `promoted`: Determinants promoted to the selected space in this iteration.
+    /// # Returns:
+    /// - `()`: Updates the blocks in place.
+    fn extend(
+        &mut self,
+        data: &NOCIData<'_, T>,
+        selected: &[NOCIIndex],
+        promoted: &[NOCIIndex],
+    ) {
+        let earlier = &selected[..selected.len() - promoted.len()];
+        let border = |a: &Array2<T>, p: &Array2<T>, d: &Array2<T>| {
+            let top = concatenate![Axis(1), a.view(), adjoint(p).view()];
+            let bottom = concatenate![Axis(1), p.view(), d.view()];
+            concatenate![Axis(0), top, bottom]
+        };
+
+        let (h_pi, s_pi, _) = build_noci_hs(data, promoted, earlier, false);
+        let (h_pp, s_pp, _) = build_noci_hs(data, promoted, promoted, true);
+        self.h_ii = border(&self.h_ii, &h_pi, &h_pp);
+        self.s_ii = border(&self.s_ii, &s_pi, &s_pp);
+
+        let ss_p = build_noci_spin_square(data, promoted, selected);
+        let ss_pi = ss_p.slice(s![.., ..earlier.len()]).to_owned();
+        let ss_pp = ss_p.slice(s![.., earlier.len()..]).to_owned();
+        self.ss_ii = border(&self.ss_ii, &ss_pi, &ss_pp);
+    }
+}
 
 /// Return the real spin string of a scalar used for printed and stored energies.
 /// # Arguments:

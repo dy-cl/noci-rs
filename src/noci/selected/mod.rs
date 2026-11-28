@@ -34,7 +34,6 @@
 //! - NOCI-PT2: Burton and Thom, *J. Chem. Theory Comput.* **16**, 5586 (2020),
 //!   [doi:10.1021/acs.jctc.0c00468](https://doi.org/10.1021/acs.jctc.0c00468).
 
-mod blocks;
 mod candidate;
 mod guess;
 mod operators;
@@ -49,7 +48,6 @@ pub use types::{NOCIPT2Energy, SNOCIPT2Result, SNOCIState};
 pub use step::snoci_step;
 
 // Restricted type re-exports.
-pub(in crate::noci::selected) use blocks::SNOCIBlocks;
 pub(in crate::noci::selected) use candidate::CandidatePool;
 pub(in crate::noci::selected) use types::{PT2ProjectedOperator, PT2Projection, Preconditioner};
 
