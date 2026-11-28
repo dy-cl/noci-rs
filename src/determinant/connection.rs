@@ -7,6 +7,9 @@ use crate::basis::excitation_phase_bits;
 use crate::determinant::{DeterminantData, SpinStringData, SpinStringState};
 use crate::{ExcitationCache, ExcitationSpin, ExcitationSpinCache};
 
+// Parent/sibling imports.
+use super::bits::Bits;
+
 /// Relative occupied/virtual-rank topology of one nonzero orthogonal Slater-Condon connection.
 /// A one- plus two-body Hamiltonian connects only sectors
 /// `(R_\alpha,R_\beta) \in \{(1,0),(0,1),(2,0),(0,2),(1,1)\}` in addition to the diagonal.
@@ -165,19 +168,15 @@ impl ConnectionState {
     /// - `occupations`: Source alpha and beta occupation bitstrings.
     /// - `norb`: Number of spatial orbitals in the parent frame.
     /// # Returns:
-    /// - `(u128, u128)`: Physical alpha and beta child occupations.
+    /// - `(Bits, Bits)`: Physical alpha and beta child occupations.
     #[inline(always)]
     pub(crate) fn child_of(
         self,
-        occupations: (u128, u128),
+        occupations: (Bits, Bits),
         norb: usize,
-    ) -> (u128, u128) {
+    ) -> (Bits, Bits) {
         let (alpha, beta) = occupations;
-        let all = if norb >= 128 {
-            u128::MAX
-        } else {
-            (1u128 << norb) - 1
-        };
+        let all = Bits::below(norb);
         let (va, vb) = (!alpha & all, !beta & all);
         match self {
             Self::AlphaSingle { occupied, virtual_ } => (
@@ -223,13 +222,13 @@ impl ConnectionState {
     /// - `alpha`: Canonical alpha source spin string.
     /// - `beta`: Canonical beta source spin string.
     /// # Returns:
-    /// - `(u128, u128)`: Physical alpha and beta child occupations.
+    /// - `(Bits, Bits)`: Physical alpha and beta child occupations.
     #[inline(always)]
     pub(crate) fn child_occupations(
         self,
         alpha: &SpinStringState,
         beta: &SpinStringState,
-    ) -> (u128, u128) {
+    ) -> (Bits, Bits) {
         // Resolve relative connection ranks before editing physical occupation masks.
         let cache = self.excitation_cache(alpha, beta);
 
@@ -248,16 +247,16 @@ impl ConnectionState {
 /// - `bits`: Occupation or vacancy bitstring.
 /// - `n`: Rank of the requested set bit.
 /// # Returns:
-/// - `u128`: Single-bit mask of the `n`-th set bit.
+/// - `Bits`: Single-bit mask of the `n`-th set bit.
 #[inline(always)]
 fn nth_bit(
-    mut bits: u128,
+    mut bits: Bits,
     n: u8,
-) -> u128 {
+) -> Bits {
     for _ in 0..n {
-        bits &= bits - 1;
+        bits = bits.without_first();
     }
-    bits & bits.wrapping_neg()
+    Bits::bit(bits.first())
 }
 
 /// Convert fixed-rank orbital labels to the physical occupation mask
@@ -266,16 +265,16 @@ fn nth_bit(
 /// - `orbitals`: Cached physical orbital labels.
 /// - `rank`: Number of active labels.
 /// # Returns:
-/// - `u128`: Mask with exactly the active orbital labels.
+/// - `Bits`: Mask with exactly the active orbital labels.
 #[inline(always)]
 fn fixed_rank_mask(
     orbitals: [u8; crate::MAXEXCIT],
     rank: u8,
-) -> u128 {
+) -> Bits {
     // Only the first `rank` entries are active; remaining fixed-capacity cache entries are padding.
-    let mut bits = 0u128;
+    let mut bits = Bits::EMPTY;
     for &orbital in orbitals.iter().take(usize::from(rank)) {
-        bits |= 1u128 << orbital;
+        bits |= Bits::bit(orbital);
     }
     bits
 }

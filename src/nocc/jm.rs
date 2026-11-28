@@ -9,6 +9,9 @@ use ndarray::Array2;
 use ndarray_linalg::{Eig, Inverse};
 use num_complex::Complex64;
 
+// Crate-root imports.
+use crate::determinant::Bits;
+
 /// Effective overlap `S^e_{zx}=\langle{}^z\Psi|\Phi_x\rangle` and Hamiltonian
 /// `H^e_{zx}=\langle{}^z\Psi|\hat H|\Phi_x\rangle` of the correlated references, evaluated
 /// exactly or accumulated from samples. Stochastic samples are divided by the reference
@@ -80,23 +83,23 @@ impl Effective {
 /// - `norb`: Number of spatial orbitals in the reference frame.
 /// - `rank`: Highest excitation rank, capped at the largest possible rank.
 /// # Returns:
-/// - `Vec<(u128, u128, usize)>`: Alpha and beta occupations and excitation rank.
+/// - `Vec<(Bits, Bits, usize)>`: Alpha and beta occupations and excitation rank.
 pub(in crate::nocc) fn reference_determinants(
-    oa: u128,
-    ob: u128,
+    oa: Bits,
+    ob: Bits,
     norb: usize,
     rank: usize,
-) -> Vec<(u128, u128, usize)> {
-    let split = |occ: u128| {
+) -> Vec<(Bits, Bits, usize)> {
+    let split = |occ: Bits| {
         let (occupied, virtuals): (Vec<usize>, Vec<usize>) =
-            (0..norb).partition(|&p| occ & (1u128 << p) != 0);
+            (0..norb).partition(|&p| occ.contains(p));
         (occupied, virtuals)
     };
     let (aocc, avir) = split(oa);
     let (bocc, bvir) = split(ob);
-    let excite = |occ: u128, holes: &[usize], parts: &[usize]| {
-        let occ = holes.iter().fold(occ, |o, &h| o & !(1u128 << h));
-        parts.iter().fold(occ, |o, &p| o | (1u128 << p))
+    let excite = |occ: Bits, holes: &[usize], parts: &[usize]| {
+        let occ = holes.iter().fold(occ, |o, &h| o & !Bits::bit(h));
+        parts.iter().fold(occ, |o, &p| o | Bits::bit(p))
     };
 
     let mut out = Vec::new();

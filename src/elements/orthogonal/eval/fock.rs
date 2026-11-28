@@ -2,6 +2,7 @@
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::determinant::DeterminantData;
 use crate::elements::FockMOCache;
 #[cfg(target_arch = "x86_64")]
@@ -37,7 +38,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalFock<'_, T> {
     /// - `T`: Orthogonal Slater-Condon Fock matrix element.
     fn value(
         &self,
-        occupation: (u128, u128),
+        occupation: (Bits, Bits),
         state: &DeterminantData,
     ) -> T {
         xw_fock_orthogonal(self.cache, occupation, state)
@@ -124,7 +125,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalFock<'_, T> {
 #[inline(always)]
 pub(crate) fn xw_fock_orthogonal<T: NOCIScalar>(
     cache: &FockMOCache<T>,
-    source: (u128, u128),
+    source: (Bits, Bits),
     state: &DeterminantData,
 ) -> T {
     let ranks = (
@@ -154,7 +155,7 @@ pub(crate) fn xw_fock_orthogonal<T: NOCIScalar>(
 #[inline(always)]
 fn xw_fock_orthogonal_const<T: NOCIScalar, const RA: usize, const RB: usize>(
     cache: &FockMOCache<T>,
-    source: (u128, u128),
+    source: (Bits, Bits),
     state: &DeterminantData,
 ) -> T {
     let alpha = &state.alpha.cache;
@@ -165,17 +166,11 @@ fn xw_fock_orthogonal_const<T: NOCIScalar, const RA: usize, const RB: usize>(
         // Diagonal element: accumulate occupied alpha and beta orbital Fock energies.
         // `F_xx = \sum_{i\in O_\alpha}F^\alpha_{ii} + \sum_{i\in O_\beta}F^\beta_{ii}`.
         let mut f = T::from_real(0.0);
-        let mut bits = source.0;
-        while bits != 0 {
-            let i = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
+        for i in source.0.ones() {
             f += cache.fa[(i, i)];
         }
 
-        let mut bits = source.1;
-        while bits != 0 {
-            let i = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
+        for i in source.1.ones() {
             f += cache.fb[(i, i)];
         }
 

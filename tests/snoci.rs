@@ -2,7 +2,7 @@ mod common;
 
 // External crate imports.
 use noci_rs::basis::generate_reference_noci_basis;
-use noci_rs::determinant::{NOCIIndex, NOCISpace};
+use noci_rs::determinant::{Bits, NOCIIndex, NOCISpace};
 use noci_rs::elements::{NOCIData, build_mo_cache, build_wicks_shared};
 use noci_rs::noci::selected::{PT2Guess, snoci_step};
 use noci_rs::noci::{build_noci_hs, calculate_noci_energy};
@@ -764,7 +764,7 @@ fn snoci_h4_sto_3g_1_5_ang_double_excitation_pair_wicks() {
         .map(NOCIIndex)
         .collect::<Vec<_>>();
     let candidates = reference_space.excited_from(&sources, &input, false);
-    let rank = |parent: usize, child_oa: u128, child_ob: u128| {
+    let rank = |parent: usize, child_oa: Bits, child_ob: Bits| {
         let parent = &refs[parent];
         (
             (parent.oa & !child_oa).count_ones() as usize,
@@ -834,7 +834,7 @@ fn snoci_h4_sto_3g_1_5_ang_double_excitation_pair_wicks() {
         .map(NOCIIndex)
         .collect::<Vec<_>>();
     let candidates_wicks = reference_space_wicks.excited_from(&sources_wicks, &input_wicks, false);
-    let rank_wicks = |parent: usize, child_oa: u128, child_ob: u128| {
+    let rank_wicks = |parent: usize, child_oa: Bits, child_ob: Bits| {
         let parent = &refs_wicks[parent];
         (
             (parent.oa & !child_oa).count_ones() as usize,

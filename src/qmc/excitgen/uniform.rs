@@ -4,6 +4,7 @@
 use rand::Rng;
 
 // Crate-root imports.
+use crate::determinant::Bits;
 use crate::determinant::ConnectionState;
 use crate::elements::MOCache;
 
@@ -25,7 +26,7 @@ impl OrthogonalUniformGenerator {
     /// # Returns
     /// - `Self`: System-wide flat uniform connection table and valid-orbital masks.
     pub(crate) fn new(
-        occupations: (u128, u128),
+        occupations: (Bits, Bits),
         cache: &MOCache<f64>,
     ) -> Self {
         // Derive occupied/virtual dimensions shared by every parent-orthogonal determinant.

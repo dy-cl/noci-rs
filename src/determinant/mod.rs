@@ -8,12 +8,14 @@
 //! same frame.
 
 pub(crate) mod auxiliary;
+pub(crate) mod bits;
 pub(crate) mod connection;
 pub(crate) mod parent;
 pub(crate) mod space;
 pub(crate) mod state;
 
 // Public type re-exports.
+pub use bits::{Bits, Ones};
 pub use parent::ParentDeterminant;
 pub use space::{NOCIIndex, NOCISpace};
 

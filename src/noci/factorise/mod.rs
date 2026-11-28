@@ -12,6 +12,7 @@ pub(crate) use overlap::{AuxiliaryOverlapScratch, OverlapFactors, OverlapScratch
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::determinant::{NOCISpace, SpinStringData};
 use crate::elements::NOCIData;
 use crate::elements::nonorthogonalwicks::SpinStringSources;
@@ -218,8 +219,8 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
         // contraction-form apply. A hole or particle orbital `k` sits at position
         // `k - |\{occupied < k\}|` among the virtual orbitals or `|\{occupied < k\}|` among the
         // occupied ones.
-        let slots = |occupation: u128, strings: &[SpinStringData]| {
-            let below = |k: usize| (occupation & ((1u128 << k) - 1)).count_ones() as usize;
+        let slots = |occupation: Bits, strings: &[SpinStringData]| {
+            let below = |k: usize| (occupation & Bits::below(k)).count_ones() as usize;
             strings
                 .iter()
                 .map(|st| {

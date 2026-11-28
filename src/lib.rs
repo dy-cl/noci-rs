@@ -61,6 +61,7 @@ use serde::{Deserialize, Serialize};
 
 // Crate-root imports.
 use crate::config::MAXEXCIT;
+use crate::determinant::Bits;
 use crate::elements::MOCache;
 
 pub use error::{Error, Result};
@@ -107,8 +108,14 @@ impl Excitation {
     /// - `Excitation`: Excitation with no holes or particles in either spin sector.
     pub fn empty() -> Self {
         Self {
-            alpha: ExcitationSpin { holes: 0, parts: 0 },
-            beta: ExcitationSpin { holes: 0, parts: 0 },
+            alpha: ExcitationSpin {
+                holes: Bits::EMPTY,
+                parts: Bits::EMPTY,
+            },
+            beta: ExcitationSpin {
+                holes: Bits::EMPTY,
+                parts: Bits::EMPTY,
+            },
         }
     }
 
@@ -129,9 +136,9 @@ impl Excitation {
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct ExcitationSpin {
     /// Bit mask of previously occupied now unoccupied orbitals.
-    pub holes: u128,
+    pub holes: Bits,
     /// Bit mask of previously unoccupied now occupied orbitals.
-    pub parts: u128,
+    pub parts: Bits,
 }
 
 impl ExcitationSpin {
@@ -150,14 +157,14 @@ impl ExcitationSpin {
         let mut particles = self.parts;
 
         for i in 0..MAXEXCIT {
-            if holes != 0 {
-                cached_holes[i] = holes.trailing_zeros() as u8;
-                holes &= holes - 1;
+            if !holes.is_empty() {
+                cached_holes[i] = holes.first() as u8;
+                holes = holes.without_first();
             }
 
-            if particles != 0 {
-                cached_particles[i] = particles.trailing_zeros() as u8;
-                particles &= particles - 1;
+            if !particles.is_empty() {
+                cached_particles[i] = particles.first() as u8;
+                particles = particles.without_first();
             }
         }
 

@@ -20,6 +20,7 @@ use rand::Rng;
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::determinant::Bits;
 use crate::determinant::DeterminantState;
 use crate::hash::FastMap;
 use crate::qmc::QmcRng;
@@ -39,7 +40,7 @@ pub(super) struct Projections {
     /// `\sum w\langle{}^y\Psi|\hat H|D_C\rangle`, indexed `[y][x]`.
     pub(super) he: Vec<Vec<f64>>,
     /// `q^x_y(\nu)` keyed by the occupations of `\nu`, indexed `[y][x]`.
-    pub(super) q: Vec<Vec<FastMap<(u128, u128), f64>>>,
+    pub(super) q: Vec<Vec<FastMap<(Bits, Bits), f64>>>,
 }
 
 impl Projections {
@@ -145,7 +146,7 @@ pub(super) fn project_cluster(
 pub(super) fn left_action(
     block: &Block,
     index: usize,
-    q: &[((u128, u128), f64)],
+    q: &[((Bits, Bits), f64)],
     spaces: &ReferenceSpaces,
     distribution: (f64, bool),
 ) -> Vec<(ExcitorIndex, f64)> {

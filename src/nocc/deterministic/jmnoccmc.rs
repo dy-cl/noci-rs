@@ -72,6 +72,7 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::basis::apply_excitation;
+use crate::determinant::Bits;
 use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::input::{JMDeterministicOptions, JMNOCCMCOptions};
 use crate::maths::parallel_matvec;
@@ -90,9 +91,9 @@ const NEGATIVE: u32 = 1 << 31;
 /// cluster operator, on combined alpha-then-beta occupation bits.
 struct ClusterExcitation {
     /// Annihilated orbitals.
-    holes: u128,
+    holes: Bits,
     /// Created orbitals.
-    parts: u128,
+    parts: Bits,
     /// Local index of the determinant `\hat\tau_\mu|{}^x\Psi\rangle`.
     target: usize,
     /// Sign of `\hat\tau_\mu|{}^x\Psi\rangle` relative to that determinant.
@@ -189,8 +190,8 @@ pub struct CorrelatedReferences {
 /// # Returns:
 /// - `ClusterConnections`: Connections of every target.
 fn cluster_connections(
-    occupations: &[u128],
-    lookup: &HashMap<u128, usize>,
+    occupations: &[Bits],
+    lookup: &HashMap<Bits, usize>,
     excitations: &[ClusterExcitation],
 ) -> ClusterConnections {
     let targets = occupations
@@ -200,7 +201,9 @@ fn cluster_connections(
                 .iter()
                 .enumerate()
                 .filter_map(|(mu, e)| {
-                    if occupation & e.parts != e.parts || occupation & !e.parts & e.holes != 0 {
+                    if occupation & e.parts != e.parts
+                        || !(occupation & !e.parts & e.holes).is_empty()
+                    {
                         return None;
                     }
                     let source = (occupation & !e.parts) | e.holes;
@@ -260,7 +263,8 @@ pub fn jm_space(
         let mut occupations = Vec::with_capacity(determinants.len());
         for (k, &(da, db, _)) in determinants.iter().enumerate() {
             space.push(parent, da, db, format!("ref {z} det {k}"));
-            occupations.push(da | (db << norb));
+            // One spin-orbital string: `\alpha` orbitals first, then `\beta` shifted by `norb`.
+            occupations.push(db.ones().fold(da, |occ, p| occ | Bits::bit(norb + p)));
         }
         let lookup = occupations
             .iter()

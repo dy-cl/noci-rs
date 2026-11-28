@@ -2,6 +2,7 @@
 
 // Crate-root imports.
 use crate::NOCIScalar;
+use crate::determinant::Bits;
 use crate::determinant::DeterminantData;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::Simd;
@@ -74,7 +75,7 @@ impl<T: NOCIScalar> OrthogonalElement<T> for OrthogonalOverlap {
     /// - `T`: Orthogonal overlap matrix element.
     fn value(
         &self,
-        _occupation: (u128, u128),
+        _occupation: (Bits, Bits),
         state: &DeterminantData,
     ) -> T {
         xw_overlap_orthogonal(state)

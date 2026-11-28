@@ -2,6 +2,7 @@
 
 // Crate-root imports.
 use crate::basis::{apply_excitation, excitation_phase_bits, undo_excitation};
+use crate::determinant::Bits;
 use crate::determinant::{DeterminantState, NOCIIndex};
 use crate::elements::NOCIData;
 use crate::hash::FastMap;
@@ -26,9 +27,9 @@ pub(super) struct Excitor {
     /// Excited determinant `|D_\mu\rangle` in the parent frame of the block.
     pub(super) det: DeterminantState,
     /// Alpha and beta holes relative to the block reference.
-    pub(super) holes: (u128, u128),
+    pub(super) holes: (Bits, Bits),
     /// Alpha and beta particles relative to the block reference.
-    pub(super) parts: (u128, u128),
+    pub(super) parts: (Bits, Bits),
     /// Sign `s_\mu` making `s_\mu a^\dagger_{\mathrm{parts}}a_{\mathrm{holes}}` map the reference
     /// to `+|D_\mu\rangle`.
     pub(super) sign: f64,
@@ -46,7 +47,7 @@ pub(super) struct ReferenceSpaces {
     offsets: Vec<usize>,
     /// Position within its block, `0` for the reference and `1 + r` for row `r`, of every
     /// excitor's occupations.
-    positions: Vec<FastMap<(u128, u128), usize>>,
+    positions: Vec<FastMap<(Bits, Bits), usize>>,
     /// Number of spatial orbitals of every block.
     pub(super) norb: Vec<usize>,
     /// Uniform connection generator of every block.
@@ -140,7 +141,8 @@ impl Excitor {
         det: &DeterminantState,
     ) -> Option<(DeterminantState, f64)> {
         // A preimage needs every particle occupied and every hole empty in `|D'\rangle`.
-        let valid = |occ: u128, holes: u128, parts: u128| occ & parts == parts && occ & holes == 0;
+        let valid =
+            |occ: Bits, holes: Bits, parts: Bits| occ & parts == parts && (occ & holes).is_empty();
         if !valid(det.alpha, self.holes.0, self.parts.0)
             || !valid(det.beta, self.holes.1, self.parts.1)
         {
@@ -237,7 +239,7 @@ impl ReferenceSpaces {
     pub(super) fn index(
         &self,
         block: usize,
-        occupations: (u128, u128),
+        occupations: (Bits, Bits),
     ) -> ExcitorIndex {
         ExcitorIndex(self.offsets[block] + self.positions[block][&occupations])
     }

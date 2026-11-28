@@ -8,6 +8,7 @@ use ndarray::Array2;
 use num_complex::Complex64;
 
 // Crate-root imports.
+use crate::determinant::Bits;
 use crate::input::Input;
 use crate::scf::{DensityMode, density, energy, fock_lambda};
 use crate::utils::print_array2_indexed;
@@ -57,8 +58,8 @@ pub(crate) fn finalise(
     }
 
     // Occupy the first `na` and `nb` orbitals because h-SCF keeps occupied orbitals first throughout.
-    let oa = (0..na).fold(0u128, |bits, j| bits | (1u128 << j));
-    let ob = (0..nb).fold(0u128, |bits, j| bits | (1u128 << j));
+    let oa = (0..na).fold(Bits::EMPTY, |bits, j| bits | Bits::bit(j));
+    let ob = (0..nb).fold(Bits::EMPTY, |bits, j| bits | Bits::bit(j));
 
     HSCFState {
         e,
