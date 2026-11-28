@@ -13,7 +13,8 @@ use crate::{ExcitationSpin, NOCIScalar};
 // Parent/sibling imports.
 use super::super::rdm::{RDM1, RDM2, RDM3, RDM4};
 use super::{
-    SameSpinView, WickScratch, WickScratchSpin, xw_overlap_prepared, xw_rdmk_same_prepared_batched,
+    SameSpinView, WickScratch, WickScratchSpin, calculate_spin_transition_pair_wicks,
+    xw_overlap_prepared, xw_rdmk_same_prepared_batched,
 };
 
 /// Largest number of transition-density requests evaluated in one batch.
@@ -149,9 +150,9 @@ fn spin_free_element<T: NOCIScalar>(
     value
 }
 
-/// Calculate spin-free one-body RDM matrix elements using extended non-orthogonal Wick's theorem.
-/// Evaluates `Gamma^p_q = Gamma^{alpha,p}_q S_beta + S_alpha Gamma^{beta,p}_q`
-/// from batched rank-one fundamental contractions.
+/// Calculate spin-free one-body RDM matrix elements using extended non-orthogonal Wick's theorem,
+/// `\Gamma^p_q = \tilde\Gamma^{\alpha,p}_q S^\beta + S^\alpha \tilde\Gamma^{\beta,p}_q`, from the
+/// spin-resolved transition quantities of the pair.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `pair`: Pair of determinants whose RDM matrix elements are to be evaluated.
@@ -163,92 +164,31 @@ pub(in crate::elements) fn rdm1_pair_wicks<T: NOCIScalar>(
     pair: DetPair,
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, RDM1<T>) {
-    // Resolve the determinant pair, AO dimension, and ordered parent-pair Wick data.
-    let parents = data.space.parents();
-    let (lp, gp) = (&parents[pair.bra.parent], &parents[pair.ket.parent]);
-    let (ldet, gdet) = (pair.bra.data(parents), pair.ket.data(parents));
     let n = data.ao.h.nrows();
-
-    let wicks = data.wicks.unwrap();
-    let w = wicks.pair(pair.bra.parent, pair.ket.parent);
-
-    // Cache spin excitations and determine which zero-overlap distributions can contribute.
-    let ex_la = &ldet.alpha.excitation;
-    let ex_ga = &gdet.alpha.excitation;
-    let ex_lb = &ldet.beta.excitation;
-    let ex_gb = &gdet.beta.excitation;
-
-    let la = ex_la.holes.count_ones() as usize + ex_ga.holes.count_ones() as usize;
-    let lb = ex_lb.holes.count_ones() as usize + ex_gb.holes.count_ones() as usize;
-
-    let dosa = w.aa.m <= la;
-    let dosb = w.bb.m <= lb;
-    let do1a = w.aa.m <= la + 1;
-    let do1b = w.bb.m <= lb + 1;
-
-    // Prepare surviving spin overlap determinants and retain their excitation phases.
-    let pha = <T as From<f64>>::from(ldet.alpha.phase * gdet.alpha.phase);
-    let phb = <T as From<f64>>::from(ldet.beta.phase * gdet.beta.phase);
-    let det_phase = pha * phb;
-
-    let mut sa = <T as From<f64>>::from(0.0);
-    let mut sb = <T as From<f64>>::from(0.0);
-
-    if dosa {
-        sa = xw_overlap_prepared(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-    }
-
-    if dosb {
-        sb = xw_overlap_prepared(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-    }
-
-    // Allocate the AO-basis spin-free tensor and its complete rank-one request batch.
-    let sxw = det_phase * sa * sb;
-    let mut gamma = RDM1 {
-        n,
-        data: vec![<T as From<f64>>::from(0.0); n * n],
-    };
     let requests: Vec<_> = (0..n)
         .flat_map(|p| (0..n).map(move |q| ([p], [q])))
         .collect();
 
-    // Add alpha transition density weighted by the complementary beta overlap.
-    if sb.abs() > data.tol && do1a {
-        let mut g1a = vec![<T as From<f64>>::from(0.0); requests.len()];
-        xw_rdmk_same_prepared_batched::<T, 1>(
-            &w.aa,
-            (ex_la, ex_ga),
-            (lp.ca.as_ref(), gp.ca.as_ref()),
-            &requests,
-            &mut scratch.aa,
-            data.tol,
-            &mut g1a,
-        );
+    let transition = calculate_spin_transition_pair_wicks(data, pair, &requests, scratch, false);
+    let (sa, sb) = transition.s;
 
-        for (value, g1) in gamma.data.iter_mut().zip(g1a) {
-            *value += det_phase * sb * g1;
+    // Each spin's density weighted by the complementary spin's overlap.
+    let mut gamma = RDM1 {
+        n,
+        data: vec![<T as From<f64>>::from(0.0); n * n],
+    };
+    if let Some(ga) = &transition.gamma.0 {
+        for (value, &g) in gamma.data.iter_mut().zip(ga.iter()) {
+            *value += sb * g;
+        }
+    }
+    if let Some(gb) = &transition.gamma.1 {
+        for (value, &g) in gamma.data.iter_mut().zip(gb.iter()) {
+            *value += sa * g;
         }
     }
 
-    // Add the symmetric beta contribution weighted by the alpha overlap.
-    if sa.abs() > data.tol && do1b {
-        let mut g1b = vec![<T as From<f64>>::from(0.0); requests.len()];
-        xw_rdmk_same_prepared_batched::<T, 1>(
-            &w.bb,
-            (ex_lb, ex_gb),
-            (lp.cb.as_ref(), gp.cb.as_ref()),
-            &requests,
-            &mut scratch.bb,
-            data.tol,
-            &mut g1b,
-        );
-
-        for (value, g1) in gamma.data.iter_mut().zip(g1b) {
-            *value += det_phase * sa * g1;
-        }
-    }
-
-    (sxw, gamma)
+    (sa * sb, gamma)
 }
 
 /// Calculate spin-free two-body RDM matrix elements using extended non-orthogonal Wick's theorem.

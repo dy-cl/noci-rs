@@ -2,11 +2,14 @@
 //! Determinant-pair matrix elements from the Slater–Condon rules in one parent's orthonormal
 //! basis.
 
+// External crate imports.
+use ndarray::Array2;
+
 // Crate-root imports.
 use crate::NOCIScalar;
 use crate::determinant::Bits;
-use crate::determinant::{ConnectionState, DeterminantData, NOCIIndex, NOCISpace};
-use crate::elements::{DetPair, FockMOCache, NOCIData};
+use crate::determinant::{ConnectionState, DeterminantData, NOCIIndex, NOCISpace, SpinStringData};
+use crate::elements::{DetPair, FockMOCache, NOCIData, SpinTransition, occ_coeffs};
 use crate::time_call;
 
 // Parent/sibling imports.
@@ -173,6 +176,75 @@ pub(crate) fn calculate_f_pair_orthogonal<T: NOCIScalar>(
             None => T::from_real(0.0),
         }
     })
+}
+
+/// Calculate the spin overlaps and covariant AO transition densities of two determinants of one
+/// orthonormal parent using the standard Slater-Condon rules. With the lowered orbitals
+/// `\tilde C = \mathbf S C`, per spin, identical strings have `S^\sigma = 1` and
+/// `\tilde\Gamma^\sigma_{\mu\nu} = \sum_{i} \tilde C_{\mu i} \tilde C^*_{\nu i}` over the occupied
+/// orbitals; strings differing by one replacement, the ket's `q` by the bra's `p`, have
+/// `S^\sigma = 0` and `\tilde\Gamma^\sigma_{\mu\nu} = \pm \tilde C_{\mu q} \tilde C^*_{\nu p}`; any
+/// larger difference gives zero. A density is formed only when the other spin's overlap is
+/// non-zero, unless `cross` asks for both.
+/// # Arguments:
+/// - `data`: Shared data holding the parent orbitals and the AO overlap.
+/// - `pair`: Bra and ket determinants of the same parent.
+/// - `cross`: Whether to form each density whatever the other spin's overlap.
+/// # Returns:
+/// - `SpinTransition<T>`: Spin overlaps and covariant transition densities.
+pub(in crate::elements) fn calculate_spin_transition_pair_orthogonal<T: NOCIScalar>(
+    data: &NOCIData<'_, T>,
+    pair: DetPair,
+    cross: bool,
+) -> SpinTransition<T> {
+    let parent = &data.space.parents()[pair.bra.parent];
+    let s = data.ao.s.mapv(<T as From<f64>>::from);
+    let zero = <T as From<f64>>::from(0.0);
+    let one = <T as From<f64>>::from(1.0);
+
+    // The bra measured from the ket: the ket's holes `q` become the bra's particles `p`.
+    let connection = DeterminantData::between(
+        (pair.ket.alpha, pair.ket.beta),
+        (pair.bra.alpha, pair.bra.beta),
+    );
+    let ra = connection.alpha.excitation.holes.count_ones();
+    let rb = connection.beta.excitation.holes.count_ones();
+
+    let sa = if ra == 0 { one } else { zero };
+    let sb = if rb == 0 { one } else { zero };
+
+    // One spin's covariant density from its orbitals, ket occupation and connection to the bra.
+    let density = |c: &Array2<T>, occ: Bits, string: &SpinStringData| {
+        let (holes, parts) = (string.excitation.holes, string.excitation.parts);
+        match holes.count_ones() {
+            0 => {
+                let lowered = s.dot(&occ_coeffs(c, occ));
+                Some(lowered.dot(&lowered.mapv(|x| x.conj()).t()))
+            }
+            1 => {
+                let phase = <T as From<f64>>::from(string.phase);
+                let lq = s.dot(&c.column(holes.first()));
+                let lp = s.dot(&c.column(parts.first()));
+
+                Some(Array2::from_shape_fn((lq.len(), lp.len()), |(mu, nu)| {
+                    phase * lq[mu] * lp[nu].conj()
+                }))
+            }
+            _ => None,
+        }
+    };
+
+    let ga = (cross || rb == 0)
+        .then(|| density(&parent.ca, pair.ket.alpha, &connection.alpha))
+        .flatten();
+    let gb = (cross || ra == 0)
+        .then(|| density(&parent.cb, pair.ket.beta, &connection.beta))
+        .flatten();
+
+    SpinTransition {
+        s: (sa, sb),
+        gamma: (ga, gb),
+    }
 }
 
 /// Evaluate the same-parent requests of one orthonormal parent through one batched kernel.

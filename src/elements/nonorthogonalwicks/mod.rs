@@ -40,7 +40,6 @@ mod rdm;
 mod scratch;
 mod shared;
 mod storage;
-mod transition;
 mod types;
 mod view;
 
@@ -71,9 +70,10 @@ pub(crate) use shared::update_wicks_fock;
 pub(crate) use storage::{create_wicks_mmap, load_wicks_mmap};
 
 // Restricted function re-exports.
-pub(in crate::elements) use pairs::{calculate_fs_pairs_wicks, calculate_s_pairs_wicks};
+pub(in crate::elements) use pairs::{
+    calculate_fs_pairs_wicks, calculate_s_pairs_wicks, calculate_spin_transition_pair_wicks,
+};
 #[cfg(feature = "gnocc")]
 pub(in crate::elements) use rdm::{
     rdm1_pair_wicks, rdm2_pair_wicks, rdm3_pair_wicks, rdm4_pair_wicks,
 };
-pub(in crate::elements) use transition::spin_transition_pair_wicks;
