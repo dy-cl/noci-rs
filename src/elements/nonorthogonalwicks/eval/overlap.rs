@@ -349,6 +349,7 @@ fn xw_overlap_m0_direct_gen<T: NOCIScalar>(
     let mut rows = vec![0usize; l];
     let mut cols = vec![0usize; l];
     let mut d = vec![zero; l * l];
+    let mut lu = vec![zero; l * l];
     construct_determinant_indices(x_ex, w_ex, w, &mut rows, &mut cols);
 
     // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, and
@@ -365,7 +366,7 @@ fn xw_overlap_m0_direct_gen<T: NOCIScalar>(
     }
 
     // Multiply the runtime determinant by the reduced reference overlap `{}^{xw}\tilde S`.
-    w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det_dynamic(&d, l).unwrap_or(zero)
+    w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det_dynamic(&mut lu, &d, l).unwrap_or(zero)
 }
 
 /// Evaluate the same-spin overlap when m = 0:
@@ -389,7 +390,8 @@ fn xw_overlap_m0<T: NOCIScalar>(
         // The reduced overlap's orbital-pairing phase is stored separately in `w.phase`.
         w.phase
             * <T as From<f64>>::from(w.tilde_s_prod)
-            * det_dynamic(scratch.det0.as_slice(), l).unwrap_or(<T as From<f64>>::from(0.0))
+            * det_dynamic(scratch.lu.as_mut_slice(), scratch.det0.as_slice(), l)
+                .unwrap_or(<T as From<f64>>::from(0.0))
     })
 }
 
@@ -414,7 +416,8 @@ fn xw_overlap_ml<T: NOCIScalar>(
         // `S = {}^{xw}\tilde S\det\mathbf D_{\text{ov}}(1,\ldots,1)`.
         w.phase
             * <T as From<f64>>::from(w.tilde_s_prod)
-            * det_dynamic(scratch.det1.as_slice(), l).unwrap_or(<T as From<f64>>::from(0.0))
+            * det_dynamic(scratch.lu.as_mut_slice(), scratch.det1.as_slice(), l)
+                .unwrap_or(<T as From<f64>>::from(0.0))
     })
 }
 
@@ -446,7 +449,8 @@ fn xw_overlap_gen<T: NOCIScalar>(
             let d = scratch.det_mix.as_slice();
 
             // `\text{acc} = \sum_{\sum_z m_z=m}\det\mathbf D_{\text{ov}}(\{m_z\})`.
-            acc += det_dynamic(d, l).unwrap_or(<T as From<f64>>::from(0.0));
+            acc +=
+                det_dynamic(scratch.lu.as_mut_slice(), d, l).unwrap_or(<T as From<f64>>::from(0.0));
         });
 
         // Apply the orbital-pairing phase to the product of non-zero singular values to recover

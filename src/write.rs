@@ -247,6 +247,7 @@ pub fn print_input(input: &Input) {
             println!("MAX_ITER: {}", s.max_iter);
             println!("MAX_DIM: {}", s.max_dim);
             println!("MAX_ADD: {}", s.max_add);
+            println!("GROWTH: {}", s.growth);
             println!("SIGMA: {}", s.sigma);
             println!("TOL: {}", s.tol);
             println!("IMAG_SHIFTS: {:?}", s.imag_shifts);

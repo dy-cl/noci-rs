@@ -5,74 +5,64 @@ use std::collections::HashSet;
 
 // Crate-root imports.
 use crate::NOCIScalar;
-use crate::determinant::{NOCIIndex, NOCISpace};
+use crate::determinant::{Bits, NOCIIndex, NOCISpace};
 use crate::input::Input;
 use crate::time_call;
 
 pub(in crate::noci::selected) struct CandidatePool {
     /// Current pool candidates.
     pub(in crate::noci::selected) candidates: Vec<NOCIIndex>,
+    /// Identities `(parent, occ_\alpha, occ_\beta)` of every selected or candidate determinant.
+    /// A determinant is fixed by its parent orbital frame and occupations, whereas its label
+    /// records the excitation path that generated it, so the same determinant reached through
+    /// two paths shares an identity but not a label.
+    known: HashSet<(usize, Bits, Bits)>,
 }
 
 impl CandidatePool {
     /// Construct the initial candidate pool of determinants from the current selected space.
+    /// Each distinct determinant `(parent, occ_\alpha, occ_\beta)` enters the pool once, and none
+    /// that is already selected.
     /// # Arguments
     /// - `space`: Mutable determinant space used to generate candidates.
     /// - `selected_space`: Current selected nonorthogonal determinant space.
     /// - `input`: User-defined input options.
     /// # Returns
-    /// - `CandidatePool`: Initial candidate pool containing all generated candidates.
+    /// - `CandidatePool`: Initial candidate pool containing all distinct generated candidates.
     pub(in crate::noci::selected) fn new<T: NOCIScalar>(
         space: &mut NOCISpace<T>,
         selected_space: &[NOCIIndex],
         input: &Input,
     ) -> Self {
         time_call!(crate::timers::selected::add_candidate_pool_new, {
-            let generated = space.excited_from(selected_space, input, false);
-            let candidates = (0..generated.len())
-                .map(|index| {
-                    let state = generated.spin_string_pair(NOCIIndex(index));
-                    let (oa, ob) = generated.occupations(NOCIIndex(index));
-                    space.push(state.parent, oa, ob, generated.labels[index].clone())
-                })
-                .collect();
+            let mut pool = Self {
+                candidates: Vec::new(),
+                known: HashSet::new(),
+            };
 
-            Self { candidates }
+            // The selected determinants are known before any candidate is generated.
+            for &index in selected_space {
+                let (oa, ob) = space.occupations(index);
+                pool.known.insert((space.parent(index), oa, ob));
+            }
+
+            pool.extend(space, selected_space, input);
+
+            pool
         })
-    }
-
-    /// Remove any candidates from the pool that have just been selected.
-    /// # Arguments
-    /// - `selected`: Newly selected determinants that should no longer remain in the pool.
-    /// - `space`: Determinant space used to compare candidate labels.
-    /// # Returns
-    /// - `()`: Updates the candidate pool in place.
-    pub(in crate::noci::selected) fn remove_selected<T: NOCIScalar>(
-        &mut self,
-        selected: &[NOCIIndex],
-        space: &NOCISpace<T>,
-    ) {
-        let selected_keys: HashSet<&str> = selected
-            .iter()
-            .map(|&index| space.labels[index.0].as_str())
-            .collect();
-        self.candidates
-            .retain(|&index| !selected_keys.contains(space.labels[index.0].as_str()));
     }
 
     /// Update the candidate pool once the selected space has grown.
     /// # Arguments
     /// - `space`: Mutable determinant space used to generate new candidates.
-    /// - `selected_space`: Updated selected nonorthogonal determinant space.
     /// - `newly_selected`: Determinants added on the most recent SNOCI iteration.
     /// - `input`: User-defined input options.
     /// # Returns
     /// - `()`: Updates the pool in place by removing newly selected states and appending
-    ///   genuinely new candidate determinants.
+    ///   determinants not yet selected or in the pool.
     pub(in crate::noci::selected) fn update<T: NOCIScalar>(
         &mut self,
         space: &mut NOCISpace<T>,
-        selected_space: &[NOCIIndex],
         newly_selected: &[NOCIIndex],
         input: &Input,
     ) {
@@ -81,27 +71,41 @@ impl CandidatePool {
                 return;
             }
 
-            self.remove_selected(newly_selected, space);
+            // Selected candidates leave the pool but stay known, so they are never regenerated.
+            let selected: HashSet<NOCIIndex> = newly_selected.iter().copied().collect();
+            self.candidates.retain(|index| !selected.contains(index));
 
-            // Generate excitations from the newly selected states, excluding
-            // labels already present in either the selected or candidate set.
-            let generated = space.excited_from(newly_selected, input, false);
-            let existing: HashSet<String> = selected_space
-                .iter()
-                .chain(self.candidates.iter())
-                .map(|&index| space.labels[index.0].clone())
-                .collect();
-
-            let new_candidates = (0..generated.len())
-                .filter(|&index| !existing.contains(generated.labels[index].as_str()))
-                .map(|index| {
-                    let state = generated.spin_string_pair(NOCIIndex(index));
-                    let (oa, ob) = generated.occupations(NOCIIndex(index));
-                    space.push(state.parent, oa, ob, generated.labels[index].clone())
-                })
-                .collect::<Vec<_>>();
-
-            self.candidates.extend(new_candidates);
+            self.extend(space, newly_selected, input);
         })
+    }
+
+    /// Append the distinct single and double excitations of `generators` that are neither
+    /// selected nor already in the pool.
+    /// # Arguments
+    /// - `space`: Mutable determinant space receiving the new candidates.
+    /// - `generators`: Determinants whose excitations are generated.
+    /// - `input`: User-defined input options.
+    /// # Returns
+    /// - `()`: Updates the pool and its known identities in place.
+    fn extend<T: NOCIScalar>(
+        &mut self,
+        space: &mut NOCISpace<T>,
+        generators: &[NOCIIndex],
+        input: &Input,
+    ) {
+        let generated = space.excited_from(generators, input, false);
+
+        // `insert` returns false for an identity already selected, already in the pool, or
+        // generated earlier in this batch through another excitation path.
+        for index in 0..generated.len() {
+            let parent = generated.spin_string_pair(NOCIIndex(index)).parent;
+            let (oa, ob) = generated.occupations(NOCIIndex(index));
+            if !self.known.insert((parent, oa, ob)) {
+                continue;
+            }
+
+            let label = generated.labels[index].clone();
+            self.candidates.push(space.push(parent, oa, ob, label));
+        }
     }
 }

@@ -49,15 +49,13 @@ pub use step::snoci_step;
 
 // Restricted type re-exports.
 pub(in crate::noci::selected) use candidate::CandidatePool;
-pub(in crate::noci::selected) use types::{
-    PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks, SNOCIOverlaps,
-};
+pub(in crate::noci::selected) use types::{PT2ProjectedOperator, PT2Projection, Preconditioner};
 
 // Restricted function re-exports.
 pub(in crate::noci::selected) use operators::{
-    apply_factorised_shifted_omega_m, apply_factorised_shifted_omega_m_mpi, apply_shifted_omega_m,
-    apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
-    build_candidate_m_diag, build_candidate_m_disk, build_candidate_s_diag, build_candidate_v,
-    build_factorised_candidate_diags, build_omega_v, build_preconditioner, build_snoci_focks,
-    build_snoci_overlaps, build_snoci_projection, select_candidates, solve_current_space,
+    apply_factorised_omega_s, apply_factorised_shifted_omega_m,
+    apply_factorised_shifted_omega_m_mpi, apply_omega_s, apply_omega_s_mpi, apply_shifted_omega_m,
+    apply_shifted_omega_m_mpi, build_candidate_m, build_candidate_m_diag, build_candidate_m_disk,
+    build_candidate_s_diag, build_factorised_candidate_diags, build_preconditioner,
+    build_snoci_couplings, select_candidates,
 };

@@ -3,11 +3,9 @@
 //! determinant or spin string by its occupation in a parent frame, and a `…Data` holds its
 //! excitation, phase and fixed-rank cache measured from a reference of the same frame.
 
-// Standard library imports.
-use std::collections::HashMap;
-
 // Crate-root imports.
 use crate::basis::{excitation_between, excitation_phase_bits};
+use crate::hash::FastMap;
 use crate::{ExcitationSpin, ExcitationSpinCache, StateScalar};
 
 // Parent/sibling imports.
@@ -113,9 +111,9 @@ pub(crate) struct ParentSpinStrings<I: SpinStringIndex> {
     /// Canonical beta spin strings indexed by typed spin ID.
     pub(crate) beta: Vec<SpinStringState>,
     /// Alpha occupation-to-spin-string-ID map.
-    pub(crate) aids: HashMap<Bits, I>,
+    pub(crate) aids: FastMap<Bits, I>,
     /// Beta occupation-to-spin-string-ID map.
-    pub(crate) bids: HashMap<Bits, I>,
+    pub(crate) bids: FastMap<Bits, I>,
 }
 
 /// The identity of a determinant: its parent orbital frame and its alpha and beta occupations in
@@ -208,8 +206,8 @@ impl<I: SpinStringIndex> ParentSpinStrings<I> {
         Self {
             alpha: Vec::new(),
             beta: Vec::new(),
-            aids: HashMap::new(),
-            bids: HashMap::new(),
+            aids: FastMap::default(),
+            bids: FastMap::default(),
         }
     }
 

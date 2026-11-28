@@ -7,11 +7,11 @@ use ndarray::Array2;
 // Crate-root imports.
 use crate::NOCIScalar;
 use crate::determinant::DeterminantState;
-use crate::elements::{FockData, NOCIData};
+use crate::elements::{DetPair, FockData, NOCIData, SpinTransition};
 
 // Parent/sibling imports.
 use super::rules::{
-    build_s_pair, occ_coeffs, one_electron, one_electron_scalar, two_electron_diff,
+    build_s_pair, occ_coeffs, one_electron, one_electron_scalar, pair_density, two_electron_diff,
     two_electron_same,
 };
 
@@ -124,4 +124,36 @@ pub(in crate::elements) fn calculate_fs_pair_naive<T: NOCIScalar>(
 
     let f = pb.s * one_electron_scalar(fock.fa, &pa) + pa.s * one_electron_scalar(fock.fb, &pb);
     (f, pa.s * pb.s)
+}
+
+/// Calculate the spin overlaps and covariant AO transition densities of two determinants using
+/// the generalised Slater-Condon rules, for pairs of different parents without Wick intermediates.
+/// The contravariant pair densities `W^\sigma` are lowered with the AO overlap,
+/// `\tilde\Gamma^\sigma = \mathbf S W^\sigma \mathbf S`.
+/// # Arguments:
+/// - `data`: Shared data required for NOCI matrix-element evaluation.
+/// - `pair`: Bra and ket determinants.
+/// # Returns:
+/// - `SpinTransition<T>`: Spin overlaps and covariant transition densities.
+pub(in crate::elements) fn calculate_spin_transition_pair_naive<T: NOCIScalar>(
+    data: &NOCIData<'_, T>,
+    pair: DetPair,
+) -> SpinTransition<T> {
+    let nao = data.ao.h.nrows();
+    let s = data.ao.s.mapv(<T as From<f64>>::from);
+
+    let (l_ca_occ, l_cb_occ) = occupied_coefficients(data, &pair.bra);
+    let (g_ca_occ, g_cb_occ) = occupied_coefficients(data, &pair.ket);
+
+    let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
+    let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
+
+    // `\tilde\Gamma^\sigma = \mathbf S W^\sigma \mathbf S` from each spin's pair density.
+    let ga = s.dot(&pair_density(&pa, nao)).dot(&s);
+    let gb = s.dot(&pair_density(&pb, nao)).dot(&s);
+
+    SpinTransition {
+        s: (pa.s, pb.s),
+        gamma: (Some(ga), Some(gb)),
+    }
 }

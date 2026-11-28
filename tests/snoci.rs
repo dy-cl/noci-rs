@@ -85,9 +85,9 @@ fn run_snoci_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     );
     for pt2 in &result.pt2 {
         assert!(
-            pt2.gmres_converged,
+            pt2.gmres.converged,
             "SNOCI GMRES failed to converge: residual {}",
-            pt2.gmres_residual,
+            pt2.gmres.residual_rms,
         );
     }
 
@@ -165,9 +165,9 @@ fn run_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     );
     for pt2 in &result.pt2 {
         assert!(
-            pt2.gmres_converged,
+            pt2.gmres.converged,
             "SNOCI GMRES failed to converge: residual {}",
-            pt2.gmres_residual,
+            pt2.gmres.residual_rms,
         );
     }
 
@@ -228,9 +228,9 @@ fn run_complex_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     );
     for pt2 in &result.pt2 {
         assert!(
-            pt2.gmres_converged,
+            pt2.gmres.converged,
             "complex SNOCI GMRES failed to converge: residual {}",
-            pt2.gmres_residual,
+            pt2.gmres.residual_rms,
         );
     }
 
@@ -386,6 +386,43 @@ fn snoci_h4_sto_3g_1_5_ang_energies() {
 fn snoci_h4_sto_3g_1_5_ang_energies_wicks() {
     let (_input, _ao, expected): (_, _, ExpectedSNOCI) = load_test("SNOCI_H4_STO-3G_1_5_WICKS");
     let (got_scf, got_ref, got_snoci) = run_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS");
+
+    let mut want_scf = expected.scf_energies;
+    want_scf.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    assert_eq!(got_scf.len(), want_scf.len());
+    for (i, (&x, &y)) in got_scf.iter().zip(want_scf.iter()).enumerate() {
+        assert_close(x, y, 1e-8, &format!("H4 SCF state {i}"));
+    }
+
+    assert_close(
+        got_ref,
+        expected.reference_noci_energy,
+        1e-8,
+        "H4 reference NOCI energy",
+    );
+    assert_close(
+        got_snoci,
+        expected.snoci_energy,
+        1e-8,
+        "H4 selected NOCI energy",
+    );
+}
+
+/// Test that the H4 STO-3G 1.5 Angstrom fixture, doubling its selected space every iteration with
+/// `snoci.growth`, reproduces the expected SCF state energies, reference NOCI energy and selected
+/// NOCI energy.
+/// # Panics
+/// - If the number of SCF states differs from the stored reference.
+/// - If SCF, reference NOCI or selected NOCI energy differs from the known good value
+///   outside tolerance.
+/// - If the NOCI-PT2 GMRES solve does not converge.
+#[test]
+#[serial]
+fn snoci_h4_sto_3g_1_5_ang_energies_wicks_growth() {
+    let (_input, _ao, expected): (_, _, ExpectedSNOCI) =
+        load_test("SNOCI_H4_STO-3G_1_5_WICKS_GROWTH");
+    let (got_scf, got_ref, got_snoci) = run_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS_GROWTH");
 
     let mut want_scf = expected.scf_energies;
     want_scf.sort_by(|a, b| a.partial_cmp(b).unwrap());

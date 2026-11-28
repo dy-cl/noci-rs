@@ -39,7 +39,8 @@ snoci = {
 | `sigma` | number | `1e-6` | Selection threshold on each candidate's perturbative score. |
 | `tol` | number | `1e-8` | Stop when the magnitude of the NOCI-PT2 correction falls below this, in $E_\text{h}$. |
 | `max_iter` | integer | `100` | Maximum SNOCI iterations. `1` gives a NOCI-PT2 calculation. |
-| `max_add` | integer | `1` | Maximum determinants added per iteration. |
+| `max_add` | integer | `1` | Determinants added per iteration, unless `growth` asks for more. Fewer are added when fewer candidates score above `sigma`, and candidates tied in score with the last one taken are added with it. |
+| `growth` | number | `0.0` | Grow the selected space geometrically: each iteration adds $\max(\texttt{max\_add}, \lceil \texttt{growth}\, N_\text{sel} \rceil)$ determinants, so `growth = 1` doubles it, as in CIPSI. `0` adds `max_add` per iteration. |
 | `max_dim` | integer | `100` | Maximum size of the selected space. |
 | `imag_shift` | list of numbers | `{0.0}` | Imaginary level shifts. NOCI-PT2 is evaluated for each; the **last** drives selection and convergence. Any nonzero shift switches to complex arithmetic. An empty list means `{0.0}`. |
 | `roots` | list of integers | `{0}` | NOCI states to correct, counted from the lowest at `0`. Each listed state receives its own state-specific NOCI-PT2 correction, with its own generalised Fock operator, projector and GMRES solve; the Wick intermediates, candidate pool, candidate overlaps and $H_{ai}$ are shared. The **first** drives selection and convergence. Results print as `State(NOCI-PT2: n i: ε)` together with each state's $\langle S^2\rangle$. With `follow`, the list chooses the states at the first geometry only. |

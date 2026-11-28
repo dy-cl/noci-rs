@@ -11,8 +11,9 @@ use rayon::prelude::*;
 use crate::AoData;
 use crate::NOCIScalar;
 use crate::determinant::{DeterminantState, NOCIIndex, NOCISpace};
+use crate::elements::PairOperator;
 use crate::elements::nonorthogonalwicks::{WickScratchSpin, WicksView};
-use crate::elements::{DetPair, Fock, FockData, HamiltonianOverlap, MOCache, NOCIData, Overlap};
+use crate::elements::{DetPair, HamiltonianOverlap, MOCache, NOCIData, Overlap};
 use crate::elements::{calculate_pairs, calculate_pairs_dense, compare_pairs_wicks_naive};
 use crate::input::Input;
 use crate::maths::general_evp;
@@ -204,6 +205,75 @@ fn calculate_matrix_elements_dense<T: NOCIScalar>(
     (h, s, dt)
 }
 
+/// Contract the rows of a NOCI operator block with a coefficient vector without storing the block,
+/// `y_l = \sum_r O_{lr} c_r`. Each row is evaluated into a reused buffer by the dense pair kernels
+/// and reduced at once, so the memory is one row per thread rather than the whole
+/// `N_{\text{left}} \times N_{\text{right}}` block.
+/// # Arguments:
+/// - `data`: Shared data required for NOCI matrix-element evaluation.
+/// - `op`: Pair operator `O`.
+/// - `left`: Row determinants.
+/// - `right`: Column determinants, the order of `c`.
+/// - `c`: Coefficients of the column determinants.
+/// - `accumulate`: Adds one element `O_{lr}` weighted by `c_r` to a row's sum.
+/// # Returns:
+/// - `Vec<Op::Out>`: Contracted rows `y_l` in the order of `left`.
+pub(crate) fn contract_noci_rows<T, Op>(
+    data: &NOCIData<'_, T>,
+    op: &Op,
+    left: &[NOCIIndex],
+    right: &[NOCIIndex],
+    c: &Array1<T>,
+    accumulate: impl Fn(&mut Op::Out, Op::Out, T) + Sync,
+) -> Vec<Op::Out>
+where
+    T: NOCIScalar,
+    Op: PairOperator<T> + Sync,
+    Op::Out: Send,
+{
+    let nr = right.len();
+
+    // Requests name determinants by identity, so convert the handles once.
+    let left: Vec<DeterminantState> = left.iter().map(|&i| data.space.determinant(i)).collect();
+    let right: Vec<DeterminantState> = right.iter().map(|&i| data.space.determinant(i)).collect();
+
+    // Sort the columns into runs of ket determinants sharing a parent.
+    let mut runs: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut run_of = vec![usize::MAX; data.space.parents.len()];
+    for (j, &gdet) in right.iter().enumerate() {
+        let gp = gdet.parent;
+        if run_of[gp] == usize::MAX {
+            run_of[gp] = runs.len();
+            runs.push((gp, Vec::new()));
+        }
+        runs[run_of[gp]].1.push(j);
+    }
+
+    // Every column belongs to one run, so the row buffer needs no clearing between rows.
+    let use_wicks_scratch = data.input.wicks.enabled;
+    left.par_iter()
+        .map_init(
+            || {
+                (
+                    use_wicks_scratch.then(WickScratchSpin::<T>::new),
+                    vec![Op::zero(); nr],
+                )
+            },
+            |(scratch, row), &ldet| {
+                calculate_pairs_dense(data, op, ldet, (&right, &runs), 0, scratch.as_mut(), row);
+
+                // `y_l = \sum_r O_{lr} c_r` over the evaluated row.
+                let mut y = Op::zero();
+                for (&element, &cr) in row.iter().zip(c.iter()) {
+                    accumulate(&mut y, element, cr);
+                }
+
+                y
+            },
+        )
+        .collect()
+}
+
 /// Dense counterpart of `scatter_matrix_elements`. The elements are already in place, so only
 /// the lower triangle of a symmetric matrix is filled from the upper triangle.
 /// # Arguments:
@@ -226,75 +296,6 @@ fn scatter_matrix_elements_dense<T: NOCIScalar>(
             s[(i, j)] = s[(j, i)].mirror();
         }
     }
-}
-
-/// Construct the full NOCI Fock matrix using either the generalised
-/// Slater-Condon rules or extended non-orthogonal Wick's theorem.
-/// # Arguments:
-/// - `data`: Shared data required for NOCI matrix-element evaluation.
-/// - `fock`: Fock-specific data required for Fock matrix-element evaluation.
-/// - `left`: First set of determinants.
-/// - `right`: Second set of determinants.
-/// - `symmetric`: Whether the matrix is symmetric.
-/// # Returns:
-/// - `(Array2<T>, Duration)`: NOCI Fock matrix and matrix-build time.
-pub(crate) fn build_noci_fock<T: NOCIScalar>(
-    data: &NOCIData<'_, T>,
-    fock: &FockData<'_, T>,
-    left: &[NOCIIndex],
-    right: &[NOCIIndex],
-    symmetric: bool,
-) -> (Array2<T>, Duration) {
-    time_call!(crate::timers::noci::add_build_full_fock, {
-        let nl = left.len();
-        let nr = right.len();
-        let op = Fock { fock, shift: 0.0 };
-
-        // In comparison mode, build with Wick's theorem while accumulating
-        // discrepancies against the generalised Slater-Condon elements.
-        if data.input.wicks.enabled && data.input.wicks.compare {
-            let zero = (T::from_real(0.0), (0.0, 0.0));
-            let (vals, dt) = calculate_matrix_elements(
-                data,
-                left,
-                right,
-                symmetric,
-                zero,
-                |pairs, scratch, out| {
-                    let scratch = scratch.unwrap();
-                    for (&pair, value) in pairs.iter().zip(out) {
-                        *value = compare_pairs_wicks_naive(data, &op, pair, scratch);
-                    }
-                },
-            );
-
-            let mut td = 0.0;
-            let mut md = 0.0;
-            let mut fvals = Vec::with_capacity(vals.len());
-            for (i, j, (f, (d, m))) in vals {
-                fvals.push((i, j, f));
-                td += d;
-                md = f64::max(md, m);
-            }
-            println!(
-                "Total naive–wicks discrepancy (Fock): {:.6e}; max element: {:.6e}",
-                td, md
-            );
-            let f = scatter_matrix_elements(fvals, nl, nr, symmetric);
-            return (f, dt);
-        }
-
-        // Otherwise evaluate each determinant pair once and scatter its
-        // result into the requested symmetric or rectangular matrix.
-        let zero = T::from_real(0.0);
-        let (vals, dt) =
-            calculate_matrix_elements(data, left, right, symmetric, zero, |pairs, scratch, out| {
-                calculate_pairs(data, &op, pairs, scratch, out)
-            });
-
-        let f = scatter_matrix_elements(vals, nl, nr, symmetric);
-        (f, dt)
-    })
 }
 
 /// Form the full overlap matrix using either the generalised Slater-Condon

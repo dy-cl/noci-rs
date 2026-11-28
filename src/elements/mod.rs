@@ -49,12 +49,12 @@ pub(crate) use batch::{group_lanes, xw_lanes};
 #[cfg(target_arch = "x86_64")]
 pub(crate) use batch::{packet_x4, packet_x8};
 pub(crate) use cache::build_fock_mo_cache;
-pub(crate) use naive::{build_s_pair, build_s_pair_floored, occ_coeffs, pair_density};
+pub(crate) use naive::{build_s_pair_floored, occ_coeffs};
 pub(crate) use nonorthogonalwicks::update_wicks_fock;
 pub(crate) use orthogonal::{
     calculate_f_pair_orthogonal, calculate_h_pairs_orthogonal_batched, calculate_s_pair_orthogonal,
 };
 pub(crate) use pairs::{calculate_pairs, calculate_pairs_dense, compare_pairs_wicks_naive};
-pub(crate) use rdm::{noci_density, noci_spin_square};
+pub(crate) use rdm::{SpinTransition, build_noci_spin_square, noci_density};
 #[cfg(feature = "gnocc")]
 pub(crate) use rdm::{rdm1, rdm2, rdm3, rdm4};

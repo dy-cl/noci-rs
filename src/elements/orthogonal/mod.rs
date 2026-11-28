@@ -24,4 +24,6 @@ pub(crate) use pairs::{
 
 // Restricted function re-exports.
 pub(in crate::elements) use eval::xw_orthogonal_batched;
-pub(in crate::elements) use pairs::{calculate_pairs_orthogonal_batched, connection_data};
+pub(in crate::elements) use pairs::{
+    calculate_pairs_orthogonal_batched, calculate_spin_transition_pair_orthogonal, connection_data,
+};

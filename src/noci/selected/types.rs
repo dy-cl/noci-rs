@@ -12,6 +12,7 @@ use crate::NOCIScalar;
 use crate::determinant::NOCIIndex;
 use crate::elements::{FockData, NOCIData};
 use crate::input::SNOCIPreconditioner;
+use crate::maths::gmres::GMRESResult;
 
 // Parent/sibling imports.
 use super::PT2Guess;
@@ -46,10 +47,12 @@ pub struct SNOCIPT2Result {
     pub imag_shift: f64,
     /// Second-order correction for this imaginary shift.
     pub ept2: f64,
+    /// Norm `\langle\Psi^{(1)}|\Psi^{(1)}\rangle = a^\dagger Q a` of the first-order wavefunction.
+    pub norm: f64,
+    /// Renormalised second-order correction `E^{(2)} / (1 + \langle\Psi^{(1)}|\Psi^{(1)}\rangle)`.
+    pub rpt2: f64,
     /// Importance scores `|a_i v_i|` for this imaginary shift.
     pub candidate_scores: Vec<f64>,
-    /// Converged first-order amplitudes `a_i`.
-    pub amplitudes: Array1<Complex64>,
     /// Right-hand side `b_i = -V_i` of the amplitude equation.
     pub rhs: Array1<Complex64>,
     /// Largest first-order amplitude magnitude.
@@ -58,12 +61,9 @@ pub struct SNOCIPT2Result {
     pub max_abs_v: f64,
     /// Largest amplitude-coupling product.
     pub max_abs_av: f64,
-    /// GMRES residual for this shifted solve.
-    pub gmres_residual: f64,
-    /// GMRES iterations for this shifted solve.
-    pub gmres_iterations: usize,
-    /// Whether GMRES converged for this shifted solve.
-    pub gmres_converged: bool,
+    /// GMRES solve for this imaginary shift: the first-order amplitudes `a_i` with the residual,
+    /// iteration count and convergence of the solve.
+    pub gmres: GMRESResult<Complex64>,
 }
 
 /// Total NOCI-PT2 energy of one corrected NOCI state at one imaginary shift.
@@ -76,24 +76,6 @@ pub struct NOCIPT2Energy {
     pub e: f64,
     /// `\langle S^2\rangle` of the corrected NOCI state.
     pub s2: f64,
-}
-
-/// Candidate-space overlap blocks required for projection out of the current selected space.
-pub(in crate::noci::selected) struct SNOCIOverlaps<T: NOCIScalar> {
-    /// `Candidate-current overlap, S_ai.`
-    pub(in crate::noci::selected) s_ai: Array2<T>,
-    /// `Current-candidate overlap, S_ia.`
-    pub(in crate::noci::selected) s_ia: Array2<T>,
-}
-
-/// Fock matrix blocks required to build the SNOCI response problem.
-pub(in crate::noci::selected) struct SNOCIFocks<T: NOCIScalar> {
-    /// `Current-current Fock matrix, F_ij.`
-    pub(in crate::noci::selected) f_ii: Array2<T>,
-    /// `Candidate-current Fock matrix, F_ai.`
-    pub(in crate::noci::selected) f_ai: Array2<T>,
-    /// `Current-candidate Fock matrix, F_ia.`
-    pub(in crate::noci::selected) f_ia: Array2<T>,
 }
 
 /// Projector quantities required to remove the current selected-space NOCI state

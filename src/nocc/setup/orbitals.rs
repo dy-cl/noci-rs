@@ -50,7 +50,7 @@ pub(crate) fn noci_natural_orbitals(
     let norm = coeffs.dot(&s.dot(coeffs));
 
     // Get AO density matrix of states in NOCI basis and normalise.
-    let (da, db) = noci_density(data.ao, data.space, &indices, coeffs, data.tol);
+    let (da, db) = noci_density(data, &indices, coeffs);
     let mut d = da + db;
     d.mapv_inplace(|x| x / norm);
 

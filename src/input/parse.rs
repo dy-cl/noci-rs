@@ -888,6 +888,7 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
             follow,
             max_iter: snoci_tbl.get("max_iter").unwrap_or(defaults.max_iter),
             max_add: snoci_tbl.get("max_add").unwrap_or(defaults.max_add),
+            growth: snoci_tbl.get("growth").unwrap_or(defaults.growth),
             max_dim: snoci_tbl.get("max_dim").unwrap_or(defaults.max_dim),
             preconditioner,
             gmres,

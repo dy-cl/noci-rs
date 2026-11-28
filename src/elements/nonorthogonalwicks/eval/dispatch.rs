@@ -123,7 +123,6 @@ macro_rules! dispatch_hamiltonian_ranks_inner {
 
 include!(concat!(env!("OUT_DIR"), "/dispatch.rs"));
 
-#[cfg(feature = "gnocc")]
 /// Dispatch a same-spin rank-`K` RDM and excitation-rank tuple, for scalar and SIMD evaluation.
 macro_rules! dispatch_rdm_ranks {
     (
@@ -186,6 +185,5 @@ macro_rules! dispatch_rdm_ranks {
 pub(super) use dispatch_hamiltonian_ranks;
 pub(super) use dispatch_hamiltonian_ranks_inner;
 pub(super) use dispatch_pair_ranks;
-#[cfg(feature = "gnocc")]
 pub(super) use dispatch_rdm_ranks;
 pub(super) use dispatch_spin_ranks;

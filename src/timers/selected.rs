@@ -10,24 +10,16 @@ pub struct Totals {
     pub run_snoci: Counter,
     /// Total time spent in `snoci_step`.
     pub snoci_step: Counter,
-    /// Total time spent in `solve_current_space`.
-    pub solve_current_space: Counter,
     /// Total time spent in `CandidatePool::new`.
     pub candidate_pool_new: Counter,
     /// Total time spent in `CandidatePool::update`.
     pub candidate_pool_update: Counter,
-    /// Total time spent building candidate-current `H_ai`.
-    pub build_candidate_h_ai: Counter,
     /// Total time spent building the generalised Fock matrices.
     pub build_generalised_fock: Counter,
     /// Total time spent in `gmres`.
     pub gmres: Counter,
-    /// Total time spent in `build_snoci_projection`.
-    pub build_snoci_projection: Counter,
-    /// Total time spent in `build_snoci_overlaps`.
-    pub build_snoci_overlaps: Counter,
-    /// Total time spent in `build_snoci_focks`.
-    pub build_snoci_focks: Counter,
+    /// Total time spent in `build_snoci_couplings`.
+    pub build_snoci_couplings: Counter,
     /// Total time spent in `build_candidate_m`.
     pub build_candidate_m: Counter,
     /// Total time spent in `build_candidate_m_diag`.
@@ -38,10 +30,6 @@ pub struct Totals {
     pub apply_omega_m: Counter,
     /// Total time spent in `build_omega_m_diag`.
     pub build_omega_m_diag: Counter,
-    /// Total time spent in `build_candidate_v`.
-    pub build_candidate_v: Counter,
-    /// Total time spent in `build_omega_v`.
-    pub build_omega_v: Counter,
 }
 
 impl Totals {
@@ -57,22 +45,15 @@ impl Totals {
     ) {
         self.run_snoci.merge_from(&other.run_snoci);
         self.snoci_step.merge_from(&other.snoci_step);
-        self.solve_current_space
-            .merge_from(&other.solve_current_space);
         self.candidate_pool_new
             .merge_from(&other.candidate_pool_new);
         self.candidate_pool_update
             .merge_from(&other.candidate_pool_update);
-        self.build_candidate_h_ai
-            .merge_from(&other.build_candidate_h_ai);
         self.build_generalised_fock
             .merge_from(&other.build_generalised_fock);
         self.gmres.merge_from(&other.gmres);
-        self.build_snoci_projection
-            .merge_from(&other.build_snoci_projection);
-        self.build_snoci_overlaps
-            .merge_from(&other.build_snoci_overlaps);
-        self.build_snoci_focks.merge_from(&other.build_snoci_focks);
+        self.build_snoci_couplings
+            .merge_from(&other.build_snoci_couplings);
         self.build_candidate_m.merge_from(&other.build_candidate_m);
         self.build_candidate_m_diag
             .merge_from(&other.build_candidate_m_diag);
@@ -80,8 +61,6 @@ impl Totals {
         self.apply_omega_m.merge_from(&other.apply_omega_m);
         self.build_omega_m_diag
             .merge_from(&other.build_omega_m_diag);
-        self.build_candidate_v.merge_from(&other.build_candidate_v);
-        self.build_omega_v.merge_from(&other.build_omega_v);
     }
 }
 
@@ -105,16 +84,6 @@ pub fn add_snoci_step(ns: u64) {
     with_totals(|t| t.selected.snoci_step.add_ns(ns));
 }
 
-/// Add one timed call to the `solve_current_space` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `solve_current_space`.
-/// # Returns:
-/// - `()`: Updates the current thread local `solve_current_space` counter.
-#[inline(always)]
-pub fn add_solve_current_space(ns: u64) {
-    with_totals(|t| t.selected.solve_current_space.add_ns(ns));
-}
-
 /// Add one timed call to the `candidate_pool_new` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `CandidatePool::new`.
@@ -133,16 +102,6 @@ pub fn add_candidate_pool_new(ns: u64) {
 #[inline(always)]
 pub fn add_candidate_pool_update(ns: u64) {
     with_totals(|t| t.selected.candidate_pool_update.add_ns(ns));
-}
-
-/// Add one timed call to the `build_candidate_h_ai` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one candidate-current Hamiltonian build.
-/// # Returns:
-/// - `()`: Updates the current thread local `build_candidate_h_ai` counter.
-#[inline(always)]
-pub fn add_build_candidate_h_ai(ns: u64) {
-    with_totals(|t| t.selected.build_candidate_h_ai.add_ns(ns));
 }
 
 /// Add one timed call to the `build_generalised_fock` counter.
@@ -165,34 +124,14 @@ pub fn add_gmres(ns: u64) {
     with_totals(|t| t.selected.gmres.add_ns(ns));
 }
 
-/// Add one timed call to the `build_snoci_projection` counter.
+/// Add one timed call to the `build_snoci_couplings` counter.
 /// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `build_snoci_projection`.
+/// - `ns`: Elapsed time in nanoseconds for one call to `build_snoci_couplings`.
 /// # Returns:
-/// - `()`: Updates the current thread local `build_snoci_projection` counter.
+/// - `()`: Updates the current thread local `build_snoci_couplings` counter.
 #[inline(always)]
-pub fn add_build_snoci_projection(ns: u64) {
-    with_totals(|t| t.selected.build_snoci_projection.add_ns(ns));
-}
-
-/// Add one timed call to the `build_snoci_overlaps` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `build_snoci_overlaps`.
-/// # Returns:
-/// - `()`: Updates the current thread local `build_snoci_overlaps` counter.
-#[inline(always)]
-pub fn add_build_snoci_overlaps(ns: u64) {
-    with_totals(|t| t.selected.build_snoci_overlaps.add_ns(ns));
-}
-
-/// Add one timed call to the `build_snoci_focks` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `build_snoci_focks`.
-/// # Returns:
-/// - `()`: Updates the current thread local `build_snoci_focks` counter.
-#[inline(always)]
-pub fn add_build_snoci_focks(ns: u64) {
-    with_totals(|t| t.selected.build_snoci_focks.add_ns(ns));
+pub fn add_build_snoci_couplings(ns: u64) {
+    with_totals(|t| t.selected.build_snoci_couplings.add_ns(ns));
 }
 
 /// Add one timed call to the `apply_candidate_m` counter.
@@ -243,24 +182,4 @@ pub fn add_apply_omega_m(ns: u64) {
 #[inline(always)]
 pub fn add_build_omega_m_diag(ns: u64) {
     with_totals(|t| t.selected.build_omega_m_diag.add_ns(ns));
-}
-
-/// Add one timed call to the `build_candidate_v` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `build_candidate_v`.
-/// # Returns:
-/// - `()`: Updates the current thread local `build_candidate_v` counter.
-#[inline(always)]
-pub fn add_build_candidate_v(ns: u64) {
-    with_totals(|t| t.selected.build_candidate_v.add_ns(ns));
-}
-
-/// Add one timed call to the `build_omega_v` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `build_omega_v`.
-/// # Returns:
-/// - `()`: Updates the current thread local `build_omega_v` counter.
-#[inline(always)]
-pub fn add_build_omega_v(ns: u64) {
-    with_totals(|t| t.selected.build_omega_v.add_ns(ns));
 }

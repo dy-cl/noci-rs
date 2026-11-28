@@ -11,6 +11,7 @@ mod rdm2;
 mod rdm3;
 #[cfg(feature = "gnocc")]
 mod rdm4;
+mod transition;
 
 // Crate-visible type re-exports.
 #[cfg(feature = "gnocc")]
@@ -21,9 +22,10 @@ pub(crate) use rdm2::RDM2;
 pub(crate) use rdm3::RDM3;
 #[cfg(feature = "gnocc")]
 pub(crate) use rdm4::RDM4;
+pub(crate) use transition::SpinTransition;
 
 // Crate-visible function re-exports.
-pub(crate) use density::{noci_density, noci_spin_square};
+pub(crate) use density::{build_noci_spin_square, noci_density};
 #[cfg(feature = "gnocc")]
 pub(crate) use rdm1::rdm1;
 #[cfg(feature = "gnocc")]

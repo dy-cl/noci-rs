@@ -72,22 +72,16 @@ macro_rules! for_each_counter {
 
         $f!($tot.selected.run_snoci);
         $f!($tot.selected.snoci_step);
-        $f!($tot.selected.solve_current_space);
         $f!($tot.selected.candidate_pool_new);
         $f!($tot.selected.candidate_pool_update);
-        $f!($tot.selected.build_candidate_h_ai);
         $f!($tot.selected.build_generalised_fock);
         $f!($tot.selected.gmres);
-        $f!($tot.selected.build_snoci_projection);
-        $f!($tot.selected.build_snoci_overlaps);
-        $f!($tot.selected.build_snoci_focks);
+        $f!($tot.selected.build_snoci_couplings);
         $f!($tot.selected.build_candidate_m_diag);
         $f!($tot.selected.build_candidate_m);
         $f!($tot.selected.apply_candidate_m);
         $f!($tot.selected.apply_omega_m);
         $f!($tot.selected.build_omega_m_diag);
-        $f!($tot.selected.build_candidate_v);
-        $f!($tot.selected.build_omega_v);
 
         $f!($tot.noci.build_mo_cache);
         $f!($tot.noci.build_fock_mo_cache);

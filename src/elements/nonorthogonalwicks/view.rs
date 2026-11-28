@@ -313,7 +313,6 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     /// - `nbas`: Dimension of the external RDM basis.
     /// # Returns
     /// - `ArrayView2<'_, T>`: `External-basis X^{(m_i)} matrix.`
-    #[cfg(feature = "gnocc")]
     pub(crate) fn xrdm(
         &self,
         mi: usize,
@@ -329,7 +328,6 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     /// - `nbas`: Dimension of the external RDM basis.
     /// # Returns
     /// - `ArrayView2<'_, T>`: `External-basis Y^{(m_i)} matrix.`
-    #[cfg(feature = "gnocc")]
     pub(crate) fn yrdm(
         &self,
         mi: usize,

@@ -12,11 +12,12 @@ mod rdm;
 mod rules;
 
 // Crate-visible function re-exports.
-pub(crate) use rules::{build_s_pair, build_s_pair_floored, occ_coeffs, pair_density};
+pub(crate) use rules::{build_s_pair_floored, occ_coeffs};
 
 // Restricted function re-exports.
 pub(in crate::elements) use pairs::{
     calculate_fs_pair_naive, calculate_hs_pair_naive, calculate_s_pair_naive,
+    calculate_spin_transition_pair_naive,
 };
 #[cfg(feature = "gnocc")]
 pub(in crate::elements) use rdm::{

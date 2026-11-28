@@ -394,7 +394,7 @@ fn xw_onebody_m0_gen_prepared<T: NOCIScalar>(
             (pref * det_det, pref * contrib)
         } else {
             // If cofactor evaluation fails, retain `S = {}^{xw}\tilde S\det\mathbf D` alone.
-            let overlap = pref * det_dynamic(det0, l).unwrap_or(zero);
+            let overlap = pref * det_dynamic(scratch.lu.as_mut_slice(), det0, l).unwrap_or(zero);
             (overlap, zero)
         }
     })
@@ -552,7 +552,9 @@ fn xw_onebody_gen_prepared<T: NOCIScalar>(
                 fock_acc += contrib;
             } else if mi == 0 {
                 // Preserve the overlap determinant if the adjugate evaluation fails.
-                overlap_acc += det_dynamic(scratch.det_mix.as_slice(), l).unwrap_or(zero);
+                overlap_acc +=
+                    det_dynamic(scratch.lu.as_mut_slice(), scratch.det_mix.as_slice(), l)
+                        .unwrap_or(zero);
             }
         });
 
