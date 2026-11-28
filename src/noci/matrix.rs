@@ -261,10 +261,13 @@ where
             },
             |(scratch, row), &ldet| {
                 calculate_pairs_dense(data, op, ldet, (&right, &runs), 0, scratch.as_mut(), row);
+
+                // `y_l = \sum_r O_{lr} c_r` over the evaluated row.
                 let mut y = Op::zero();
                 for (&element, &cr) in row.iter().zip(c.iter()) {
                     accumulate(&mut y, element, cr);
                 }
+
                 y
             },
         )

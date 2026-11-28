@@ -593,6 +593,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                 for &(source, f) in &block.singles[block.starts[k]..block.starts[k + 1]] {
                     value += <R as From<T>>::from(f) * x[source];
                 }
+
                 (entry.det, value)
             })
             .collect();
@@ -1264,9 +1265,12 @@ fn build_orthogonal_one_body_block<T: NOCIScalar>(
             let mut row = Vec::new();
             orthogonal_singles(&block, NOCIIndex(entry.det), space, cache, true, &mut row);
             orthogonal_singles(&block, NOCIIndex(entry.det), space, cache, false, &mut row);
+
             row
         })
         .collect();
+
+    // Row `k` occupies `singles[starts[k]..starts[k + 1]]`.
     block.starts = std::iter::once(0)
         .chain(rows.iter().scan(0, |end, row| {
             *end += row.len();
@@ -1274,6 +1278,7 @@ fn build_orthogonal_one_body_block<T: NOCIScalar>(
         }))
         .collect();
     block.singles = rows.into_iter().flatten().collect();
+
     block
 }
 
@@ -1298,8 +1303,12 @@ fn orthogonal_singles<T: NOCIScalar>(
     out: &mut Vec<(usize, T)>,
 ) {
     let nmo = cache.fa.nrows();
+
+    // The target's spin strings within its parent.
     let state = space.spin_string_pair(target);
     let strings = space.parent_spin_strings(state.parent);
+
+    // The occupation and MO Fock matrix of the replaced spin.
     let (oa, ob) = space.occupations(target);
     let (occ, f_sigma) = if alpha {
         (oa, &cache.fa)
@@ -1314,6 +1323,7 @@ fn orthogonal_singles<T: NOCIScalar>(
             if occ.contains(part) {
                 continue;
             }
+
             let source_occ = (occ & !Bits::bit(hole)) | Bits::bit(part);
 
             // Retained sources with this occupation, if any.
@@ -1322,6 +1332,7 @@ fn orthogonal_singles<T: NOCIScalar>(
             } else {
                 strings.bids.get(&source_occ).map(|&bid| (state.aid, bid))
             };
+
             let Some(&opos) = key.and_then(|key| orthogonal.opos.get(&key)) else {
                 continue;
             };
@@ -1331,6 +1342,7 @@ fn orthogonal_singles<T: NOCIScalar>(
             // of that replacement; it is shared by every source with this occupation.
             let phase = excitation_phase_bits(source_occ, Bits::bit(part), Bits::bit(hole));
             let f = T::from_real(phase) * f_sigma[(hole, part)];
+
             out.extend(
                 orthogonal.groups[opos]
                     .targets

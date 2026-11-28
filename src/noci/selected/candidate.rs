@@ -47,6 +47,7 @@ impl CandidatePool {
             }
 
             pool.extend(space, selected_space, input);
+
             pool
         })
     }

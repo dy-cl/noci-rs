@@ -84,20 +84,27 @@ impl<T: NOCIScalar> SNOCIBlocks<T> {
         promoted: &[NOCIIndex],
     ) {
         let earlier = &selected[..selected.len() - promoted.len()];
+
+        // Border a block `A` with the promoted rows `P` and the promoted-promoted block `D`.
         let border = |a: &Array2<T>, p: &Array2<T>, d: &Array2<T>| {
             let top = concatenate![Axis(1), a.view(), adjoint(p).view()];
             let bottom = concatenate![Axis(1), p.view(), d.view()];
+
             concatenate![Axis(0), top, bottom]
         };
 
+        // Hamiltonian and overlap rows of the promoted determinants.
         let (h_pi, s_pi, _) = build_noci_hs(data, promoted, earlier, false);
         let (h_pp, s_pp, _) = build_noci_hs(data, promoted, promoted, true);
+
         self.h_ii = border(&self.h_ii, &h_pi, &h_pp);
         self.s_ii = border(&self.s_ii, &s_pi, &s_pp);
 
+        // Spin-squared rows of the promoted determinants against every selected determinant.
         let ss_p = build_noci_spin_square(data, promoted, selected);
         let ss_pi = ss_p.slice(s![.., ..earlier.len()]).to_owned();
         let ss_pp = ss_p.slice(s![.., earlier.len()..]).to_owned();
+
         self.ss_ii = border(&self.ss_ii, &ss_pi, &ss_pp);
     }
 }
@@ -251,8 +258,8 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
 /// NOCI state of the current space at every imaginary shift.
 /// The generalised Fock operator, `E_0`, the projector `Q = 1 - |\Psi\rangle\langle\Psi|` and
 /// `V^Omega` are all built from the chosen state, so each state needs its own Fock-dependent
-/// intermediates and GMRES solve. The candidate-selected `H_{ai}` and `S_{ai}` do not depend on the
-/// state and are passed in.
+/// intermediates and GMRES solve. The selected-space blocks do not depend on the state and are
+/// passed in.
 /// # Arguments:
 /// - `post`: Data shared by post-SCF methods.
 /// - `input`: User-defined input options.
@@ -292,6 +299,7 @@ where
     let ss_c = coeffs_conj.dot(&blocks.ss_ii.dot(coeffs));
     let s_c = coeffs_conj.dot(&blocks.s_ii.dot(coeffs));
     let s2 = scalar_real(ss_c) / scalar_real(s_c);
+
     if world.rank() == 0 {
         println!();
         println!("  NOCI state:         {}", root);
@@ -570,6 +578,7 @@ where
             a.x.iter()
                 .zip(qa.iter())
                 .fold(R::from_real(0.0), |acc, (&aa, &qaa)| acc + aa.conj() * qaa);
+
         let norm = scalar_real(aqa);
         let rpt2 = ept2 / (1.0 + norm);
 
@@ -793,6 +802,7 @@ where
             let guess = PT2Guess::new(&candidate_basis, &pt2, &roots, followed.clone());
 
             let remaining = opts.max_dim.saturating_sub(selected_space.len());
+
             // Every rank stops once the selected space is full; rank zero reports the final result.
             if remaining == 0 {
                 let state = SNOCIState {
