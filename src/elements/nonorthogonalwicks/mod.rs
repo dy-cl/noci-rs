@@ -55,6 +55,8 @@ pub(crate) use scratch::WickScratch;
 pub(crate) use scratch::WickScratchSpin;
 pub(crate) use storage::{WICKS_DISK_CACHE_VERSION, WicksDiskMeta, WicksRma};
 pub(crate) use types::{DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinMeta};
+#[cfg(feature = "gpu")]
+pub(crate) use view::DeviceWicks;
 #[cfg(feature = "gnocc")]
 pub(crate) use view::SameSpinView;
 pub(crate) use view::WicksPairView;

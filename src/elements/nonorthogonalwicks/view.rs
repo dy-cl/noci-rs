@@ -1,5 +1,12 @@
 // elements/nonorthogonalwicks/view.rs
 
+#[cfg(feature = "gpu")]
+mod device;
+
+// Crate-visible type re-exports.
+#[cfg(feature = "gpu")]
+pub(crate) use device::DeviceWicks;
+
 // Standard library imports.
 use std::ops::Deref;
 use std::ptr::NonNull;

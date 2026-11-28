@@ -500,7 +500,9 @@ fn generate_eval() {
 /// the source's path with the `.ptx` extension, so `src/x/device.cu` becomes `OUT_DIR/x/device.ptx`
 /// and the host module beside it includes the kernels by the same path. The PTX targets compute
 /// capability 8.6 (RTX 30 series), and the driver compiles it for that GPU or any newer one such as
-/// the H100/H200, caching the result. `NVCC` overrides the compiler.
+/// the H100/H200, caching the result. Sources include `.cuh` headers by their path below `src/`,
+/// and see the build-time excitation ceiling as `MAXEXCIT` and the bitstring width as `WORDS`.
+/// `NVCC` overrides the compiler.
 /// # Arguments:
 /// - None.
 /// # Returns:
@@ -509,10 +511,18 @@ fn generate_eval() {
 fn compile_gpu_kernels() {
     println!("cargo:rerun-if-env-changed=NVCC");
 
+    let maxexcit = maxexcit();
+    // Words per occupation bitstring, `WORDS` in `determinant/bits.rs`.
+    let words = if env::var_os("CARGO_FEATURE_WIDE").is_some() {
+        4
+    } else {
+        2
+    };
+
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is not set"));
     let nvcc = env::var("NVCC").unwrap_or_else(|_| "nvcc".to_string());
 
-    // Every `.cu` file below `src/`, searched depth first.
+    // Every `.cu` file below `src/`, searched depth first; `.cuh` headers are only watched.
     let mut sources = Vec::new();
     let mut pending = vec![PathBuf::from("src")];
     while let Some(dir) = pending.pop() {
@@ -520,6 +530,8 @@ fn compile_gpu_kernels() {
             let path = entry.expect("cannot read a source entry").path();
             if path.is_dir() {
                 pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "cuh") {
+                println!("cargo:rerun-if-changed={}", path.display());
             } else if path.extension().is_some_and(|ext| ext == "cu") {
                 sources.push(path);
             }
@@ -536,7 +548,9 @@ fn compile_gpu_kernels() {
             .expect("cannot create the PTX directory");
 
         let status = Command::new(&nvcc)
-            .args(["--ptx", "-O3", "-std=c++17", "-arch=compute_86"])
+            .args(["--ptx", "-O3", "-std=c++17", "-arch=compute_86", "-Isrc"])
+            .arg(format!("-DMAXEXCIT={maxexcit}"))
+            .arg(format!("-DWORDS={words}"))
             .arg("-o")
             .arg(&ptx)
             .arg(&source)

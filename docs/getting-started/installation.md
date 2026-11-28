@@ -96,3 +96,20 @@ stores it as *term tables*, each term a contraction of amplitudes, integrals and
 cached under `build/generated/`. Set `WICKFORCEREGENERATE=1` to regenerate them.
 Compiling with this feature takes much longer, so leave it off unless you need GNOCC. JM-NOCCMC
 does not need it.
+
+### NVIDIA GPUs
+
+```bash
+cargo build --release --features gpu
+```
+
+This moves the SNOCI couplings and NOCI-PT2 solves onto the first NVIDIA GPU. It needs the CUDA
+toolkit at build time, with `nvcc` on `PATH` or named by the `NVCC` environment variable, and the
+CUDA libraries on `LD_LIBRARY_PATH` at run time. The kernels are compiled for compute capability
+8.6 and newer, from the RTX 30 series to the H100 and H200; the driver finishes compiling them for
+the GPU present on the first run and caches the result.
+
+Only real calculations use the GPU. The NOCI-PT2 solve moves onto it only on a single MPI rank and
+without an imaginary shift; with several ranks, each rank evaluates its couplings on the first GPU.
+Calculations with complex scalars, and the parts of a calculation the GPU does not cover, run on the
+CPU as before. Results agree with a CPU build to within the GMRES tolerance.

@@ -3,6 +3,13 @@
 //! determinant or spin string by its occupation in a parent frame, and a `…Data` holds its
 //! excitation, phase and fixed-rank cache measured from a reference of the same frame.
 
+#[cfg(feature = "gpu")]
+mod device;
+
+// Crate-visible type re-exports.
+#[cfg(feature = "gpu")]
+pub(crate) use device::DeviceDeterminant;
+
 // Crate-root imports.
 use crate::basis::{excitation_between, excitation_phase_bits};
 use crate::hash::FastMap;

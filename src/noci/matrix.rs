@@ -1,5 +1,12 @@
 // noci/matrix.rs
 
+#[cfg(feature = "gpu")]
+mod device;
+
+// Crate-visible type re-exports.
+#[cfg(feature = "gpu")]
+pub(crate) use device::DeviceNOCIRows;
+
 // Standard library imports.
 use std::time::{Duration, Instant};
 
@@ -215,6 +222,8 @@ fn calculate_matrix_elements_dense<T: NOCIScalar>(
 /// - `left`: Row determinants.
 /// - `right`: Column determinants, the order of `c`.
 /// - `c`: Coefficients of the column determinants.
+/// - `skip`: Ordered reference pairs `x * n_{\text{parent}} + w` another evaluator, such as the
+///   GPU, contracts; their pairs are left out of every row.
 /// - `accumulate`: Adds one element `O_{lr}` weighted by `c_r` to a row's sum.
 /// # Returns:
 /// - `Vec<Op::Out>`: Contracted rows `y_l` in the order of `left`.
@@ -224,6 +233,7 @@ pub(crate) fn contract_noci_rows<T, Op>(
     left: &[NOCIIndex],
     right: &[NOCIIndex],
     c: &Array1<T>,
+    skip: Option<&[bool]>,
     accumulate: impl Fn(&mut Op::Out, Op::Out, T) + Sync,
 ) -> Vec<Op::Out>
 where
@@ -249,7 +259,20 @@ where
         runs[run_of[gp]].1.push(j);
     }
 
-    // Every column belongs to one run, so the row buffer needs no clearing between rows.
+    // The runs each bra parent evaluates here, without the skipped reference pairs.
+    let nparent = data.space.parents.len();
+    let skipped = |lp: usize, gp: usize| skip.is_some_and(|skip| skip[lp * nparent + gp]);
+    let host_runs = (0..nparent)
+        .map(|lp| {
+            runs.iter()
+                .filter(|(gp, _)| !skipped(lp, *gp))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    // Every column belongs to one run, evaluated or zeroed, so the row buffer needs no clearing
+    // between rows.
     let use_wicks_scratch = data.input.wicks.enabled;
     left.par_iter()
         .map_init(
@@ -260,7 +283,16 @@ where
                 )
             },
             |(scratch, row), &ldet| {
-                calculate_pairs_dense(data, op, ldet, (&right, &runs), 0, scratch.as_mut(), row);
+                let lp = ldet.parent;
+                let kets = (right.as_slice(), host_runs[lp].as_slice());
+                calculate_pairs_dense(data, op, ldet, kets, 0, scratch.as_mut(), row);
+                for (gp, columns) in &runs {
+                    if skipped(lp, *gp) {
+                        for &j in columns {
+                            row[j] = Op::zero();
+                        }
+                    }
+                }
 
                 // `y_l = \sum_r O_{lr} c_r` over the evaluated row.
                 let mut y = Op::zero();

@@ -39,6 +39,8 @@ pub(crate) use batch::LaneBatch;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use batch::{LaneKernel, LanePacket};
 pub(crate) use operator::{Fock, HamiltonianOverlap, Overlap, PairOperator};
+#[cfg(feature = "gpu")]
+pub(crate) use orthogonal::DeviceOrthogonal;
 pub(crate) use orthogonal::OrthogonalHamiltonianScratch;
 #[cfg(feature = "gnocc")]
 pub(crate) use rdm::{RDM1, RDM2, RDM3, RDM4};

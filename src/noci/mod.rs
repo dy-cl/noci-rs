@@ -38,6 +38,8 @@ pub(crate) use factorise::{
 };
 #[cfg(feature = "gpu")]
 pub(crate) use factorise::{DeviceOneBody, DeviceOneBodyScratch};
+#[cfg(feature = "gpu")]
+pub(crate) use matrix::DeviceNOCIRows;
 
 // Crate-visible function re-exports.
 pub(crate) use matrix::{build_noci_s, contract_noci_rows};

@@ -27,6 +27,8 @@ use crate::elements::{
     DetPair, Fock, FockData, HamiltonianOverlap, NOCIData, Overlap, PairOperator,
 };
 use crate::mpiutils::all_reduce_array1;
+#[cfg(feature = "gpu")]
+use crate::noci::DeviceNOCIRows;
 use crate::noci::contract_noci_rows;
 use crate::noci::{OneBodyFactorisation, OneBodyScratch};
 use crate::time_call;
@@ -117,15 +119,78 @@ pub(in crate::noci::selected) fn build_snoci_couplings<T: NOCIScalar + Into<Comp
         let op = Fock { fock, shift: 0.0 };
         let fock_row = |y: &mut T, f: T, c: T| *y += f * c;
 
+        // The GPU contracts the pairs of the reference pairs it holds, and the host the rest.
+        #[cfg(feature = "gpu")]
+        let device = match DeviceNOCIRows::new(data, fock) {
+            Some(Ok(device)) => Some(device),
+            Some(Err(e)) => {
+                println!("  GPU unavailable for the couplings ({e}); using the host.");
+                None
+            }
+            None => None,
+        };
+        #[cfg(feature = "gpu")]
+        let (fskip, hskip) = match device.as_ref() {
+            Some(device) => (
+                Some(device.fock.as_slice()),
+                Some(device.hamiltonian.as_slice()),
+            ),
+            None => (None, None),
+        };
+        #[cfg(not(feature = "gpu"))]
+        let (fskip, hskip) = (None, None);
+
         // `E_0 = \sum_{ij} c_i^* F_{ij} c_j` and `F_{a0}` from the Fock rows.
-        let f_i0 = contract_noci_rows(data, &op, selected_space, selected_space, coeffs, fock_row);
+        let f_i0 = contract_noci_rows(
+            data,
+            &op,
+            selected_space,
+            selected_space,
+            coeffs,
+            fskip,
+            fock_row,
+        );
+        #[cfg(feature = "gpu")]
+        let f_i0 = match device.as_ref() {
+            Some(device) => {
+                let rows = device
+                    .contract_fock_rows(data, selected_space, selected_space, coeffs, op.shift)
+                    .expect("GPU Fock rows failed");
+                f_i0.into_iter()
+                    .zip(rows)
+                    .map(|(y, row)| y + T::from_real(row))
+                    .collect()
+            }
+            None => f_i0,
+        };
         let e0 = coeffs
             .iter()
             .zip(&f_i0)
             .fold(T::from_real(0.0), |acc, (&c, &f)| acc + c.conj() * f);
         let e0 = e0.into().re;
 
-        let f_a0 = contract_noci_rows(data, &op, candidates, selected_space, coeffs, fock_row);
+        let f_a0 = contract_noci_rows(
+            data,
+            &op,
+            candidates,
+            selected_space,
+            coeffs,
+            fskip,
+            fock_row,
+        );
+        #[cfg(feature = "gpu")]
+        let f_a0 = match device.as_ref() {
+            Some(device) => {
+                let rows = device
+                    .contract_fock_rows(data, candidates, selected_space, coeffs, op.shift)
+                    .expect("GPU Fock rows failed");
+                f_a0.into_iter()
+                    .zip(rows)
+                    .map(|(y, row)| y + T::from_real(row))
+                    .collect()
+            }
+            None => f_a0,
+        };
         let f_a0 = Array1::from(f_a0);
 
         // `V_a` and `S_{a0}` from the fused Hamiltonian and overlap rows.
@@ -135,11 +200,25 @@ pub(in crate::noci::selected) fn build_snoci_couplings<T: NOCIScalar + Into<Comp
             candidates,
             selected_space,
             coeffs,
+            hskip,
             |y: &mut (T, T), (h, s), c| {
                 y.0 += h * c;
                 y.1 += s * c;
             },
         );
+        #[cfg(feature = "gpu")]
+        let hs = match device.as_ref() {
+            Some(device) => {
+                let (v, s) = device
+                    .contract_hamiltonian_overlap_rows(data, candidates, selected_space, coeffs)
+                    .expect("GPU Hamiltonian rows failed");
+                hs.into_iter()
+                    .zip(v.into_iter().zip(s))
+                    .map(|((h, o), (v, s))| (h + T::from_real(v), o + T::from_real(s)))
+                    .collect()
+            }
+            None => hs,
+        };
         let (v_a, s_a0): (Vec<T>, Vec<T>) = hs.into_iter().unzip();
         let (v_a, s_a0) = (Array1::from(v_a), Array1::from(s_a0));
 

@@ -23,6 +23,8 @@ pub use space::{NOCIIndex, NOCISpace};
 pub(crate) use auxiliary::{AuxiliaryIndex, AuxiliarySpace, AuxiliarySpinStringIndex};
 pub(crate) use connection::ConnectionState;
 pub(crate) use space::NOCISpinStringIndex;
+#[cfg(feature = "gpu")]
+pub(crate) use state::DeviceDeterminant;
 pub(crate) use state::{
     DeterminantData, DeterminantState, ParentSpinStrings, SpinStringData, SpinStringIndex,
     SpinStringPair, SpinStringState,

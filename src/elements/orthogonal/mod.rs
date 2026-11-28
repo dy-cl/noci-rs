@@ -8,10 +8,14 @@
 //!   Quantum Chemistry* (Springer, 2003),
 //!   [doi:10.1007/978-1-4757-6519-9_5](https://doi.org/10.1007/978-1-4757-6519-9_5).
 
+#[cfg(feature = "gpu")]
+mod device;
 mod eval;
 mod pairs;
 
 // Crate-visible type re-exports.
+#[cfg(feature = "gpu")]
+pub(crate) use device::DeviceOrthogonal;
 pub(crate) use pairs::OrthogonalHamiltonianScratch;
 
 // Restricted type re-exports.
